@@ -26,12 +26,13 @@ import (
 	"strings"
 	"time"
 
+	"go.uber.org/zap"
+
 	"github.com/koderover/zadig/pkg/microservice/aslan/config"
 	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
 	"github.com/koderover/zadig/pkg/setting"
 	"github.com/koderover/zadig/pkg/types"
 	"github.com/koderover/zadig/pkg/types/job"
-	"go.uber.org/zap"
 )
 
 const (
@@ -83,6 +84,18 @@ func InitJobCtl(job *commonmodels.Job, workflow *commonmodels.WorkflowV4) (JobCt
 		resp = &ScanningJob{job: job, workflow: workflow}
 	case config.JobZadigDistributeImage:
 		resp = &ImageDistributeJob{job: job, workflow: workflow}
+	case config.JobIstioRelease:
+		resp = &IstioReleaseJob{job: job, workflow: workflow}
+	case config.JobIstioRollback:
+		resp = &IstioRollBackJob{job: job, workflow: workflow}
+	case config.JobJira:
+		resp = &JiraJob{job: job, workflow: workflow}
+	case config.JobNacos:
+		resp = &NacosJob{job: job, workflow: workflow}
+	case config.JobApollo:
+		resp = &ApolloJob{job: job, workflow: workflow}
+	case config.JobMeegoTransition:
+		resp = &MeegoTransitionJob{job: job, workflow: workflow}
 	default:
 		return resp, fmt.Errorf("job type not found %s", job.JobType)
 	}
@@ -286,6 +299,7 @@ func getReposVariables(repos []*types.Repository) []*commonmodels.KeyVal {
 		ret = append(ret, &commonmodels.KeyVal{Key: fmt.Sprintf(repoNameIndex), Value: repo.RepoName, IsCredential: false})
 
 		repoName := strings.Replace(repo.RepoName, "-", "_", -1)
+		repoName = strings.Replace(repo.RepoName, ".", "_", -1)
 
 		repoIndex := fmt.Sprintf("REPO_%d", index)
 		ret = append(ret, &commonmodels.KeyVal{Key: fmt.Sprintf(repoIndex), Value: repoName, IsCredential: false})
@@ -313,6 +327,7 @@ func getReposVariables(repos []*types.Repository) []*commonmodels.KeyVal {
 		if len(repo.CommitID) > 0 {
 			ret = append(ret, &commonmodels.KeyVal{Key: fmt.Sprintf("%s_COMMIT_ID", repoName), Value: repo.CommitID, IsCredential: false})
 		}
+		ret = append(ret, getEnvFromCommitMsg(repo.CommitMessage)...)
 	}
 	return ret
 }
@@ -447,6 +462,26 @@ func getShareStorageDetail(shareStorages []*commonmodels.ShareStorage, shareStor
 			MountPath: storage.Path,
 		}
 		resp = append(resp, storageDetail)
+	}
+	return resp
+}
+
+func getEnvFromCommitMsg(commitMsg string) []*commonmodels.KeyVal {
+	resp := []*commonmodels.KeyVal{}
+	if commitMsg == "" {
+		return resp
+	}
+	compileRegex := regexp.MustCompile(`(?U)#(\w+=.+)#`)
+	kvArrs := compileRegex.FindAllStringSubmatch(commitMsg, -1)
+	for _, kvArr := range kvArrs {
+		if len(kvArr) == 0 {
+			continue
+		}
+		keyValStr := kvArr[len(kvArr)-1]
+		keyValArr := strings.Split(keyValStr, "=")
+		if len(keyValArr) == 2 {
+			resp = append(resp, &commonmodels.KeyVal{Key: keyValArr[0], Value: keyValArr[1], Type: commonmodels.StringType})
+		}
 	}
 	return resp
 }

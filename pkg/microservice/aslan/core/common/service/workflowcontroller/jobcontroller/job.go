@@ -66,6 +66,18 @@ func initJobCtl(job *commonmodels.JobTask, workflowCtx *commonmodels.WorkflowTas
 		jobCtl = NewGrayRollbackJobCtl(job, workflowCtx, ack, logger)
 	case string(config.JobK8sPatch):
 		jobCtl = NewK8sPatchJobCtl(job, workflowCtx, ack, logger)
+	case string(config.JobIstioRelease):
+		jobCtl = NewIstioReleaseJobCtl(job, workflowCtx, ack, logger)
+	case string(config.JobIstioRollback):
+		jobCtl = NewIstioRollbackJobCtl(job, workflowCtx, ack, logger)
+	case string(config.JobJira):
+		jobCtl = NewJiraJobCtl(job, workflowCtx, ack, logger)
+	case string(config.JobNacos):
+		jobCtl = NewNacosJobCtl(job, workflowCtx, ack, logger)
+	case string(config.JobApollo):
+		jobCtl = NewApolloJobCtl(job, workflowCtx, ack, logger)
+	case string(config.JobMeegoTransition):
+		jobCtl = NewMeegoTransitionJobCtl(job, workflowCtx, ack, logger)
 	default:
 		jobCtl = NewFreestyleJobCtl(job, workflowCtx, ack, logger)
 	}
@@ -83,7 +95,7 @@ func runJob(ctx context.Context, job *commonmodels.JobTask, workflowCtx *commonm
 		}
 		return true
 	})
-	job.Status = config.StatusRunning
+	job.Status = config.StatusPrepare
 	job.StartTime = time.Now().Unix()
 	job.K8sJobName = getJobName(workflowCtx.WorkflowName, workflowCtx.TaskID)
 	ack()

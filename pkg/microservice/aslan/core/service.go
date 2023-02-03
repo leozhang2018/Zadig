@@ -52,6 +52,7 @@ import (
 	configmongodb "github.com/koderover/zadig/pkg/microservice/systemconfig/core/email/repository/mongodb"
 	configservice "github.com/koderover/zadig/pkg/microservice/systemconfig/core/features/service"
 	userCore "github.com/koderover/zadig/pkg/microservice/user/core"
+	userdb "github.com/koderover/zadig/pkg/microservice/user/core/repository/mongodb"
 	"github.com/koderover/zadig/pkg/setting"
 	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
 	gormtool "github.com/koderover/zadig/pkg/tool/gorm"
@@ -251,6 +252,7 @@ func initDatabase() {
 		commonrepo.NewDeliveryVersionColl(),
 		commonrepo.NewDiffNoteColl(),
 		commonrepo.NewDindCleanColl(),
+		commonrepo.NewIMAppColl(),
 		commonrepo.NewFavoriteColl(),
 		commonrepo.NewGithubAppColl(),
 		commonrepo.NewHelmRepoColl(),
@@ -295,6 +297,7 @@ func initDatabase() {
 		commonrepo.NewPluginRepoColl(),
 		commonrepo.NewWorkflowViewColl(),
 		commonrepo.NewWorkflowV4TemplateColl(),
+		commonrepo.NewVariableSetColl(),
 
 		systemrepo.NewAnnouncementColl(),
 		systemrepo.NewOperationLogColl(),
@@ -310,6 +313,9 @@ func initDatabase() {
 		policydb.NewRoleColl(),
 		policydb.NewRoleBindingColl(),
 		policydb.NewPolicyMetaColl(),
+
+		// user related db index
+		userdb.NewUserSettingColl(),
 	} {
 		wg.Add(1)
 		go func(r indexer) {

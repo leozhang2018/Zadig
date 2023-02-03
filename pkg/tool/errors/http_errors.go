@@ -421,7 +421,9 @@ var (
 	// ErrCreateSecret ...
 	ErrCreateSecret = NewHTTPError(6401, "创建secret失败")
 	// ErrUpdateSecret ...
-	ErrUpdateSecret = NewHTTPError(6402, "更新secret失败")
+	ErrUpdateSecret     = NewHTTPError(6402, "更新secret失败")
+	ErrListK8sResources = NewHTTPError(6403, "列出资源失败")
+	ErrGetK8sResource   = NewHTTPError(6404, "查看资源详情失败")
 
 	//-----------------------------------------------------------------------------------------------
 	// Gitlab APIs Range: 6500 - 6519
@@ -762,4 +764,56 @@ var (
 	ErrGetConfigurationManagement      = NewHTTPError(6923, "获取配置管理失败")
 	ErrDeleteConfigurationManagement   = NewHTTPError(6924, "删除配置管理失败")
 	ErrValidateConfigurationManagement = NewHTTPError(6925, "校验配置管理失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// external approval releated errors: 6930-6939
+	//-----------------------------------------------------------------------------------------------
+	ErrCreateIMApp   = NewHTTPError(6930, "创建 IM 应用失败")
+	ErrUpdateIMApp   = NewHTTPError(6931, "更新 IM 应用失败")
+	ErrListIMApp     = NewHTTPError(6932, "列出 IM 应用失败")
+	ErrGetIMApp      = NewHTTPError(6933, "获取 IM 应用失败")
+	ErrDeleteIMApp   = NewHTTPError(6934, "删除 IM 应用失败")
+	ErrValidateIMApp = NewHTTPError(6935, "校验 IM 应用失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// check workflow task lark approval available releated errors: 6940-6949
+	//-----------------------------------------------------------------------------------------------
+	ErrCheckLarkApprovalCreator = NewHTTPError(6940, "获取飞书账号信息失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// project management releated errors: 6950-6959
+	//-----------------------------------------------------------------------------------------------
+	ErrCreateProjectManagement   = NewHTTPError(6950, "创建项目管理集成失败")
+	ErrUpdateProjectManagement   = NewHTTPError(6951, "更新项目管理集成失败")
+	ErrListProjectManagement     = NewHTTPError(6952, "列出项目管理集成失败")
+	ErrGetProjectManagement      = NewHTTPError(6953, "获取项目管理集成失败")
+	ErrDeleteProjectManagement   = NewHTTPError(6954, "删除项目管理集成失败")
+	ErrValidateProjectManagement = NewHTTPError(6955, "校验项目管理集成失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// jira hook releated Error Range: 6960 - 6969
+	//-----------------------------------------------------------------------------------------------
+	ErrGetJiraHook    = NewHTTPError(6960, "获取 jira hook 详情失败")
+	ErrListJiraHook   = NewHTTPError(6961, "列出 jira hook 失败")
+	ErrCreateJiraHook = NewHTTPError(6962, "创建 jira hook 失败")
+	ErrUpdateJiraHook = NewHTTPError(6963, "更新 jira hook 失败")
+	ErrDeleteJiraHook = NewHTTPError(6964, "删除 jira hook 失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// general hook releated Error Range: 6970 - 6979
+	//-----------------------------------------------------------------------------------------------
+	ErrGetGeneralHook    = NewHTTPError(6970, "获取 general hook 详情失败")
+	ErrListGeneralHook   = NewHTTPError(6971, "列出 general hook 失败")
+	ErrCreateGeneralHook = NewHTTPError(6972, "创建 general hook 失败")
+	ErrUpdateGeneralHook = NewHTTPError(6973, "更新 general hook 失败")
+	ErrDeleteGeneralHook = NewHTTPError(6974, "删除 general hook 失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// meego hook releated Error Range: 6980 - 6989
+	//-----------------------------------------------------------------------------------------------
+	ErrGetMeegoHook    = NewHTTPError(6980, "获取飞书 hook 详情失败")
+	ErrListMeegoHook   = NewHTTPError(6981, "列出飞书 hook 失败")
+	ErrCreateMeegoHook = NewHTTPError(6982, "创建飞书 hook 失败")
+	ErrUpdateMeegoHook = NewHTTPError(6983, "更新飞书 hook 失败")
+	ErrDeleteMeegoHook = NewHTTPError(6984, "删除飞书 hook 失败")
 )

@@ -194,6 +194,25 @@ const (
 	JobK8sGrayRelease       JobType = "k8s-gray-release"
 	JobK8sGrayRollback      JobType = "k8s-gray-rollback"
 	JobK8sPatch             JobType = "k8s-resource-patch"
+	JobIstioRelease         JobType = "istio-release"
+	JobIstioRollback        JobType = "istio-rollback"
+	JobJira                 JobType = "jira"
+	JobNacos                JobType = "nacos"
+	JobApollo               JobType = "apollo"
+	JobMeegoTransition      JobType = "meego-transition"
+)
+
+const (
+	ZadigIstioCopySuffix     = "zadig-copy"
+	ZadigLastAppliedImage    = "last-applied-image"
+	ZadigLastAppliedReplicas = "last-applied-replicas"
+)
+
+type ApprovalType string
+
+const (
+	NativeApproval ApprovalType = "native"
+	LarkApproval   ApprovalType = "lark"
 )
 
 type ApproveOrReject string

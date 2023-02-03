@@ -23,22 +23,31 @@ import (
 	"strings"
 	"time"
 
+	"github.com/pkg/errors"
+	"go.uber.org/zap"
+
 	"github.com/koderover/zadig/pkg/microservice/aslan/config"
 	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
 	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/instantmessage"
+	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/lark"
 	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
 	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/scmnotify"
 	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/workflowcontroller"
+	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow/job"
 	jobctl "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow/job"
+	"github.com/koderover/zadig/pkg/microservice/user/core"
+	"github.com/koderover/zadig/pkg/microservice/user/core/repository/orm"
 	"github.com/koderover/zadig/pkg/setting"
 	e "github.com/koderover/zadig/pkg/tool/errors"
+	larktool "github.com/koderover/zadig/pkg/tool/lark"
 	"github.com/koderover/zadig/pkg/tool/log"
 	s3tool "github.com/koderover/zadig/pkg/tool/s3"
 	"github.com/koderover/zadig/pkg/types"
 	jobspec "github.com/koderover/zadig/pkg/types/job"
 	"github.com/koderover/zadig/pkg/types/step"
 	stepspec "github.com/koderover/zadig/pkg/types/step"
-	"go.uber.org/zap"
 )
 
 type CreateTaskV4Resp struct {
@@ -171,12 +180,13 @@ type DistributeImageJobSpec struct {
 	DistributeTarget []*step.DistributeTaskTarget `bson:"distribute_target"            json:"distribute_target"`
 }
 
-func GetWorkflowv4Preset(encryptedKey, workflowName string, log *zap.SugaredLogger) (*commonmodels.WorkflowV4, error) {
+func GetWorkflowv4Preset(encryptedKey, workflowName, uid string, log *zap.SugaredLogger) (*commonmodels.WorkflowV4, error) {
 	workflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName)
 	if err != nil {
 		log.Errorf("cannot find workflow %s, the error is: %v", workflowName, err)
 		return nil, e.ErrFindWorkflow.AddDesc(err.Error())
 	}
+
 	for _, stage := range workflow.Stages {
 		for _, job := range stage.Jobs {
 			if err := jobctl.SetPreset(job, workflow); err != nil {
@@ -185,13 +195,64 @@ func GetWorkflowv4Preset(encryptedKey, workflowName string, log *zap.SugaredLogg
 			}
 		}
 	}
+
 	if err := ensureWorkflowV4Resp(encryptedKey, workflow, log); err != nil {
 		return workflow, err
 	}
 	return workflow, nil
 }
 
-func CreateWorkflowTaskV4(user string, workflow *commonmodels.WorkflowV4, log *zap.SugaredLogger) (*CreateTaskV4Resp, error) {
+func CheckWorkflowV4LarkApproval(workflowName, uid string, log *zap.SugaredLogger) error {
+	workflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName)
+	if err != nil {
+		log.Errorf("cannot find workflow %s, the error is: %v", workflowName, err)
+		return e.ErrFindWorkflow.AddErr(err)
+	}
+	userInfo, err := orm.GetUserByUid(uid, core.DB)
+	if err != nil || userInfo == nil {
+		return errors.New("failed to get user info by id")
+	}
+
+	for _, stage := range workflow.Stages {
+		if stage.Approval != nil && stage.Approval.Enabled && stage.Approval.Type == config.LarkApproval && stage.Approval.LarkApproval != nil {
+			cli, err := lark.GetLarkClientByIMAppID(stage.Approval.LarkApproval.ApprovalID)
+			if err != nil {
+				return errors.Errorf("failed to get lark app info by id-%s", stage.Approval.LarkApproval.ApprovalID)
+			}
+			_, err = cli.GetUserOpenIDByEmailOrMobile(larktool.QueryTypeMobile, userInfo.Phone)
+			if err != nil {
+				return e.ErrCheckLarkApprovalCreator.AddDesc(fmt.Sprintf("failed to get lark user info. lark app id: %s, phone: %s, error: %v", stage.Approval.LarkApproval.ApprovalID, userInfo.Phone, err))
+			}
+		}
+	}
+	return nil
+}
+
+type CreateWorkflowTaskV4Args struct {
+	Name   string
+	UserID string
+}
+
+func CreateWorkflowTaskV4ByBuildInTrigger(triggerName string, args *commonmodels.WorkflowV4, log *zap.SugaredLogger) (*CreateTaskV4Resp, error) {
+	resp := &CreateTaskV4Resp{
+		ProjectName:  args.Project,
+		WorkflowName: args.Name,
+	}
+	workflow, err := mongodb.NewWorkflowV4Coll().Find(args.Name)
+	if err != nil {
+		errMsg := fmt.Sprintf("cannot find workflow %s, the error is: %v", args.Name, err)
+		log.Error(errMsg)
+		return resp, e.ErrCreateTask.AddDesc(errMsg)
+	}
+	if err := job.MergeArgs(workflow, args); err != nil {
+		errMsg := fmt.Sprintf("merge workflow args error: %v", err)
+		log.Error(errMsg)
+		return resp, e.ErrCreateTask.AddDesc(errMsg)
+	}
+	return CreateWorkflowTaskV4(&CreateWorkflowTaskV4Args{Name: triggerName}, workflow, log)
+}
+
+func CreateWorkflowTaskV4(args *CreateWorkflowTaskV4Args, workflow *commonmodels.WorkflowV4, log *zap.SugaredLogger) (*CreateTaskV4Resp, error) {
 	resp := &CreateTaskV4Resp{
 		ProjectName:  workflow.Project,
 		WorkflowName: workflow.Name,
@@ -199,7 +260,19 @@ func CreateWorkflowTaskV4(user string, workflow *commonmodels.WorkflowV4, log *z
 	if err := LintWorkflowV4(workflow, log); err != nil {
 		return resp, err
 	}
+
 	workflowTask := &commonmodels.WorkflowTask{}
+
+	// if user info exists, get user email and put it to workflow task info
+	if args.UserID != "" {
+		userInfo, err := orm.GetUserByUid(args.UserID, core.DB)
+		if err != nil || userInfo == nil {
+			return resp, errors.New("failed to get user info by uid")
+		}
+		workflowTask.TaskCreatorEmail = userInfo.Email
+		workflowTask.TaskCreatorPhone = userInfo.Phone
+	}
+
 	// save workflow original workflow task args.
 	originTaskArgs := &commonmodels.WorkflowV4{}
 	if err := commonmodels.IToi(workflow, originTaskArgs); err != nil {
@@ -218,14 +291,14 @@ func CreateWorkflowTaskV4(user string, workflow *commonmodels.WorkflowV4, log *z
 		log.Errorf("RemoveFixedValueMarks error: %v", err)
 		return resp, e.ErrCreateTask.AddDesc(err.Error())
 	}
-	if err := jobctl.RenderGlobalVariables(workflow, nextTaskID, user); err != nil {
+	if err := jobctl.RenderGlobalVariables(workflow, nextTaskID, args.Name); err != nil {
 		log.Errorf("RenderGlobalVariables error: %v", err)
 		return resp, e.ErrCreateTask.AddDesc(err.Error())
 	}
 
 	workflowTask.TaskID = nextTaskID
-	workflowTask.TaskCreator = user
-	workflowTask.TaskRevoker = user
+	workflowTask.TaskCreator = args.Name
+	workflowTask.TaskRevoker = args.Name
 	workflowTask.CreateTime = time.Now().Unix()
 	workflowTask.WorkflowName = workflow.Name
 	workflowTask.WorkflowDisplayName = workflow.DisplayName
@@ -290,6 +363,10 @@ func CreateWorkflowTaskV4(user string, workflow *commonmodels.WorkflowV4, log *z
 
 	workflowTask.WorkflowArgs = workflow
 	workflowTask.Status = config.StatusCreated
+	workflowTask.StartTime = time.Now().Unix()
+	if err := instantmessage.NewWeChatClient().SendWorkflowTaskNotifications(workflowTask); err != nil {
+		log.Errorf("send workflow task notification failed, error: %v", err)
+	}
 
 	if err := workflowcontroller.CreateTask(workflowTask); err != nil {
 		log.Errorf("create workflow task error: %v", err)
@@ -335,6 +412,17 @@ func ListWorkflowTaskV4(workflowName string, pageNum, pageSize int64, logger *za
 	}
 	cleanWorkflowV4Tasks(resp)
 	return resp, total, nil
+}
+
+func getLatestWorkflowTaskV4(workflowName string) (*commonmodels.WorkflowTask, error) {
+	resp, err := commonrepo.NewworkflowTaskv4Coll().GetLatest(workflowName)
+	if err != nil {
+		return nil, err
+	}
+	resp.WorkflowArgs = nil
+	resp.OriginWorkflowArgs = nil
+	resp.Stages = nil
+	return resp, nil
 }
 
 // clean extra message for list workflow
@@ -800,7 +888,7 @@ func GetWorkflowV4ArtifactFileContent(workflowName, jobName string, taskID int64
 	if storage.Provider == setting.ProviderSourceAli {
 		forcedPathStyle = false
 	}
-	client, err := s3tool.NewClient(storage.Endpoint, storage.Ak, storage.Sk, storage.Insecure, forcedPathStyle)
+	client, err := s3tool.NewClient(storage.Endpoint, storage.Ak, storage.Sk, storage.Region, storage.Insecure, forcedPathStyle)
 	if err != nil {
 		log.Errorf("GetTestArtifactInfo Create S3 client err:%+v", err)
 		return []byte{}, fmt.Errorf("create S3 client err: %v", err)

@@ -23,19 +23,21 @@ import (
 	"strconv"
 	"time"
 
+	helmclient "github.com/mittwald/go-helm-client"
+	"github.com/pkg/errors"
+	"helm.sh/helm/v3/pkg/releaseutil"
+	appsv1 "k8s.io/api/apps/v1"
+	"k8s.io/apimachinery/pkg/labels"
+
 	configbase "github.com/koderover/zadig/pkg/config"
 	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/taskplugin/s3"
 	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
 	helmtool "github.com/koderover/zadig/pkg/tool/helmclient"
 	"github.com/koderover/zadig/pkg/tool/httpclient"
 	"github.com/koderover/zadig/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/pkg/tool/kube/label"
 	s3tool "github.com/koderover/zadig/pkg/tool/s3"
 	fsutil "github.com/koderover/zadig/pkg/util/fs"
-	helmclient "github.com/mittwald/go-helm-client"
-	"github.com/pkg/errors"
-	"helm.sh/helm/v3/pkg/releaseutil"
-	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/apimachinery/pkg/labels"
 
 	"go.uber.org/zap"
 	yaml "gopkg.in/yaml.v3"
@@ -190,7 +192,7 @@ func (p *ReleaseImagePlugin) Run(ctx context.Context, pipelineTask *task.Task, p
 	// 重置错误信息
 	p.Task.Error = ""
 
-	jobLabel := &JobLabel{
+	jobLabel := &label.JobLabel{
 		PipelineName: pipelineTask.PipelineName,
 		ServiceName:  serviceName,
 		TaskID:       pipelineTask.TaskID,
@@ -263,7 +265,7 @@ func (p *ReleaseImagePlugin) Wait(ctx context.Context) {
 			p.SetStatus(config.StatusPassed)
 		}
 	}()
-	status = waitJobEnd(ctx, p.TaskTimeout(), p.KubeNamespace, p.JobName, p.kubeClient, p.clientset, p.restConfig, p.Log)
+	status, err = waitJobEnd(ctx, p.TaskTimeout(), p.KubeNamespace, p.JobName, p.kubeClient, p.clientset, p.restConfig, p.Log)
 	distributeEndtime := time.Now().Unix()
 	for _, distribute := range p.Task.DistributeInfo {
 		distribute.DistributeEndTime = distributeEndtime
@@ -271,7 +273,7 @@ func (p *ReleaseImagePlugin) Wait(ctx context.Context) {
 	}
 	// if the distribution stage failed, then deploy part won't run
 	if status != config.StatusPassed {
-		err = errors.New("failed to distribute images to the repository")
+		err = errors.Errorf("failed to distribute images to the repository, err: %v", err)
 		return
 	}
 	// otherwise, run any deploy subtasks
@@ -776,7 +778,7 @@ DistributeLoop:
 
 // Complete ...
 func (p *ReleaseImagePlugin) Complete(ctx context.Context, pipelineTask *task.Task, serviceName string) {
-	jobLabel := &JobLabel{
+	jobLabel := &label.JobLabel{
 		PipelineName: pipelineTask.PipelineName,
 		ServiceName:  serviceName,
 		TaskID:       pipelineTask.TaskID,
@@ -926,7 +928,7 @@ func (p *ReleaseImagePlugin) downloadService(productName, serviceName, storageUR
 	if s3Storage.Provider == setting.ProviderSourceAli {
 		forcedPathStyle = false
 	}
-	s3Client, err := s3tool.NewClient(s3Storage.Endpoint, s3Storage.Ak, s3Storage.Sk, s3Storage.Insecure, forcedPathStyle)
+	s3Client, err := s3tool.NewClient(s3Storage.Endpoint, s3Storage.Ak, s3Storage.Sk, s3Storage.Region, s3Storage.Insecure, forcedPathStyle)
 	if err != nil {
 		p.Log.Errorf("failed to create s3 client, err: %s", err)
 		return "", err

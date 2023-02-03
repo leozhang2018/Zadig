@@ -156,6 +156,7 @@ const (
 	ProductLabel                    = "s-product"
 	GroupLabel                      = "s-group"
 	ServiceLabel                    = "s-service"
+	LabelHashKey                    = "hash"
 	ConfigBackupLabel               = "config-backup"
 	EnvNameLabel                    = "s-env"
 	UpdateBy                        = "update-by"
@@ -452,6 +453,12 @@ const (
 const (
 	// WebhookTaskCreator ...
 	WebhookTaskCreator = "webhook"
+	// JiraHookTaskCreator ...
+	JiraHookTaskCreator = "jira_hook"
+	// MeegoHookTaskCreator ...
+	MeegoHookTaskCreator = "meego_hook"
+	// GeneralHookTaskCreator ...
+	GeneralHookTaskCreator = "general_hook"
 	// CronTaskCreator ...
 	CronTaskCreator = "timer"
 	// DefaultTaskRevoker ...
@@ -559,9 +566,10 @@ const (
 	PathSearchComponentTag   = "tag"
 )
 
-// Aliyun specific stuff
+// host for multiple cloud provider
 const (
 	AliyunHost = ".aliyuncs.com"
+	AWSHost    = ".amazonaws.com"
 )
 
 // Dockerfile parsing consts
@@ -673,7 +681,8 @@ const (
 )
 
 const (
-	InformerNamingConvention = "%s-%s"
+	InformerNamingConvention      = "%s-%s"
+	IstioInformerNamingConvention = "%s-%s-istio"
 )
 
 type ResourceType string
@@ -733,4 +742,29 @@ const (
 const (
 	ServiceDeployStrategyImport = "import"
 	ServiceDeployStrategyDeploy = "deploy"
+)
+
+// Instant Message System types
+const (
+	IMLark     = "lark"
+	IMDingding = "dingding"
+)
+
+// lark app
+const (
+	LarkUserOpenID       = "open_id"
+	LarkDepartmentOpenID = "open_department_id"
+)
+
+// Project Management types
+const (
+	PMJira  = "jira"
+	PMLark  = "lark"
+	PMMeego = "meego"
+)
+
+// Workflow variable source type
+const (
+	VariableSourceRuntime = "runtime"
+	VariableSourceOther   = "other"
 )

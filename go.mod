@@ -33,6 +33,7 @@ require (
 	github.com/go-sql-driver/mysql v1.6.0
 	github.com/gogo/protobuf v1.3.2
 	github.com/golang-jwt/jwt v3.2.2+incompatible
+	github.com/golang/protobuf v1.5.2
 	github.com/google/go-github/v35 v35.3.0
 	github.com/google/uuid v1.3.0
 	github.com/gorilla/mux v1.8.0
@@ -44,6 +45,7 @@ require (
 	github.com/jasonlvhit/gocron v0.0.1
 	github.com/jinzhu/copier v0.3.5
 	github.com/jinzhu/now v1.1.5
+	github.com/larksuite/oapi-sdk-go/v3 v3.0.10
 	github.com/mholt/archiver v3.1.1+incompatible
 	github.com/mittwald/go-helm-client v0.11.3
 	github.com/moby/buildkit v0.10.4
@@ -55,6 +57,7 @@ require (
 	github.com/pkg/errors v0.9.1
 	github.com/regclient/regclient v0.4.5
 	github.com/rfyiamcool/cronlib v1.2.1
+	github.com/samber/lo v1.37.0
 	github.com/satori/go.uuid v1.2.0
 	github.com/shirou/gopsutil/v3 v3.22.8
 	github.com/spf13/cobra v1.5.0
@@ -68,7 +71,7 @@ require (
 	go.mongodb.org/mongo-driver v1.10.2
 	go.uber.org/zap v1.21.0
 	golang.org/x/crypto v0.0.0-20220722155217-630584e8d5aa
-	golang.org/x/net v0.0.0-20220805013720-a33c5aa5df48
+	golang.org/x/net v0.0.0-20220909164309-bea034e7d591
 	golang.org/x/oauth2 v0.0.0-20220722155238-128564f6959c
 	golang.org/x/sync v0.0.0-20220722155255-886fb9371eb4
 	gopkg.in/gomail.v2 v2.0.0-20160411212932-81ebce5c23df
@@ -78,8 +81,8 @@ require (
 	gorm.io/driver/mysql v1.3.6
 	gorm.io/gorm v1.23.8
 	helm.sh/helm/v3 v3.9.4
-	istio.io/api v0.0.0-20220304035241-8c47cbbea144
-	istio.io/client-go v0.0.0-20220304040955-30b642d5ba34
+	istio.io/api v0.0.0-20221109202042-b9e5d446a83d
+	istio.io/client-go v1.16.0
 	k8s.io/api v0.25.0
 	k8s.io/apiextensions-apiserver v0.25.0
 	k8s.io/apimachinery v0.25.0
@@ -151,7 +154,6 @@ require (
 	github.com/golang-jwt/jwt/v4 v4.4.2 // indirect
 	github.com/golang/glog v0.0.0-20160126235308-23def4e6c14b // indirect
 	github.com/golang/groupcache v0.0.0-20210331224755-41bb18bfe9da // indirect
-	github.com/golang/protobuf v1.5.2 // indirect
 	github.com/golang/snappy v0.0.3 // indirect
 	github.com/google/btree v1.0.1 // indirect
 	github.com/google/flatbuffers v1.12.1 // indirect
@@ -252,6 +254,7 @@ require (
 	go.starlark.net v0.0.0-20200306205701-8dd3e2ee1dd5 // indirect
 	go.uber.org/atomic v1.7.0 // indirect
 	go.uber.org/multierr v1.6.0 // indirect
+	golang.org/x/exp v0.0.0-20220303212507-bbda1eaf7a17 // indirect
 	golang.org/x/mod v0.6.0-dev.0.20220419223038-86c51ed26bb4 // indirect
 	golang.org/x/sys v0.0.0-20220731174439-a90be440212d // indirect
 	golang.org/x/term v0.0.0-20210927222741-03fcf44c2211 // indirect
@@ -269,7 +272,6 @@ require (
 	gopkg.in/ini.v1 v1.66.6 // indirect
 	gopkg.in/square/go-jose.v2 v2.6.0 // indirect
 	gopkg.in/tomb.v1 v1.0.0-20141024135613-dd632973f1e7 // indirect
-	istio.io/gogo-genproto v0.0.0-20210113155706-4daf5697332f // indirect
 	k8s.io/apiserver v0.25.0 // indirect
 	k8s.io/cli-runtime v0.25.0 // indirect
 	k8s.io/component-base v0.25.0 // indirect
