@@ -17,10 +17,12 @@ limitations under the License.
 package handler
 
 import (
+	"fmt"
+
 	"github.com/gin-gonic/gin"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/system/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func CreateOrUpdateDashboardConfiguration(c *gin.Context) {
@@ -51,10 +53,16 @@ func GetRunningWorkflow(c *gin.Context) {
 }
 
 func GetMyWorkflow(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = service.GetMyWorkflow(c.Request.Header, ctx.UserName, ctx.UserID, c.Query("card_id"), ctx.Logger)
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	ctx.Resp, ctx.Err = service.GetMyWorkflow(c.Request.Header, ctx.UserName, ctx.UserID, ctx.Resources.IsSystemAdmin, c.Query("card_id"), ctx.Logger)
 }
 
 func GetMyEnvironment(c *gin.Context) {

@@ -17,10 +17,12 @@ limitations under the License.
 package handler
 
 import (
+	"fmt"
+
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/systemconfig/core/features/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
+	"github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/features/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
 )
 
 type feature struct {
@@ -33,7 +35,12 @@ func GetFeature(c *gin.Context) {
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
 	name := c.Param("name")
-	enabled := service.Features.FeatureEnabled(service.Feature(name))
+	enabled, err := service.FeatureEnabled(name, ctx.Logger)
+
+	if err != nil {
+		ctx.Err = err
+		return
+	}
 
 	ctx.Resp = &feature{
 		Name:    c.Param("name"),
@@ -42,13 +49,25 @@ func GetFeature(c *gin.Context) {
 }
 
 func UpdateOrCreateFeature(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		ctx.UnAuthorized = true
+		return
+	}
 
 	req := new(service.FeatureReq)
 	if err := c.ShouldBindJSON(req); err != nil {
 		ctx.Err = err
 		return
 	}
-	ctx.Err = service.UpdateOrCreateFeature(req)
+	ctx.Err = service.UpdateOrCreateFeature(req, ctx.Logger)
 }

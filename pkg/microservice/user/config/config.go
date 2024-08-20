@@ -17,12 +17,13 @@ limitations under the License.
 package config
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/spf13/viper"
 
-	_ "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/setting"
+	_ "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 func init() {
@@ -53,6 +54,18 @@ func MysqlUserDB() string {
 	return viper.GetString(setting.ENVMysqlUserDB)
 }
 
+func MysqlDexDB() string {
+	return viper.GetString(setting.ENVMysqlDexDB)
+}
+
 func TokenExpiresAt() int {
 	return viper.GetInt(setting.ENVTokenExpiresAt)
+}
+
+func DecisionLogPath() string {
+	return fmt.Sprintf("/var/log/%s/decision.log", setting.ProductName)
+}
+
+func RedisUserTokenDB() int {
+	return viper.GetInt(setting.ENVRedisUserTokenDB)
 }

@@ -22,22 +22,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/koderover/zadig/pkg/tool/meego"
 	"github.com/pkg/errors"
 	"github.com/samber/lo"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/zap"
 
-	config2 "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	jira2 "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/jira"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/jira"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/tool/meego"
+
+	config2 "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	jira2 "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/jira"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/jira"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func ListProjectManagement(log *zap.SugaredLogger) ([]*models.ProjectManagement, error) {
@@ -53,6 +54,9 @@ func CreateProjectManagement(pm *models.ProjectManagement, log *zap.SugaredLogge
 	if err := checkType(pm.Type); err != nil {
 		return err
 	}
+	if _, err := mongodb.NewProjectManagementColl().GetBySystemIdentity(pm.SystemIdentity); err == nil {
+		return fmt.Errorf("can't set the same system identity")
+	}
 	if err := mongodb.NewProjectManagementColl().Create(pm); err != nil {
 		log.Errorf("Create project management error: %v", err)
 		return e.ErrCreateProjectManagement.AddErr(err)
@@ -63,6 +67,17 @@ func CreateProjectManagement(pm *models.ProjectManagement, log *zap.SugaredLogge
 func UpdateProjectManagement(idHex string, pm *models.ProjectManagement, log *zap.SugaredLogger) error {
 	if err := checkType(pm.Type); err != nil {
 		return err
+	}
+
+	var oldSystemIdentity string
+	oldPm, err := mongodb.NewProjectManagementColl().GetByID(idHex)
+	if err == nil {
+		oldSystemIdentity = oldPm.SystemIdentity
+	}
+	if oldPm.SystemIdentity != "" && pm.SystemIdentity != oldSystemIdentity {
+		if _, err := mongodb.NewProjectManagementColl().GetBySystemIdentity(pm.SystemIdentity); err == nil {
+			return fmt.Errorf("can't set the same system identity")
+		}
 	}
 	if err := mongodb.NewProjectManagementColl().UpdateByID(idHex, pm); err != nil {
 		log.Errorf("Update project management error: %v", err)
@@ -80,7 +95,7 @@ func DeleteProjectManagement(idHex string, log *zap.SugaredLogger) error {
 }
 
 func ValidateJira(info *models.ProjectManagement) error {
-	_, err := jira.NewJiraClient(info.JiraUser, info.JiraToken, info.JiraHost).Project.ListProjects()
+	_, err := jira.NewJiraClientWithAuthType(info.JiraHost, info.JiraUser, info.JiraToken, info.JiraPersonalAccessToken, info.JiraAuthType).Project.ListProjects()
 	if err != nil {
 		log.Errorf("Validate jira error: %v", err)
 		return e.ErrValidateProjectManagement.AddDesc("failed to validate jira")
@@ -108,30 +123,215 @@ func ValidateMeego(info *models.ProjectManagement) error {
 	return nil
 }
 
-func ListJiraProjects() ([]string, error) {
-	info, err := mongodb.NewProjectManagementColl().GetJira()
+type JiraProjectResp struct {
+	Name string `json:"name"`
+	Key  string `json:"key"`
+}
+
+func ListJiraProjects(id string) ([]JiraProjectResp, error) {
+	info, err := mongodb.NewProjectManagementColl().GetJiraByID(id)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return jira.NewJiraClient(info.JiraUser, info.JiraToken, info.JiraHost).Project.ListProjects()
+
+	list, err := jira.NewJiraClientWithAuthType(info.JiraHost, info.JiraUser, info.JiraToken, info.JiraPersonalAccessToken, info.JiraAuthType).Project.ListProjects()
+	if err != nil {
+		return nil, err
+	}
+
+	var resp []JiraProjectResp
+	for _, project := range list {
+		resp = append(resp, JiraProjectResp{
+			Name: project.Name,
+			Key:  project.Key,
+		})
+	}
+	return resp, nil
 }
 
-func GetJiraTypes(project string) ([]*jira.IssueTypeWithStatus, error) {
-	info, err := mongodb.NewProjectManagementColl().GetJira()
+type JiraBoardResp struct {
+	ID   int    `json:"id"`
+	Name string `json:"name"`
+	Type string `json:"type"`
+}
+
+func ListJiraBoards(id, projectKey string) ([]JiraBoardResp, error) {
+	info, err := mongodb.NewProjectManagementColl().GetJiraByID(id)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
 		}
 		return nil, err
 	}
-	return jira.NewJiraClient(info.JiraUser, info.JiraToken, info.JiraHost).Issue.GetTypes(project)
+
+	boards, err := jira.NewJiraClientWithAuthType(info.JiraHost, info.JiraUser, info.JiraToken, info.JiraPersonalAccessToken, info.JiraAuthType).Board.ListBoards(projectKey, "scrum")
+	if err != nil {
+		return nil, err
+	}
+
+	var resp []JiraBoardResp
+	for _, board := range boards {
+		resp = append(resp, JiraBoardResp{
+			ID:   board.ID,
+			Name: board.Name,
+			Type: board.Type,
+		})
+	}
+	return resp, nil
 }
 
-func SearchJiraIssues(project, _type, status, summary string, ne bool) ([]*jira.Issue, error) {
-	info, err := mongodb.NewProjectManagementColl().GetJira()
+type JiraSprintResp struct {
+	ID            int       `json:"id,omitempty"`
+	State         string    `json:"state,omitempty"`
+	Name          string    `json:"name,omitempty"`
+	StartDate     time.Time `json:"startDate,omitempty"`
+	EndDate       time.Time `json:"endDate,omitempty"`
+	CompleteDate  time.Time `json:"completeDate,omitempty"`
+	OriginBoardID int       `json:"originBoardId,omitempty"`
+}
+
+func ListJiraSprints(id string, boardID int) ([]JiraSprintResp, error) {
+	info, err := mongodb.NewProjectManagementColl().GetJiraByID(id)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	sprints, err := jira.NewJiraClientWithAuthType(info.JiraHost, info.JiraUser, info.JiraToken, info.JiraPersonalAccessToken, info.JiraAuthType).Sprint.ListSprints(boardID, "")
+	if err != nil {
+		return nil, err
+	}
+
+	var resp []JiraSprintResp
+	for _, sprint := range sprints {
+		resp = append(resp, JiraSprintResp{
+			ID:            sprint.ID,
+			State:         sprint.State,
+			Name:          sprint.Name,
+			StartDate:     sprint.StartDate,
+			EndDate:       sprint.EndDate,
+			CompleteDate:  sprint.CompleteDate,
+			OriginBoardID: sprint.OriginBoardID,
+		})
+	}
+	return resp, nil
+}
+
+func GetJiraSprint(id string, sprintID int) (*JiraSprintResp, error) {
+	info, err := mongodb.NewProjectManagementColl().GetJiraByID(id)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	sprint, err := jira.NewJiraClientWithAuthType(info.JiraHost, info.JiraUser, info.JiraToken, info.JiraPersonalAccessToken, info.JiraAuthType).Sprint.GetSrpint(sprintID)
+	if err != nil {
+		return nil, err
+	}
+
+	resp := &JiraSprintResp{
+		ID:            sprint.ID,
+		State:         sprint.State,
+		Name:          sprint.Name,
+		StartDate:     sprint.StartDate,
+		EndDate:       sprint.EndDate,
+		CompleteDate:  sprint.CompleteDate,
+		OriginBoardID: sprint.OriginBoardID,
+	}
+	return resp, nil
+}
+
+type JiraSprintIssuesResp struct {
+	SprintID      int    `json:"sprintID"`
+	Name          string `json:"name"`
+	StartDate     int64  `json:"startDate"`
+	EndDate       int64  `json:"endDate"`
+	New           int    `json:"new"`
+	Indeterminate int    `json:"indeterminate"`
+	Done          int    `json:"done"`
+}
+
+func ListJiraSprintIssues(id string, sprintID int) (*JiraSprintIssuesResp, error) {
+	info, err := mongodb.NewProjectManagementColl().GetJiraByID(id)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	sprintSerivce := jira.NewJiraClientWithAuthType(info.JiraHost, info.JiraUser, info.JiraToken, info.JiraPersonalAccessToken, info.JiraAuthType).Sprint
+
+	resp := &JiraSprintIssuesResp{}
+	sprint, err := sprintSerivce.GetSrpint(sprintID)
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sprint, sprintID: %v, err: %v", sprintID, err)
+	}
+	resp.SprintID = sprint.ID
+	resp.Name = sprint.Name
+	resp.StartDate = sprint.StartDate.Unix()
+	resp.EndDate = sprint.EndDate.Unix()
+
+	issues, err := sprintSerivce.ListSprintIssues(sprintID, "status")
+	if err != nil {
+		return nil, fmt.Errorf("failed to get sprint issues, srpintID: %v, err: %v", sprintID, err)
+	}
+
+	for _, issue := range issues {
+		if issue.Fields == nil {
+			continue
+		}
+		if issue.Fields.Status == nil {
+			continue
+		}
+		if issue.Fields.Status.StatusCategory == nil {
+			continue
+		}
+
+		switch issue.Fields.Status.StatusCategory.Key {
+		case "new":
+			resp.New++
+		case "indeterminate":
+			resp.Indeterminate++
+		case "done":
+			resp.Done++
+		}
+	}
+
+	return resp, nil
+}
+
+func GetJiraTypes(id, project string) ([]*jira.IssueTypeWithStatus, error) {
+	info, err := mongodb.NewProjectManagementColl().GetJiraByID(id)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return jira.NewJiraClientWithAuthType(info.JiraHost, info.JiraUser, info.JiraToken, info.JiraPersonalAccessToken, info.JiraAuthType).Issue.GetTypes(project)
+}
+
+func GetJiraAllStatus(id, project string) ([]string, error) {
+	info, err := mongodb.NewProjectManagementColl().GetJiraByID(id)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return jira.NewJiraClientWithAuthType(info.JiraHost, info.JiraUser, info.JiraToken, info.JiraPersonalAccessToken, info.JiraAuthType).Project.ListAllStatues(project)
+}
+
+func SearchJiraIssues(id, project, _type, status, summary string, ne bool) ([]*jira.Issue, error) {
+	info, err := mongodb.NewProjectManagementColl().GetJiraByID(id)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
@@ -156,7 +356,22 @@ func SearchJiraIssues(project, _type, status, summary string, ne bool) ([]*jira.
 		}
 	}
 	// Search all results only if the summary query exist
-	return jira.NewJiraClient(info.JiraUser, info.JiraToken, info.JiraHost).Issue.SearchByJQL(strings.Join(jql, " AND "), summary != "")
+	return jira.NewJiraClientWithAuthType(info.JiraHost, info.JiraUser, info.JiraToken, info.JiraPersonalAccessToken, info.JiraAuthType).Issue.SearchByJQL(strings.Join(jql, " AND "), summary != "")
+}
+
+func SearchJiraProjectIssuesWithJQL(id, project, jql, summary string) ([]*jira.Issue, error) {
+	info, err := mongodb.NewProjectManagementColl().GetJiraByID(id)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+	jql = fmt.Sprintf(`project = "%s" AND (%s)`, project, jql)
+	if summary != "" {
+		jql += fmt.Sprintf(` AND summary ~ "%s"`, summary)
+	}
+	return jira.NewJiraClientWithAuthType(info.JiraHost, info.JiraUser, info.JiraToken, info.JiraPersonalAccessToken, info.JiraAuthType).Issue.SearchByJQL(jql, true)
 }
 
 func HandleJiraHookEvent(workflowName, hookName string, event *jira.Event, logger *zap.SugaredLogger) error {
@@ -276,7 +491,7 @@ func HandleMeegoHookEvent(workflowName, hookName string, event *meego.GeneralWeb
 		"hook", hookName,
 	).Infof("HandleMeegoHookEvent: create workflow success")
 	go func() {
-		meegoInfo, err := mongodb.NewProjectManagementColl().GetMeego()
+		meegoInfo, err := mongodb.NewProjectManagementColl().GetMeegoByID(meegoHook.MeegoID)
 		if err != nil {
 			log.Errorf("failed to get meego info to create comment, error: %s", err)
 			return
@@ -328,9 +543,7 @@ func HandleMeegoHookEvent(workflowName, hookName string, event *meego.GeneralWeb
 
 func checkType(_type string) error {
 	switch _type {
-	case setting.PMJira:
-	case setting.PMLark:
-	case setting.PMMeego:
+	case setting.PMJira, setting.PMMeego, setting.PMLark:
 	default:
 		return errors.New("invalid pm type")
 	}

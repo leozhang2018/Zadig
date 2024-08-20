@@ -17,21 +17,51 @@ limitations under the License.
 package handler
 
 import (
-	"github.com/gin-gonic/gin"
+	"fmt"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/environment/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
+	"github.com/gin-gonic/gin"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/environment/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 func ListProductsRevision(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
-	// trigger by cron service
-	trigger := c.Query("basicFacility")
-	deployType := c.Query("deployType")
-	if trigger != "" || deployType != "" {
-		ctx.Resp, ctx.Err = service.ListProductsRevisionByOption(trigger, deployType, ctx.Logger)
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
 		return
 	}
-	ctx.Resp, ctx.Err = service.ListProductsRevision(c.Query("projectName"), c.Query("envName"), ctx.Logger)
+
+	projectKey := c.Query("projectName")
+	envName := c.Query("envName")
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Env.View {
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionView)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	ctx.Resp, ctx.Err = service.ListProductsRevision(projectKey, envName, false, ctx.Logger)
+}
+
+// ListProductsRevisionSnaps called from cron service
+func ListProductsRevisionSnaps(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	ctx.Resp, ctx.Err = service.ListProductSnapsByOption(c.Query("deployType"), ctx.Logger)
+	return
 }

@@ -26,14 +26,14 @@ import (
 	"github.com/xanzy/go-gitlab"
 	"go.uber.org/zap"
 
-	jiraservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/jira"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	wdgithub "github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/taskplugin/github"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/jira"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/util"
+	jiraservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/jira"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	wdgithub "github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/taskplugin/github"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/jira"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 // InitializeJiraTaskPlugin to init plugin
@@ -251,7 +251,7 @@ func (p *JiraPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipelineC
 			// 2. parse all commits
 			if len(build.PRs) > 0 {
 				for _, pr := range build.PRs {
-					commits, err := gh.ListCommits(context.TODO(), build.RepoOwner, build.RepoName, pr, nil)
+					commits, err := gh.ListCommitsForPR(context.TODO(), build.RepoOwner, build.RepoName, pr, nil)
 					if err != nil {
 						p.Log.Errorf("github ListCommits [%s/%s:%d] error: %v", build.RepoOwner, build.RepoName, pr, err)
 						p.Task.TaskStatus = config.StatusSkipped
@@ -397,7 +397,7 @@ func (p *JiraPlugin) getJiraIssue(pipelineTask *task.Task, key string) (*task.Ji
 	if err != nil {
 		return nil, fmt.Errorf("getJiraInfo [%s] error: %v", key, err)
 	}
-	jiraCli := jira.NewJiraClient(jiraInfo.User, jiraInfo.AccessToken, jiraInfo.Host)
+	jiraCli := jira.NewJiraClientWithAuthType(jiraInfo.Host, jiraInfo.User, jiraInfo.AccessToken, jiraInfo.PersonalAccessToken, jiraInfo.AuthType)
 	issue, err := jiraCli.Issue.GetByKeyOrID(key, "")
 	if err != nil {
 		return jiraIssue, fmt.Errorf("GetIssueByKeyOrID [%s] error: %v", key, err)

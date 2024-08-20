@@ -21,10 +21,10 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type Workflow struct {
@@ -74,6 +74,7 @@ type WorkflowHook struct {
 	MainRepo            *MainHookRepo     `bson:"main_repo"                 json:"main_repo"`
 	WorkflowArgs        *WorkflowTaskArgs `bson:"workflow_args"             json:"workflow_args"`
 	IsYaml              bool              `bson:"is_yaml,omitempty"         json:"is_yaml,omitempty"`
+	IsManual            bool              `bson:"is_manual,omitempty"       json:"is_manual,omitempty"`
 	YamlPath            string            `bson:"yaml_path,omitempty"       json:"yaml_path,omitempty"`
 }
 
@@ -116,18 +117,21 @@ type ScheduleCtrl struct {
 }
 
 type Schedule struct {
-	ID             primitive.ObjectID  `bson:"_id,omitempty"                 json:"id,omitempty"`
-	Number         uint64              `bson:"number"                        json:"number"`
-	Frequency      string              `bson:"frequency"                     json:"frequency"`
-	Time           string              `bson:"time"                          json:"time"`
-	MaxFailures    int                 `bson:"max_failures,omitempty"        json:"max_failures,omitempty"`
-	TaskArgs       *TaskArgs           `bson:"task_args,omitempty"           json:"task_args,omitempty"`
-	WorkflowArgs   *WorkflowTaskArgs   `bson:"workflow_args,omitempty"       json:"workflow_args,omitempty"`
-	TestArgs       *TestTaskArgs       `bson:"test_args,omitempty"           json:"test_args,omitempty"`
-	WorkflowV4Args *WorkflowV4         `bson:"workflow_v4_args"              json:"workflow_v4_args"`
-	Type           config.ScheduleType `bson:"type"                          json:"type"`
-	Cron           string              `bson:"cron"                          json:"cron"`
-	IsModified     bool                `bson:"-"                             json:"-"`
+	ID              primitive.ObjectID  `bson:"_id,omitempty"                 json:"id,omitempty"`
+	Number          uint64              `bson:"number"                        json:"number"`
+	Frequency       string              `bson:"frequency"                     json:"frequency"`
+	Time            string              `bson:"time"                          json:"time"`
+	MaxFailures     int                 `bson:"max_failures,omitempty"        json:"max_failures,omitempty"`
+	TaskArgs        *TaskArgs           `bson:"task_args,omitempty"           json:"task_args,omitempty"`
+	WorkflowArgs    *WorkflowTaskArgs   `bson:"workflow_args,omitempty"       json:"workflow_args,omitempty"`
+	TestArgs        *TestTaskArgs       `bson:"test_args,omitempty"           json:"test_args,omitempty"`
+	WorkflowV4Args  *WorkflowV4         `bson:"workflow_v4_args"              json:"workflow_v4_args"`
+	EnvAnalysisArgs *EnvArgs            `bson:"env_analysis_args,omitempty"   json:"env_analysis_args,omitempty"`
+	EnvArgs         *EnvArgs            `bson:"env_args,omitempty"            json:"env_args,omitempty"`
+	ReleasePlanArgs *ReleasePlanArgs    `bson:"release_plan_args,omitempty"   json:"release_plan_args,omitempty"`
+	Type            config.ScheduleType `bson:"type"                          json:"type"`
+	Cron            string              `bson:"cron"                          json:"cron"`
+	IsModified      bool                `bson:"-"                             json:"-"`
 	// 自由编排工作流的开关是放在schedule里面的
 	Enabled bool `bson:"enabled"                       json:"enabled"`
 }
@@ -183,6 +187,7 @@ type WorkflowTaskArgs struct {
 	// webhook触发工作流任务时，触发任务的repo信息、prID和commitID、分支信息
 	MergeRequestID string `bson:"merge_request_id" json:"merge_request_id"`
 	Ref            string `bson:"ref" json:"ref"`
+	EventType      string `bson:"event_type" json:"event_type"`
 	CommitID       string `bson:"commit_id"        json:"commit_id"`
 	Source         string `bson:"source"           json:"source"`
 	CodehostID     int    `bson:"codehost_id"      json:"codehost_id"`
@@ -230,6 +235,8 @@ type TestTaskArgs struct {
 	RepoNamespace  string `bson:"repo_namespace"   json:"repo_namespace"`
 	RepoName       string `bson:"repo_name"        json:"repo_name"`
 	Ref            string `bson:"ref" json:"ref"`
+	Branch         string `bson:"branch" json:"branch"`
+	EventType      string `bson:"event_type" json:"event_type"`
 }
 
 type Slack struct {
@@ -319,16 +326,23 @@ type ProductDistribute struct {
 }
 
 type NotifyCtl struct {
-	Enabled         bool     `bson:"enabled"                       yaml:"enabled"                       json:"enabled"`
-	WebHookType     string   `bson:"webhook_type"                  yaml:"webhook_type"                  json:"webhook_type"`
-	WeChatWebHook   string   `bson:"weChat_webHook,omitempty"      yaml:"weChat_webHook,omitempty"      json:"weChat_webHook,omitempty"`
-	DingDingWebHook string   `bson:"dingding_webhook,omitempty"    yaml:"dingding_webhook,omitempty"    json:"dingding_webhook,omitempty"`
-	FeiShuWebHook   string   `bson:"feishu_webhook,omitempty"      yaml:"feishu_webhook,omitempty"      json:"feishu_webhook,omitempty"`
-	AtMobiles       []string `bson:"at_mobiles,omitempty"          yaml:"at_mobiles,omitempty"          json:"at_mobiles,omitempty"`
-	WechatUserIDs   []string `bson:"wechat_user_ids,omitempty"     yaml:"wechat_user_ids,omitempty"     json:"wechat_user_ids,omitempty"`
-	LarkUserIDs     []string `bson:"lark_user_ids,omitempty"       yaml:"lark_user_ids,omitempty"       json:"lark_user_ids,omitempty"`
-	IsAtAll         bool     `bson:"is_at_all,omitempty"           yaml:"is_at_all,omitempty"           json:"is_at_all,omitempty"`
-	NotifyTypes     []string `bson:"notify_type"                   yaml:"notify_type"                   json:"notify_type"`
+	Enabled         bool                      `bson:"enabled"                       yaml:"enabled"                       json:"enabled"`
+	WebHookType     setting.NotifyWebHookType `bson:"webhook_type"                  yaml:"webhook_type"                  json:"webhook_type"`
+	WeChatWebHook   string                    `bson:"weChat_webHook,omitempty"      yaml:"weChat_webHook,omitempty"      json:"weChat_webHook,omitempty"`
+	DingDingWebHook string                    `bson:"dingding_webhook,omitempty"    yaml:"dingding_webhook,omitempty"    json:"dingding_webhook,omitempty"`
+	FeiShuWebHook   string                    `bson:"feishu_webhook,omitempty"      yaml:"feishu_webhook,omitempty"      json:"feishu_webhook,omitempty"`
+	MailUsers       []*User                   `bson:"mail_users,omitempty"          yaml:"mail_users,omitempty"          json:"mail_users,omitempty"`
+	WebHookNotify   WebhookNotify             `bson:"webhook_notify,omitempty"      yaml:"webhook_notify,omitempty"      json:"webhook_notify,omitempty"`
+	AtMobiles       []string                  `bson:"at_mobiles,omitempty"          yaml:"at_mobiles,omitempty"          json:"at_mobiles,omitempty"`
+	WechatUserIDs   []string                  `bson:"wechat_user_ids,omitempty"     yaml:"wechat_user_ids,omitempty"     json:"wechat_user_ids,omitempty"`
+	LarkUserIDs     []string                  `bson:"lark_user_ids,omitempty"       yaml:"lark_user_ids,omitempty"       json:"lark_user_ids,omitempty"`
+	IsAtAll         bool                      `bson:"is_at_all,omitempty"           yaml:"is_at_all,omitempty"           json:"is_at_all,omitempty"`
+	NotifyTypes     []string                  `bson:"notify_type"                   yaml:"notify_type"                   json:"notify_type"`
+}
+
+type WebhookNotify struct {
+	Address string `bson:"address"       yaml:"address"        json:"address"`
+	Token   string `bson:"token"         yaml:"token"          json:"token"`
 }
 
 type TaskInfo struct {
@@ -370,6 +384,7 @@ type HookPayload struct {
 	CommitID       string `bson:"commit_id"        json:"commit_id,omitempty"`
 	DeliveryID     string `bson:"delivery_id"      json:"delivery_id,omitempty"`
 	CodehostID     int    `bson:"codehost_id"      json:"codehost_id"`
+	EventType      string `bson:"event_type"       json:"event_type"`
 }
 
 type TargetArgs struct {

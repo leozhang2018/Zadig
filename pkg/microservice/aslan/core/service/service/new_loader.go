@@ -23,17 +23,16 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	templaterepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/git"
-	githubservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/github"
-	gitlabservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/gitlab"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/git"
+	githubservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/github"
+	gitlabservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/gitlab"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 func preloadService(ch *systemconfig.CodeHost, owner, repo, branch, path string, isDir bool, logger *zap.SugaredLogger) ([]string, error) {
@@ -95,14 +94,8 @@ type serviceInfo struct {
 	yamls []string
 }
 
-func loadService(username string, ch *systemconfig.CodeHost, owner, namespace, repo, branch string, args *LoadServiceReq, force bool, logger *zap.SugaredLogger) error {
+func loadService(username string, ch *systemconfig.CodeHost, owner, namespace, repo, branch string, args *LoadServiceReq, force, production bool, logger *zap.SugaredLogger) error {
 	logger.Infof("Loading service from %s with owner %s, namespace %s, repo %s, branch %s and path %s", ch.Type, owner, namespace, repo, branch, args.LoadPath)
-
-	project, err := templaterepo.NewProductColl().Find(args.ProductName)
-	if err != nil {
-		log.Errorf("Failed to find project %s, err: %s", args.ProductName, err)
-		return e.ErrLoadServiceTemplate.AddErr(err)
-	}
 
 	loader, err := getLoader(ch)
 	if err != nil {
@@ -161,10 +154,6 @@ func loadService(username string, ch *systemconfig.CodeHost, owner, namespace, r
 
 		serviceName := getFileName(info.path)
 
-		if _, ok := project.SharedServiceInfoMap()[serviceName]; ok {
-			return e.ErrInvalidParam.AddDesc(fmt.Sprintf("A service with same name %s is already existing", serviceName))
-		}
-
 		commit, err := loader.GetLatestRepositoryCommit(namespace, repo, info.path, branch)
 		if err != nil {
 			logger.Errorf("Failed to get latest commit under path %s, error: %s", info.path, err)
@@ -194,7 +183,7 @@ func loadService(username string, ch *systemconfig.CodeHost, owner, namespace, r
 			Commit:        &models.Commit{SHA: commit.SHA, Message: commit.Message},
 			Visibility:    args.Visibility,
 		}
-		_, err = CreateServiceTemplate(username, createSvcArgs, force, logger)
+		_, err = CreateServiceTemplate(username, createSvcArgs, force, production, logger)
 		if err != nil {
 			logger.Errorf("Failed to create service template, err: %s", err)
 			_, messageMap := e.ErrorMessage(err)

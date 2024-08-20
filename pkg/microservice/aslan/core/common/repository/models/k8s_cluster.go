@@ -20,8 +20,8 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	corev1 "k8s.io/api/core/v1"
 
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type K8SCluster struct {
@@ -69,10 +69,22 @@ type K8SClusterInfo struct {
 }
 
 type AdvancedConfig struct {
-	Strategy     string                     `json:"strategy,omitempty"       bson:"strategy,omitempty"`
-	NodeLabels   []*NodeSelectorRequirement `json:"node_labels,omitempty"    bson:"node_labels,omitempty"`
-	ProjectNames []string                   `json:"-"                        bson:"-"`
-	Tolerations  string                     `json:"tolerations"              bson:"tolerations"`
+	Strategy          string                     `json:"strategy,omitempty"       bson:"strategy,omitempty"`
+	NodeLabels        []*NodeSelectorRequirement `json:"node_labels,omitempty"    bson:"node_labels,omitempty"`
+	ProjectNames      []string                   `json:"-"                        bson:"-"`
+	Tolerations       string                     `json:"tolerations"              bson:"tolerations"`
+	ClusterAccessYaml string                     `json:"cluster_access_yaml"      bson:"cluster_access_yaml"`
+	ScheduleWorkflow  bool                       `json:"schedule_workflow"        bson:"schedule_workflow"`
+	ScheduleStrategy  []*ScheduleStrategy        `json:"schedule_strategy"        bson:"schedule_strategy"`
+}
+
+type ScheduleStrategy struct {
+	StrategyID   string                     `json:"strategy_id"   bson:"strategy_id"`
+	StrategyName string                     `json:"strategy_name" bson:"strategy_name"`
+	Strategy     string                     `json:"strategy"      bson:"strategy"`
+	NodeLabels   []*NodeSelectorRequirement `json:"node_labels"   bson:"node_labels"`
+	Tolerations  string                     `json:"tolerations"   bson:"tolerations"`
+	Default      bool                       `json:"default"       bson:"default"`
 }
 
 type NodeSelectorRequirement struct {

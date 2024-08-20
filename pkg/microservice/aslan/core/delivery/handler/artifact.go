@@ -23,16 +23,30 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	deliveryservice "github.com/koderover/zadig/pkg/microservice/aslan/core/delivery/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	deliveryservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/delivery/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func ListDeliveryArtifacts(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.DeliveryCenter.ViewArtifact {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	args := new(commonrepo.DeliveryArtifactArgs)
 	args.Type = c.Query("type")
@@ -46,7 +60,6 @@ func ListDeliveryArtifacts(c *gin.Context) {
 	perPageStr := c.Query("per_page")
 	pageStr := c.Query("page")
 	var (
-		err     error
 		perPage int
 		page    int
 	)
@@ -78,8 +91,23 @@ func ListDeliveryArtifacts(c *gin.Context) {
 }
 
 func GetDeliveryArtifactIDByImage(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.DeliveryCenter.ViewArtifact {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	image := c.Query("image")
 	if image == "" {
@@ -94,8 +122,23 @@ func GetDeliveryArtifactIDByImage(c *gin.Context) {
 }
 
 func GetDeliveryArtifact(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.DeliveryCenter.ViewArtifact {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	id := c.Param("id")
 	if id == "" {
@@ -109,48 +152,24 @@ func GetDeliveryArtifact(c *gin.Context) {
 	ctx.Resp, ctx.Err = deliveryservice.GetDeliveryArtifact(args, ctx.Logger)
 }
 
-func CreateDeliveryArtifacts(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
-	defer func() { internalhandler.JSONResponse(c, ctx) }()
-
-	var deliveryArtifactInfo deliveryservice.DeliveryArtifactInfo
-	if err := c.ShouldBindWith(&deliveryArtifactInfo, binding.JSON); err != nil {
-		ctx.Logger.Infof("ShouldBindWith err :%v", err)
-		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
-		return
-	}
-
-	ctx.Resp, ctx.Err = deliveryservice.InsertDeliveryArtifact(&deliveryArtifactInfo, ctx.Logger)
-}
-
-type deliveryArtifactUpdate struct {
-	ImageHash   string `json:"image_hash"`
-	ImageDigest string `json:"image_digest"`
-	ImageTag    string `json:"image_tag"`
-}
-
-func UpdateDeliveryArtifact(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
-	defer func() { internalhandler.JSONResponse(c, ctx) }()
-
-	ID := c.Param("id")
-	if ID == "" {
-		ctx.Err = e.ErrInvalidParam.AddDesc("id can't be empty!")
-		return
-	}
-
-	var deliveryArtifactUpdate deliveryArtifactUpdate
-	if err := c.ShouldBindWith(&deliveryArtifactUpdate, binding.JSON); err != nil {
-		ctx.Logger.Infof("ShouldBindWith err :%v", err)
-		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
-		return
-	}
-	ctx.Err = deliveryservice.UpdateDeliveryArtifact(&commonrepo.DeliveryArtifactArgs{ID: ID, ImageHash: deliveryArtifactUpdate.ImageHash, ImageDigest: deliveryArtifactUpdate.ImageDigest, ImageTag: deliveryArtifactUpdate.ImageTag}, ctx.Logger)
-}
-
 func CreateDeliveryActivities(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.DeliveryCenter.ViewArtifact {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	var deliveryActivity commonmodels.DeliveryActivity
 	if err := c.ShouldBindWith(&deliveryActivity, binding.JSON); err != nil {

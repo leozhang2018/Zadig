@@ -28,13 +28,13 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	krkubeclient "github.com/koderover/zadig/pkg/tool/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/label"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	krkubeclient "github.com/koderover/zadig/v2/pkg/tool/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/label"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
 )
 
 // DockerBuildPlugin Plugin name should be compatible with task type
@@ -48,6 +48,7 @@ type DockerBuildPlugin struct {
 	restConfig    *rest.Config
 	Task          *task.DockerBuild
 	Log           *zap.SugaredLogger
+	Timeout       <-chan time.Time
 }
 
 func (p *DockerBuildPlugin) SetAckFunc(func()) {
@@ -203,7 +204,7 @@ func (p *DockerBuildPlugin) Run(ctx context.Context, pipelineTask *task.Task, pi
 		return
 	}
 
-	job, err := buildJob(p.Type(), pipelineTask.ConfigPayload.Release.PredatorImage, p.JobName, serviceName, "", pipelineTask.ConfigPayload.Build.KubeNamespace, setting.MinRequest, setting.MinRequestSpec, pipelineCtx, pipelineTask, []*task.RegistryNamespace{})
+	job, err := buildJob(p.Type(), pipelineTask.ConfigPayload.Release.PredatorImage, p.JobName, serviceName, "", "", pipelineTask.ConfigPayload.Build.KubeNamespace, setting.MinRequest, setting.MinRequestSpec, pipelineCtx, pipelineTask, []*task.RegistryNamespace{})
 	if err != nil {
 		msg := fmt.Sprintf("create build job context error: %v", err)
 		p.Log.Error(msg)
@@ -221,11 +222,12 @@ func (p *DockerBuildPlugin) Run(ctx context.Context, pipelineTask *task.Task, pi
 		p.Task.Error = msg
 		return
 	}
+	p.Timeout = time.After(time.Duration(p.TaskTimeout()) * time.Second)
 }
 
 // Wait ...
 func (p *DockerBuildPlugin) Wait(ctx context.Context) {
-	status, err := waitJobEnd(ctx, p.TaskTimeout(), p.KubeNamespace, p.JobName, p.kubeClient, p.clientset, p.restConfig, p.Log)
+	status, err := waitJobEnd(ctx, p.TaskTimeout(), p.Timeout, p.KubeNamespace, p.JobName, p.kubeClient, p.clientset, p.restConfig, p.Log)
 	p.SetStatus(status)
 	if err != nil {
 		p.Task.Error = err.Error()

@@ -19,20 +19,20 @@ package handler
 import (
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/system/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
 )
 
 func ListNacosNamespace(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = service.ListNacosNamespace(c.Param("nacosID"), ctx.Logger)
+	ctx.Resp, ctx.Err = commonservice.ListNacosNamespace(c.Param("nacosID"), ctx.Logger)
 }
 
 func ListNacosConfig(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = service.ListNacosConfig(c.Param("nacosID"), c.Param("nacosNamespaceID"), ctx.Logger)
+	ctx.Resp, ctx.Err = commonservice.ListNacosConfig(c.Param("nacosID"), c.Param("nacosNamespaceID"), ctx.Logger)
 }

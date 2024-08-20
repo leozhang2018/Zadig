@@ -26,11 +26,11 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/koderover/zadig/pkg/microservice/reaper/core/service/meta"
-	"github.com/koderover/zadig/pkg/microservice/reaper/internal/s3"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/core/service/meta"
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/internal/s3"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
 )
 
 type WorkspaceAchiever struct {
@@ -226,7 +226,7 @@ func (c *WorkspaceAchiever) Achieve(target string) ([]string, error) {
 	//	return err
 	//}
 
-	if store, err := s3.NewS3StorageFromEncryptedURI(c.StorageURI, c.aesKey); err == nil {
+	if store, err := s3.UnmarshalNewS3StorageFromEncrypted(c.StorageURI, c.aesKey); err == nil {
 		forcedPathStyle := true
 		if store.Provider == setting.ProviderSourceAli {
 			forcedPathStyle = false

@@ -20,12 +20,12 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/systemconfig/core/codehost/repository/mongodb"
-	"github.com/koderover/zadig/pkg/types"
-	steptypes "github.com/koderover/zadig/pkg/types/step"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/codehost/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/types"
+	steptypes "github.com/koderover/zadig/v2/pkg/types/step"
 )
 
 type WorkflowV3 struct {
@@ -52,9 +52,25 @@ type WorkflowV3TaskArgs struct {
 }
 
 type OpenAPICreateCustomWorkflowTaskArgs struct {
-	WorkflowName string                      `json:"workflow_name"`
-	ProjectName  string                      `json:"project_name"`
+	WorkflowName string                      `json:"workflow_key"`
+	ProjectName  string                      `json:"project_key"`
+	Params       []*CreateCustomTaskParam    `json:"parameters"`
 	Inputs       []*CreateCustomTaskJobInput `json:"inputs"`
+}
+
+type CreateCustomTaskParam struct {
+	Name       string                   `bson:"name"               json:"name"                  yaml:"name"`
+	ParamsType config.WorkflowParamType `bson:"type"               json:"type"                  yaml:"type"`
+	Value      string                   `bson:"value"              json:"value"                 yaml:"value,omitempty"`
+	Repo       *CreateCustomTaskRepoArg `bson:"repo"               json:"repo"                  yaml:"repo,omitempty"`
+}
+
+type CreateCustomTaskRepoArg struct {
+	CodeHostName  string `bson:"codehost_name"      json:"codehost_name"        yaml:"codehost_name"`
+	RepoNamespace string `bson:"repo_namespace"     json:"repo_namespace"       yaml:"repo_namespace"`
+	RepoName      string `bson:"repo_name"          json:"repo_name"            yaml:"repo_name"`
+	Branch        string `bson:"branch"             json:"branch"               yaml:"branch"`
+	PRs           []int  `bson:"prs"                json:"prs"                  yaml:"prs"`
 }
 
 type CreateCustomTaskJobInput struct {
@@ -64,17 +80,17 @@ type CreateCustomTaskJobInput struct {
 }
 
 type OpenAPICreateProductWorkflowTaskArgs struct {
-	WorkflowName string                     `json:"workflow_name"`
-	ProjectName  string                     `json:"project_name"`
+	WorkflowName string                     `json:"workflow_key"`
+	ProjectName  string                     `json:"project_key"`
 	Input        *CreateProductTaskJobInput `json:"input"`
 }
 
 func (c *OpenAPICreateProductWorkflowTaskArgs) Validate() (bool, error) {
 	if c.WorkflowName == "" {
-		return false, fmt.Errorf("workflow_name cannot be empty")
+		return false, fmt.Errorf("workflowKey cannot be empty")
 	}
 	if c.ProjectName == "" {
-		return false, fmt.Errorf("project_name cannot be empty")
+		return false, fmt.Errorf("projectKey cannot be empty")
 	}
 
 	if c.Input == nil {
@@ -158,7 +174,7 @@ func (p *FreestyleJobInput) UpdateJobSpec(job *commonmodels.Job) (*commonmodels.
 				return nil, errors.New("unable to cast git step Spec into commonmodels.StepGitSpec")
 			}
 			for _, inputRepo := range p.RepoInfo {
-				repoInfo, err := mongodb.NewCodehostColl().GetCodeHostByAlias(inputRepo.CodeHostName)
+				repoInfo, err := mongodb.NewCodehostColl().GetSystemCodeHostByAlias(inputRepo.CodeHostName)
 				if err != nil {
 					return nil, errors.New("failed to find code host with name:" + inputRepo.CodeHostName)
 				}
@@ -214,13 +230,14 @@ func (p *ZadigBuildJobInput) UpdateJobSpec(job *commonmodels.Job) (*commonmodels
 	// set the id to the spec
 	newSpec.DockerRegistryID = regID
 
+	buildSvcList := make([]*commonmodels.ServiceAndBuild, 0)
 	for _, svcBuild := range newSpec.ServiceAndBuilds {
 		for _, inputSvc := range p.ServiceList {
 			// if the service & service module match, we do the update logic
 			if inputSvc.ServiceName == svcBuild.ServiceName && inputSvc.ServiceModule == svcBuild.ServiceModule {
 				// update build repo info with input build info
 				for _, inputRepo := range inputSvc.RepoInfo {
-					repoInfo, err := mongodb.NewCodehostColl().GetCodeHostByAlias(inputRepo.CodeHostName)
+					repoInfo, err := mongodb.NewCodehostColl().GetSystemCodeHostByAlias(inputRepo.CodeHostName)
 					if err != nil {
 						return nil, errors.New("failed to find code host with name:" + inputRepo.CodeHostName)
 					}
@@ -247,10 +264,13 @@ func (p *ZadigBuildJobInput) UpdateJobSpec(job *commonmodels.Job) (*commonmodels
 						buildParam.Value = val
 					}
 				}
+
+				buildSvcList = append(buildSvcList, svcBuild)
 			}
 		}
 	}
 
+	newSpec.ServiceAndBuilds = buildSvcList
 	job.Spec = newSpec
 
 	return job, nil
@@ -274,12 +294,23 @@ func (p *ZadigDeployJobInput) UpdateJobSpec(job *commonmodels.Job) (*commonmodel
 	}
 
 	newSpec.Env = p.EnvName
-
-	for _, svcDeploy := range newSpec.ServiceAndImages {
-		for _, inputSvc := range p.ServiceList {
-			if inputSvc.ServiceName == svcDeploy.ServiceName && inputSvc.ServiceModule == svcDeploy.ServiceModule {
-				svcDeploy.Image = inputSvc.ImageName
+	newSpec.Services = make([]*commonmodels.DeployServiceInfo, 0)
+	serviceMap := map[string]*commonmodels.DeployServiceInfo{}
+	for _, inputSvc := range p.ServiceList {
+		if serivce, ok := serviceMap[inputSvc.ServiceName]; ok {
+			serivce.Modules = append(serivce.Modules, &commonmodels.DeployModuleInfo{
+				Image:         inputSvc.ImageName,
+				ServiceModule: inputSvc.ServiceModule,
+			})
+		} else {
+			serviceMap[inputSvc.ServiceName] = &commonmodels.DeployServiceInfo{
+				ServiceName: inputSvc.ServiceName,
+				Modules: append([]*commonmodels.DeployModuleInfo{}, &commonmodels.DeployModuleInfo{
+					Image:         inputSvc.ImageName,
+					ServiceModule: inputSvc.ServiceModule,
+				}),
 			}
+			newSpec.Services = append(newSpec.Services, serviceMap[inputSvc.ServiceName])
 		}
 	}
 
@@ -405,7 +436,7 @@ func (p *ZadigTestingJobInput) UpdateJobSpec(job *commonmodels.Job) (*commonmode
 			if inputTesting.TestingName == testing.Name {
 				// update build repo info with input build info
 				for _, inputRepo := range inputTesting.RepoInfo {
-					repoInfo, err := mongodb.NewCodehostColl().GetCodeHostByAlias(inputRepo.CodeHostName)
+					repoInfo, err := mongodb.NewCodehostColl().GetSystemCodeHostByAlias(inputRepo.CodeHostName)
 					if err != nil {
 						return nil, errors.New("failed to find code host with name:" + inputRepo.CodeHostName)
 					}
@@ -577,7 +608,7 @@ func (p *ZadigScanningJobInput) UpdateJobSpec(job *commonmodels.Job) (*commonmod
 			if inputScanning.ScanningName == scanning.Name {
 				// update build repo info with input build info
 				for _, inputRepo := range inputScanning.RepoInfo {
-					repoInfo, err := mongodb.NewCodehostColl().GetCodeHostByAlias(inputRepo.CodeHostName)
+					repoInfo, err := mongodb.NewCodehostColl().GetSystemCodeHostByAlias(inputRepo.CodeHostName)
 					if err != nil {
 						return nil, errors.New("failed to find code host with name:" + inputRepo.CodeHostName)
 					}
@@ -599,4 +630,215 @@ func (p *ZadigScanningJobInput) UpdateJobSpec(job *commonmodels.Job) (*commonmod
 	job.Spec = newSpec
 
 	return job, nil
+}
+
+type GetHelmValuesDifferenceResp struct {
+	Current string `json:"current"`
+	Latest  string `json:"latest"`
+}
+
+type OpenAPIWorkflowV4ListReq struct {
+	ProjectKey string `form:"projectKey"`
+	ViewName   string `form:"viewName"`
+}
+
+type OpenAPIWorkflowListResp struct {
+	Workflows []*WorkflowBrief `json:"workflows"`
+}
+
+type WorkflowBrief struct {
+	WorkflowName string `json:"workflow_key"`
+	DisplayName  string `json:"workflow_name"`
+	UpdateBy     string `json:"update_by"`
+	UpdateTime   int64  `json:"update_time"`
+	Type         string `json:"type"`
+}
+
+type OpenAPIWorkflowV4Detail struct {
+	Name             string                       `json:"workflow_key"`
+	DisplayName      string                       `json:"workflow_name"`
+	ProjectName      string                       `json:"project_key"`
+	Description      string                       `json:"description"`
+	CreatedBy        string                       `json:"created_by"`
+	CreateTime       int64                        `json:"create_time"`
+	UpdatedBy        string                       `json:"updated_by"`
+	UpdateTime       int64                        `json:"update_time"`
+	Params           []*commonmodels.Param        `json:"params"`
+	Stages           []*OpenAPIStage              `json:"stages"`
+	NotifyCtls       []*commonmodels.NotifyCtl    `json:"notify_ctls"`
+	ShareStorages    []*commonmodels.ShareStorage `json:"share_storages"`
+	ConcurrencyLimit int                          `json:"concurrency_limit"`
+}
+
+type Param struct {
+	Name        string `bson:"name"             json:"name"             yaml:"name"`
+	Description string `bson:"description"      json:"description"      yaml:"description"`
+	// support string/text/choice/repo type
+	ParamsType   string                 `bson:"type"                      json:"type"                        yaml:"type"`
+	Value        string                 `bson:"value"                     json:"value"                       yaml:"value,omitempty"`
+	Repo         *types.Repository      `bson:"repo"                     json:"repo"                         yaml:"repo,omitempty"`
+	ChoiceOption []string               `bson:"choice_option,omitempty"   json:"choice_option,omitempty"     yaml:"choice_option,omitempty"`
+	Default      string                 `bson:"default"                   json:"default"                     yaml:"default"`
+	IsCredential bool                   `bson:"is_credential"             json:"is_credential"               yaml:"is_credential"`
+	Source       config.ParamSourceType `bson:"source,omitempty" json:"source,omitempty" yaml:"source,omitempty"`
+}
+
+type OpenAPIStage struct {
+	Name     string              `json:"name"`
+	Parallel bool                `json:"parallel,omitempty"`
+	Jobs     []*commonmodels.Job `json:"jobs,omitempty"`
+}
+
+type OpenAPIServiceModule struct {
+	ServiceModule string `json:"service_module"`
+	ServiceName   string `json:"service_name"`
+}
+
+type OpenAPIWorkflowV4TaskListResp struct {
+	Total         int64                    `json:"total"`
+	WorkflowTasks []*OpenAPIWorkflowV4Task `json:"workflow_tasks"`
+}
+
+type OpenAPIWorkflowV4Task struct {
+	WorkflowName string          `json:"workflow_key"`
+	DisplayName  string          `json:"workflow_name"`
+	ProjectName  string          `json:"project_key"`
+	TaskID       int64           `json:"task_id"`
+	CreateTime   int64           `json:"create_time"`
+	TaskCreator  string          `json:"task_creator"`
+	StartTime    int64           `json:"start_time"`
+	EndTime      int64           `json:"end_time"`
+	Stages       []*OpenAPIStage `json:"stages,omitempty"`
+	Status       config.Status   `json:"status"`
+}
+
+type OpenAPIProductWorkflowTaskBrief struct {
+	WorkflowName string        `json:"workflow_key"`
+	ProjectName  string        `json:"project_key"`
+	TaskID       int64         `json:"task_id"`
+	CreateTime   int64         `json:"create_time"`
+	TaskCreator  string        `json:"task_creator"`
+	StartTime    int64         `json:"start_time"`
+	EndTime      int64         `json:"end_time"`
+	Status       config.Status `json:"status"`
+}
+
+type OpenAPIProductWorkflowTaskDetail struct {
+	WorkflowName string        `json:"workflow_key"`
+	DisplayName  string        `json:"workflow_name,omitempty"`
+	ProjectName  string        `json:"project_key"`
+	TaskID       int64         `json:"task_id"`
+	CreateTime   int64         `json:"create_time"`
+	TaskCreator  string        `json:"task_creator"`
+	StartTime    int64         `json:"start_time"`
+	EndTime      int64         `json:"end_time"`
+	Status       config.Status `json:"status"`
+}
+
+type OpenAPIWorkflowTaskStage struct {
+	Name      string                    `json:"name"`
+	Parallel  bool                      `json:"parallel"`
+	Approval  *OpenAPIWorkflowApproval  `json:"approval,omitempty"`
+	Jobs      []*OpenAPIWorkflowTaskJob `json:"jobs,omitempty"`
+	Status    config.Status             `json:"status"`
+	Error     string                    `json:"error"`
+	StartTime int64                     `json:"start_time"`
+	EndTime   int64                     `json:"end_time"`
+}
+
+type OpenAPIWorkflowApproval struct {
+	Enabled          bool                `json:"enabled"`
+	Type             config.ApprovalType `json:"type"`
+	Description      string              `json:"description"`
+	NativeApproval   *NativeApproval     `json:"native_approval,omitempty"`
+	LarkApproval     *LarkApproval       `json:"lark_approval,omitempty"`
+	DingTalkApproval *DingTalkApproval   `json:"dingtalk_approval,omitempty"`
+}
+
+type NativeApproval struct {
+	Timeout         int64          `bson:"timeout"`
+	ApproveUsers    []*ApproveUser `json:"approve_users"`
+	NeededApprovers int            `bson:"needed_approvers"`
+}
+
+type LarkApproval struct {
+	Timeout      int64          `bson:"timeout"`
+	ApproveUsers []*ApproveUser `json:"approve_users"`
+}
+
+type DingTalkApproval struct {
+	Timeout int64 `bson:"timeout"`
+}
+
+type ApproveUser struct {
+	UserName string `json:"user_name"`
+	UserID   string `json:"user_id"`
+}
+
+type OpenAPIWorkflowTaskJob struct {
+	Name           string                  `json:"name"`
+	JobType        config.JobType          `json:"job_type"`
+	Skipped        bool                    `json:"skipped"`
+	RunPolicy      config.JobRunPolicy     `json:"run_policy"`
+	ServiceModules []*OpenAPIServiceModule `json:"service_modules"`
+	Status         config.Status           `json:"status"`
+	Error          string                  `json:"error"`
+	StartTime      int64                   `json:"start_time"`
+	EndTime        int64                   `json:"end_time"`
+}
+
+type OpenAPIPageParamsFromReq struct {
+	ProjectKey string `form:"projectKey"`
+	PageNum    int64  `form:"pageNum,default=1"`
+	PageSize   int64  `form:"pageSize,default=10"`
+}
+
+type OpenAPIWorkflowViewBrief struct {
+	Name        string          `json:"name"`
+	ProjectName string          `json:"project_key"`
+	UpdateTime  int64           `json:"update_time"`
+	UpdateBy    string          `json:"update_by"`
+	Workflows   []*ViewWorkflow `json:"workflows"`
+}
+
+type ViewWorkflow struct {
+	WorkflowName string `json:"workflow_key"`
+	WorkflowType string `json:"workflow_type"`
+}
+
+type OpenAPIApproveRequest struct {
+	StageName    string `json:"stage_name"`
+	WorkflowName string `json:"workflow_key"`
+	TaskID       int64  `json:"task_id"`
+	Approve      bool   `json:"approve"`
+	Comment      string `json:"comment"`
+}
+
+type OpenAPICreateWorkflowViewReq struct {
+	ProjectName  string                       `json:"project_key"`
+	Name         string                       `json:"name"`
+	WorkflowList []*OpenAPIWorkflowViewDetail `json:"workflow_list"`
+}
+
+type OpenAPIWorkflowViewDetail struct {
+	WorkflowName        string `json:"workflow_key"`
+	WorkflowDisplayName string `json:"workflow_name"`
+	WorkflowType        string `json:"workflow_type"`
+	Enabled             bool   `json:"enabled"`
+}
+
+func (req *OpenAPICreateWorkflowViewReq) Validate() (bool, error) {
+	if req.ProjectName == "" {
+		return false, fmt.Errorf("projectKey cannot be empty")
+	}
+	if req.Name == "" {
+		return false, fmt.Errorf("view name cannot be empty")
+	}
+
+	for _, workflow := range req.WorkflowList {
+		if workflow.WorkflowType != "product" && workflow.WorkflowType != "custom" {
+			return false, fmt.Errorf("workflow type must be custom or product")
+		}
+	}
+	return true, nil
 }

@@ -18,27 +18,28 @@ package workflow
 
 import (
 	"fmt"
-	"sync"
+	"sort"
+	"time"
 
 	"github.com/hashicorp/go-multierror"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/collaboration"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/webhook"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/collaboration"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/webhook"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/cache"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
-
-var mut sync.Mutex
 
 type EnvStatus struct {
 	EnvName    string `json:"env_name,omitempty"`
@@ -50,6 +51,7 @@ type Workflow struct {
 	Name                 string                     `json:"name"`
 	DisplayName          string                     `json:"display_name"`
 	ProjectName          string                     `json:"projectName"`
+	Disabled             bool                       `json:"disabled"`
 	UpdateTime           int64                      `json:"updateTime"`
 	CreateTime           int64                      `json:"createTime"`
 	UpdateBy             string                     `json:"updateBy,omitempty"`
@@ -59,6 +61,7 @@ type Workflow struct {
 	IsFavorite           bool                       `json:"isFavorite"`
 	WorkflowType         string                     `json:"workflow_type"`
 	RecentTask           *TaskInfo                  `json:"recentTask"`
+	RecentTasks          []*TaskInfo                `json:"recentTasks"`
 	RecentSuccessfulTask *TaskInfo                  `json:"recentSuccessfulTask"`
 	RecentFailedTask     *TaskInfo                  `json:"recentFailedTask"`
 	AverageExecutionTime float64                    `json:"averageExecutionTime"`
@@ -71,17 +74,20 @@ type Workflow struct {
 
 type TaskInfo struct {
 	TaskID       int64  `json:"taskID"`
-	PipelineName string `json:"pipelineName"`
+	PipelineName string `json:"pipelineName,omitempty"`
 	Status       string `json:"status"`
 	TaskCreator  string `json:"task_creator"`
 	CreateTime   int64  `json:"create_time"`
+	RunningTime  int64  `json:"running_time,omitempty"`
+	StartTime    int64  `json:"start_time,omitempty"`
+	EndTime      int64  `json:"end_time,omitempty"`
 }
 
 type workflowCreateArg struct {
-	name                 string
-	envName              string
-	buildStageEnabled    bool
-	ArtifactStageEnabled bool
+	name              string
+	envName           string
+	buildStageEnabled bool
+	dockerRegistryID  string
 }
 
 type workflowCreateArgs struct {
@@ -89,27 +95,36 @@ type workflowCreateArgs struct {
 	argsMap     map[string]*workflowCreateArg
 }
 
-func (args *workflowCreateArgs) addWorkflowArg(envName string, buildStageEnabled, artifactStageEnabled bool) {
-	wName := fmt.Sprintf("%s-workflow-%s", args.productName, envName)
-	if artifactStageEnabled {
-		wName = fmt.Sprintf("%s-%s-workflow", args.productName, "ops")
+func FindWorkflowRaw(name string, logger *zap.SugaredLogger) (*commonmodels.Workflow, error) {
+	workflow, err := commonrepo.NewWorkflowColl().Find(name)
+	if err != nil {
+		logger.Errorf("Failed to find Product Workflow: %s, the error is: %v", name, err)
+		return workflow, e.ErrFindWorkflow.AddErr(err)
 	}
+	return workflow, err
+}
+
+func (args *workflowCreateArgs) addWorkflowArg(envName, dockerRegistryID string, buildStageEnabled bool) {
+	wName := fmt.Sprintf("%s-workflow-%s", args.productName, envName)
 	// The hosting env workflow name is not bound to the environment
-	if !artifactStageEnabled && envName == "" {
+	if envName == "" {
 		wName = fmt.Sprintf("%s-workflow", args.productName)
 	}
+	if !buildStageEnabled {
+		wName = fmt.Sprintf("%s-%s-workflow", args.productName, "ops")
+	}
 	args.argsMap[wName] = &workflowCreateArg{
-		name:                 wName,
-		envName:              envName,
-		buildStageEnabled:    buildStageEnabled,
-		ArtifactStageEnabled: artifactStageEnabled,
+		name:              wName,
+		envName:           envName,
+		buildStageEnabled: buildStageEnabled,
+		dockerRegistryID:  dockerRegistryID,
 	}
 }
 
 func (args *workflowCreateArgs) initDefaultWorkflows() {
-	args.addWorkflowArg("dev", true, false)
-	args.addWorkflowArg("qa", true, false)
-	args.addWorkflowArg("", false, true)
+	args.addWorkflowArg("dev", "", true)
+	args.addWorkflowArg("qa", "", true)
+	args.addWorkflowArg("", "", false)
 }
 
 func (args *workflowCreateArgs) clear() {
@@ -124,6 +139,9 @@ func AutoCreateWorkflow(productName string, log *zap.SugaredLogger) *EnvStatus {
 		return &EnvStatus{Status: setting.ProductStatusFailed, ErrMessage: errMsg}
 	}
 	errList := new(multierror.Error)
+
+	mut := cache.NewRedisLock(fmt.Sprintf("auto_create_product:%s", productName))
+
 	mut.Lock()
 	defer func() {
 		mut.Unlock()
@@ -135,110 +153,166 @@ func AutoCreateWorkflow(productName string, log *zap.SugaredLogger) *EnvStatus {
 	}
 	createArgs.initDefaultWorkflows()
 
-	// helm/k8syaml project may have customized products, use the real created products
-	if productTmpl.IsHelmProduct() || productTmpl.IsK8sYamlProduct() {
-		productList, err := commonrepo.NewProductColl().List(&commonrepo.ProductListOptions{
-			Name: productName,
-		})
-		if err != nil {
-			log.Errorf("fialed to list products, projectName %s, err %s", productName, err)
+	s3storageID := ""
+	s3storage, err := commonrepo.NewS3StorageColl().FindDefault()
+	if err != nil {
+		log.Errorf("S3Storage.FindDefault error: %v", err)
+	} else {
+		projectSet := sets.NewString(s3storage.Projects...)
+		if projectSet.Has(productName) || projectSet.Has(setting.AllProjects) {
+			s3storageID = s3storage.ID.Hex()
 		}
-		createArgs.clear()
-		for _, product := range productList {
-			createArgs.addWorkflowArg(product.EnvName, true, false)
-		}
-		createArgs.addWorkflowArg("", false, true)
 	}
 
-	// Only one workflow is created in the hosting environment
-	if productTmpl.ProductFeature != nil && productTmpl.ProductFeature.CreateEnvType == setting.SourceFromExternal {
-		createArgs.clear()
-		createArgs.addWorkflowArg("", true, false)
+	productList, err := commonrepo.NewProductColl().List(&commonrepo.ProductListOptions{
+		Name:       productName,
+		Production: util.GetBoolPointer(false),
+	})
+	if err != nil {
+		log.Errorf("fialed to list products, projectName %s, err %s", productName, err)
 	}
 
-	workflowSlice := sets.NewString()
+	createArgs.clear()
+	for _, product := range productList {
+		createArgs.addWorkflowArg(product.EnvName, product.RegistryID, true)
+	}
+	if !productTmpl.IsHostProduct() {
+		createArgs.addWorkflowArg("", "", false)
+	}
+
+	workflowSet := sets.NewString()
 	for workflowName := range createArgs.argsMap {
-		_, err := FindWorkflow(workflowName, log)
+		_, err := FindWorkflowV4Raw(workflowName, log)
 		if err == nil {
-			workflowSlice.Insert(workflowName)
+			workflowSet.Insert(workflowName)
 		}
 	}
 
-	if len(workflowSlice) < len(createArgs.argsMap) {
-		preSetResps, err := PreSetWorkflow(productName, log)
+	if len(workflowSet) < len(createArgs.argsMap) {
+		services, err := commonrepo.NewServiceColl().ListMaxRevisionsForServices(productTmpl.AllTestServiceInfos(), "")
 		if err != nil {
+			log.Errorf("ServiceTmpl.ListMaxRevisionsByProject error: %v", err)
 			errList = multierror.Append(errList, err)
 		}
-		buildModules := make([]*commonmodels.BuildModule, 0)
-		artifactModules := make([]*commonmodels.ArtifactModule, 0)
-		for _, preSetResp := range preSetResps {
-			buildModule := &commonmodels.BuildModule{
-				Target:         preSetResp.Target,
-				BuildModuleVer: setting.Version,
+		buildList, err := commonrepo.NewBuildColl().List(&commonrepo.BuildListOption{
+			ProductName: productName,
+		})
+		if err != nil {
+			log.Errorf("[Build.List] error: %v", err)
+			errList = multierror.Append(errList, err)
+		}
+		buildMap := map[string]*commonmodels.Build{}
+		for _, build := range buildList {
+			for _, target := range build.Targets {
+				buildMap[target.ServiceName] = build
 			}
-			buildModules = append(buildModules, buildModule)
-
-			artifactModule := &commonmodels.ArtifactModule{
-				Target: preSetResp.Target,
-			}
-			artifactModules = append(artifactModules, artifactModule)
 		}
 
 		for workflowName, workflowArg := range createArgs.argsMap {
-			if workflowSlice.Has(workflowName) {
+			if workflowSet.Has(workflowName) {
 				continue
 			}
-			if dupWorkflow, err := commonrepo.NewWorkflowColl().Find(workflowName); err == nil {
-				errList = multierror.Append(errList, fmt.Errorf("workflow [%s] 在项目 [%s] 中已经存在", workflowName, dupWorkflow.ProductTmplName))
+			if dupWorkflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName); err == nil {
+				errList = multierror.Append(errList, fmt.Errorf("workflow [%s] 在项目 [%s] 中已经存在", workflowName, dupWorkflow.Project))
 			}
-			workflow := new(commonmodels.Workflow)
-			workflow.Enabled = true
-			workflow.ProductTmplName = productName
+			workflow := new(commonmodels.WorkflowV4)
+			workflow.Project = productName
 			workflow.Name = workflowName
 			workflow.DisplayName = workflowName
-			workflow.CreateBy = setting.SystemUser
-			workflow.UpdateBy = setting.SystemUser
-			workflow.EnvName = workflowArg.envName
-			workflow.BuildStage = &commonmodels.BuildStage{
-				Enabled: workflowArg.buildStageEnabled,
-				Modules: buildModules,
-			}
+			workflow.CreatedBy = setting.SystemUser
+			workflow.UpdatedBy = setting.SystemUser
+			workflow.CreateTime = time.Now().Unix()
+			workflow.UpdateTime = time.Now().Unix()
+			workflow.ConcurrencyLimit = 1
 
-			//如果是开启artifactStage，则关闭buildStage
-			if workflowArg.ArtifactStageEnabled {
-				workflow.ArtifactStage = &commonmodels.ArtifactStage{
-					Enabled: true,
-					Modules: artifactModules,
+			buildJobName := ""
+			if workflowArg.buildStageEnabled {
+				buildTargetSet := sets.NewString()
+				serviceAndBuilds := []*commonmodels.ServiceAndBuild{}
+				for _, serviceTmpl := range services {
+					if build, ok := buildMap[serviceTmpl.ServiceName]; ok {
+						for _, target := range build.Targets {
+							key := fmt.Sprintf("%s-%s", target.ServiceName, target.ServiceModule)
+							if buildTargetSet.Has(key) {
+								continue
+							}
+							buildTargetSet.Insert(key)
+
+							serviceAndBuild := &commonmodels.ServiceAndBuild{
+								ServiceName:   target.ServiceName,
+								ServiceModule: target.ServiceModule,
+								BuildName:     build.Name,
+							}
+							serviceAndBuilds = append(serviceAndBuilds, serviceAndBuild)
+						}
+					}
 				}
+				buildJobName = "构建"
+				buildJob := &commonmodels.Job{
+					Name:    buildJobName,
+					JobType: config.JobZadigBuild,
+					Spec: &commonmodels.ZadigBuildJobSpec{
+						DockerRegistryID: workflowArg.dockerRegistryID,
+						ServiceAndBuilds: serviceAndBuilds,
+					},
+				}
+				stage := &commonmodels.WorkflowStage{
+					Name:     "构建",
+					Parallel: true,
+					Jobs:     []*commonmodels.Job{buildJob},
+				}
+				workflow.Stages = append(workflow.Stages, stage)
 			}
 
-			workflow.Schedules = &commonmodels.ScheduleCtrl{
-				Enabled: false,
-				Items:   []*commonmodels.Schedule{},
-			}
-			workflow.TestStage = &commonmodels.TestStage{
-				Enabled:   false,
-				TestNames: []string{},
-			}
-			workflow.NotifyCtl = &commonmodels.NotifyCtl{
-				Enabled:       false,
-				NotifyTypes:   []string{},
-				WeChatWebHook: "",
-			}
-			workflow.HookCtl = &commonmodels.WorkflowHookCtrl{
-				Enabled: false,
-				Items:   []*commonmodels.WorkflowHook{},
-			}
-			workflow.DistributeStage = &commonmodels.DistributeStage{
-				Enabled:     false,
-				S3StorageID: "",
-				ImageRepo:   "",
-				JumpBoxHost: "",
-				Releases:    []commonmodels.RepoImage{},
-				Distributes: []*commonmodels.ProductDistribute{},
+			if productTmpl.IsCVMProduct() {
+				spec := &commonmodels.ZadigVMDeployJobSpec{
+					Env:         workflowArg.envName,
+					Source:      config.SourceRuntime,
+					S3StorageID: s3storageID,
+				}
+				if workflowArg.buildStageEnabled {
+					spec.Source = config.SourceFromJob
+					spec.JobName = buildJobName
+				}
+				deployJob := &commonmodels.Job{
+					Name:    "主机部署",
+					JobType: config.JobZadigVMDeploy,
+					Spec:    spec,
+				}
+				stage := &commonmodels.WorkflowStage{
+					Name:     "主机部署",
+					Parallel: true,
+					Jobs:     []*commonmodels.Job{deployJob},
+				}
+				workflow.Stages = append(workflow.Stages, stage)
+			} else {
+				spec := &commonmodels.ZadigDeployJobSpec{
+					Env: workflowArg.envName,
+					DeployContents: []config.DeployContent{
+						config.DeployImage,
+					},
+					Source:     config.SourceRuntime,
+					Production: true,
+				}
+				if workflowArg.buildStageEnabled {
+					spec.Source = config.SourceFromJob
+					spec.JobName = buildJobName
+					spec.Production = false
+				}
+				deployJob := &commonmodels.Job{
+					Name:    "部署",
+					JobType: config.JobZadigDeploy,
+					Spec:    spec,
+				}
+				stage := &commonmodels.WorkflowStage{
+					Name:     "部署",
+					Parallel: true,
+					Jobs:     []*commonmodels.Job{deployJob},
+				}
+				workflow.Stages = append(workflow.Stages, stage)
 			}
 
-			if err := commonrepo.NewWorkflowColl().Create(workflow); err != nil {
+			if _, err := commonrepo.NewWorkflowV4Coll().Create(workflow); err != nil {
 				errList = multierror.Append(errList, err)
 			}
 		}
@@ -246,7 +320,7 @@ func AutoCreateWorkflow(productName string, log *zap.SugaredLogger) *EnvStatus {
 			return &EnvStatus{Status: setting.ProductStatusFailed, ErrMessage: err.Error()}
 		}
 		return &EnvStatus{Status: setting.ProductStatusCreating}
-	} else if len(workflowSlice) == len(createArgs.argsMap) {
+	} else if len(workflowSet) == len(createArgs.argsMap) {
 		return &EnvStatus{Status: setting.ProductStatusSuccess}
 	}
 	return nil
@@ -261,7 +335,7 @@ func FindWorkflow(workflowName string, log *zap.SugaredLogger) (*commonmodels.Wo
 	if resp.Schedules == nil {
 		schedules, err := commonrepo.NewCronjobColl().List(&commonrepo.ListCronjobParam{
 			ParentName: resp.Name,
-			ParentType: config.WorkflowCronjob,
+			ParentType: setting.WorkflowCronjob,
 		})
 		if err != nil {
 			log.Errorf("cannot list cron job list, the error is: %v", err)
@@ -293,7 +367,7 @@ func FindWorkflow(workflowName string, log *zap.SugaredLogger) (*commonmodels.Wo
 
 	services, err := commonrepo.NewServiceColl().ListMaxRevisionsByProduct(resp.ProductTmplName)
 	if err != nil {
-		log.Errorf("ServiceTmpl.ListMaxRevisions error: %v", err)
+		log.Errorf("ServiceTmpl.ListMaxRevisionsByProject error: %v", err)
 		return resp, e.ErrListTemplate.AddDesc(err.Error())
 	}
 
@@ -315,13 +389,15 @@ func FindWorkflow(workflowName string, log *zap.SugaredLogger) (*commonmodels.Wo
 
 		buildModules := []*commonmodels.BuildModule{}
 		for _, serviceTmpl := range services {
-			switch serviceTmpl.Type {
-			case setting.PMDeployType:
-				// PM service does not have such logic
-				buildModules = resp.BuildStage.Modules
-				break
 
-			case setting.K8SDeployType, setting.HelmDeployType:
+			if serviceTmpl.Type == setting.PMDeployType {
+				serviceTmpl.Containers = append(serviceTmpl.Containers, &commonmodels.Container{
+					Name: serviceTmpl.ServiceName,
+				})
+			}
+
+			switch serviceTmpl.Type {
+			case setting.K8SDeployType, setting.HelmDeployType, setting.PMDeployType:
 				for _, container := range serviceTmpl.Containers {
 					key := fmt.Sprintf("%s-%s-%s", serviceTmpl.ProductName, serviceTmpl.ServiceName, container.Name)
 					// if no target info is found for this container, meaning that this is a new service for that workflow
@@ -435,9 +511,9 @@ func PreSetWorkflow(productName string, log *zap.SugaredLogger) ([]*PreSetResp, 
 		log.Errorf("[%s] ProductTmpl.Find error: %v", productName, err)
 		return resp, e.ErrGetTemplate.AddDesc(err.Error())
 	}
-	services, err := commonrepo.NewServiceColl().ListMaxRevisionsForServices(productTmpl.AllServiceInfos(), "")
+	services, err := commonrepo.NewServiceColl().ListMaxRevisionsForServices(productTmpl.AllTestServiceInfos(), "")
 	if err != nil {
-		log.Errorf("ServiceTmpl.ListMaxRevisions error: %v", err)
+		log.Errorf("ServiceTmpl.ListMaxRevisionsByProject error: %v", err)
 		return resp, e.ErrListTemplate.AddDesc(err.Error())
 	}
 
@@ -722,21 +798,36 @@ func getRecentTaskInfo(workflow *Workflow, tasks []*commonrepo.TaskPreview) {
 	recentFailedTask := &commonrepo.TaskPreview{}
 	recentSucceedTask := &commonrepo.TaskPreview{}
 	workflow.NeverRun = true
+	var workflowList []*commonrepo.TaskPreview
+	var recentTenTask []*commonrepo.TaskPreview
 	for _, task := range tasks {
 		if task.PipelineName != workflow.Name {
 			continue
 		}
 		workflow.NeverRun = false
-		if task.TaskID > recentTask.TaskID {
+		workflowList = append(workflowList, task)
+	}
+	sort.Slice(workflowList, func(i, j int) bool {
+		return workflowList[i].TaskID > workflowList[j].TaskID
+	})
+	for _, task := range workflowList {
+		if recentSucceedTask.TaskID != 0 && recentFailedTask.TaskID != 0 && len(recentTenTask) == 10 {
+			break
+		}
+		if recentTask.TaskID == 0 {
 			recentTask = task
 		}
-		if task.Status == config.StatusPassed && task.TaskID > recentSucceedTask.TaskID {
+		if task.Status == config.StatusPassed && recentSucceedTask.TaskID == 0 {
 			recentSucceedTask = task
 		}
-		if task.Status == config.StatusFailed && task.TaskID > recentFailedTask.TaskID {
+		if task.Status == config.StatusFailed && recentFailedTask.TaskID == 0 {
 			recentFailedTask = task
 		}
+		if len(recentTenTask) < 10 {
+			recentTenTask = append(recentTenTask, task)
+		}
 	}
+
 	if recentTask.TaskID > 0 {
 		workflow.RecentTask = &TaskInfo{
 			TaskID:       recentTask.TaskID,
@@ -764,13 +855,34 @@ func getRecentTaskInfo(workflow *Workflow, tasks []*commonrepo.TaskPreview) {
 			CreateTime:   recentFailedTask.CreateTime,
 		}
 	}
+	if len(recentTenTask) > 0 {
+		for _, task := range recentTenTask {
+			workflow.RecentTasks = append(workflow.RecentTasks, &TaskInfo{
+				TaskID:      task.TaskID,
+				Status:      string(task.Status),
+				TaskCreator: task.TaskCreator,
+				CreateTime:  task.CreateTime,
+				StartTime:   task.StartTime,
+				EndTime:     task.EndTime,
+			})
+		}
+	}
 }
 
 func ListTestWorkflows(testName string, projects []string, log *zap.SugaredLogger) (workflows []*commonmodels.Workflow, err error) {
-	allWorkflows, err := commonrepo.NewWorkflowColl().ListWorkflowsByProjects(projects)
-	if err != nil {
-		return nil, err
+	var allWorkflows []*commonmodels.Workflow
+	if len(projects) != 0 {
+		allWorkflows, err = commonrepo.NewWorkflowColl().ListWorkflowsByProjects(projects)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		allWorkflows, err = commonrepo.NewWorkflowColl().List(&commonrepo.ListWorkflowOption{})
+		if err != nil {
+			return nil, err
+		}
 	}
+LOOP:
 	for _, workflow := range allWorkflows {
 		if workflow.TestStage != nil {
 			testNames := sets.NewString(workflow.TestStage.TestNames...)
@@ -779,7 +891,7 @@ func ListTestWorkflows(testName string, projects []string, log *zap.SugaredLogge
 			}
 			for _, testEntity := range workflow.TestStage.Tests {
 				if testEntity.Name == testName {
-					continue
+					continue LOOP
 				}
 			}
 		}

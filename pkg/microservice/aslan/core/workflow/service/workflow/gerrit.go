@@ -19,16 +19,16 @@ package workflow
 import (
 	"go.uber.org/zap"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	"github.com/koderover/zadig/pkg/tool/gerrit"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	"github.com/koderover/zadig/v2/pkg/tool/gerrit"
 )
 
 func CreateGerritWebhook(workflow *commonmodels.Workflow, log *zap.SugaredLogger) error {
 	if workflow != nil && workflow.HookCtl != nil && workflow.HookCtl.Enabled {
 		for _, workflowWebhook := range workflow.HookCtl.Items {
-			if workflowWebhook == nil {
+			if workflowWebhook == nil || workflowWebhook.IsManual {
 				continue
 			}
 			if err := createGerritWebhook(workflowWebhook.MainRepo, workflow.Name); err != nil {
@@ -86,7 +86,7 @@ func UpdateGerritWebhook(currentWorkflow *commonmodels.Workflow, log *zap.Sugare
 
 	if oldWorkflow != nil && oldWorkflow.HookCtl != nil {
 		for _, oldWorkflowWebhook := range oldWorkflow.HookCtl.Items {
-			if oldWorkflowWebhook == nil {
+			if oldWorkflowWebhook == nil || oldWorkflowWebhook.IsManual {
 				continue
 			}
 			if err := deleteGerritWebhook(oldWorkflowWebhook.MainRepo, oldWorkflow.Name); err != nil {
@@ -96,7 +96,7 @@ func UpdateGerritWebhook(currentWorkflow *commonmodels.Workflow, log *zap.Sugare
 	}
 	if currentWorkflow != nil && currentWorkflow.HookCtl != nil && currentWorkflow.HookCtl.Enabled {
 		for _, workflowWebhook := range currentWorkflow.HookCtl.Items {
-			if workflowWebhook == nil {
+			if workflowWebhook == nil || workflowWebhook.IsManual {
 				continue
 			}
 			if err := createGerritWebhook(workflowWebhook.MainRepo, currentWorkflow.Name); err != nil {

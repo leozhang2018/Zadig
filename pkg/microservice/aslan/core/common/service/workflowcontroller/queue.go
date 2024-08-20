@@ -21,13 +21,17 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"go.mongodb.org/mongo-driver/mongo"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/cache"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func RunningTasks() []*commonmodels.WorkflowQueue {
@@ -38,8 +42,7 @@ func RunningTasks() []*commonmodels.WorkflowQueue {
 		return tasks
 	}
 	for _, t := range queueTasks {
-		// task状态为TaskQueued说明task已经被send到nsq,wd已经开始处理但是没有返回ack
-		if t.Status == config.StatusRunning {
+		if t.Status == config.StatusRunning || t.Status == config.StatusWaitingApprove {
 			tasks = append(tasks, t)
 		}
 	}
@@ -81,7 +84,7 @@ func CreateTask(t *commonmodels.WorkflowTask) error {
 func UpdateTask(t *commonmodels.WorkflowTask) error {
 	t.Status = config.StatusWaiting
 	if err := commonrepo.NewworkflowTaskv4Coll().Update(t.ID.Hex(), t); err != nil {
-		log.Errorf("create workflow task v4 error: %v", err)
+		log.Errorf("update workflow task v4 %s error: %v", t.WorkflowName, err)
 		return err
 	}
 	return Push(t)
@@ -90,17 +93,6 @@ func UpdateTask(t *commonmodels.WorkflowTask) error {
 func Push(t *commonmodels.WorkflowTask) error {
 	if t == nil {
 		return errors.New("nil task")
-	}
-
-	if !t.MultiRun {
-		opt := &commonrepo.ListWorfklowQueueOption{
-			WorkflowName: t.WorkflowName,
-		}
-		tasks, err := commonrepo.NewWorkflowQueueColl().List(opt)
-		if err == nil && len(tasks) > 0 {
-			log.Infof("blocked task recevied: %v %v %v", t.CreateTime, t.TaskID, t.WorkflowName)
-			t.Status = config.StatusBlocked
-		}
 	}
 
 	if err := commonrepo.NewWorkflowQueueColl().Create(ConvertTaskToQueue(t)); err != nil {
@@ -133,6 +125,12 @@ func InitQueue() error {
 			continue
 		}
 	}
+
+	// clear all cancel pipeline task msgs when aslan restart
+	err = commonrepo.NewMsgQueueCommonColl().DeleteByQueueType(setting.TopicCancel)
+	if err != nil {
+		log.Warnf("remove cancel msgs error: %v", err)
+	}
 	return nil
 }
 
@@ -142,43 +140,109 @@ func WorfklowTaskSender() {
 	for {
 		time.Sleep(time.Second * 3)
 
+		mutex := cache.NewRedisLock("workflow-task-sender")
+		if err := mutex.TryLock(); err != nil {
+			continue
+		}
+
 		sysSetting, err := commonrepo.NewSystemSettingColl().Get()
 		if err != nil {
 			log.Errorf("get system stettings error: %v", err)
 		}
 		//c.checkAgents()
 		if !hasAgentAvaiable(int(sysSetting.WorkflowConcurrency)) {
+			mutex.Unlock()
 			continue
 		}
-		t, err := NextWaitingTask()
-		if err != nil {
-			// no waiting task found
-			blockTasks, err := BlockedTaskQueue()
+		waitingTasks, err := WaitingTasks()
+		if err != nil || len(waitingTasks) == 0 {
+			mutex.Unlock()
+			continue
+		}
+		var t *commonmodels.WorkflowQueue
+		for _, task := range waitingTasks {
+			var concurrency int
+			workflow, err := commonrepo.NewWorkflowV4Coll().Find(task.WorkflowName)
 			if err != nil {
-				//no blocked task found
+				log.Errorf("WorkflowV4 Queue: find workflow %s error: %v", task.WorkflowName, err)
+				switch task.Type {
+				case config.WorkflowTaskTypeScanning:
+					segs := strings.Split(task.WorkflowName, "-")
+					if len(segs) != 3 {
+						log.Errorf("invalid scanning workflow name: %s", task.WorkflowName)
+						Remove(task)
+						continue
+					}
+					scanningInfo, err := commonrepo.NewScanningColl().GetByID(segs[2])
+					if err != nil {
+						log.Errorf("failed to find scanning of id: %s, error: %s", segs[2], err)
+						Remove(task)
+						continue
+					}
+					concurrencyNum := -1
+					if scanningInfo.AdvancedSetting != nil {
+						concurrencyNum = scanningInfo.AdvancedSetting.ConcurrencyLimit
+					}
+					if concurrencyNum == 0 {
+						concurrencyNum = -1
+					}
+					concurrency = concurrencyNum
+				case config.WorkflowTaskTypeTesting:
+					testingInfo, err := commonrepo.NewTestingColl().Find(task.WorkflowDisplayName, task.ProjectName)
+					if err != nil {
+						log.Errorf("failed to find test of name: %s in project: %s, error: %s", task.WorkflowDisplayName, task.ProjectName, err)
+						Remove(task)
+						continue
+					}
+					concurrencyNum := -1
+					if testingInfo.PreTest != nil {
+						concurrencyNum = testingInfo.PreTest.ConcurrencyLimit
+					}
+					if concurrencyNum == 0 {
+						concurrencyNum = -1
+					}
+					concurrency = concurrencyNum
+				case config.WorkflowTaskTypeDelivery:
+					concurrency = -1
+				default:
+					log.Errorf("unsupported task type: %s, removing from queue", task.Type)
+					Remove(task)
+					continue
+				}
+			} else {
+				concurrency = workflow.ConcurrencyLimit
+			}
+			// no concurrency limit, run task
+			if concurrency == -1 {
+				t = task
+				break
+			}
+			resp, err := RunningWorkflowTasks(task.WorkflowName)
+			if err != nil {
+				log.Errorf("WorkflowV4 Queue: find running workflow %s error: %v", task.WorkflowName, err)
 				continue
 			}
-			for _, blockTask := range blockTasks {
-				if hasAgentAvaiable(int(sysSetting.WorkflowConcurrency)) {
-					//判断相同的工作流是否正在运行
-					if ParallelRunningAndQueuedTasks(blockTask) {
-						continue
-					}
-					// update agent and queue
-					if err := updateQueueAndRunTask(blockTask, int(sysSetting.BuildConcurrency)); err != nil {
-						continue
-					}
-				} else {
-					break
-				}
+			resp2, err := WaitForApproveWorkflowTasks(task.WorkflowName)
+			if err != nil {
+				log.Errorf("WorkflowV4 Queue: find waiting approve workflow %s error: %v", task.WorkflowName, err)
+				continue
 			}
+			if len(resp)+len(resp2) < concurrency {
+				t = task
+				break
+			}
+		}
+		// no task to run
+		if t == nil {
+			mutex.Unlock()
 			continue
 		}
 		// update agent and queue
 		if err := updateQueueAndRunTask(t, int(sysSetting.BuildConcurrency)); err != nil {
+			mutex.Unlock()
 			continue
 		}
-
+		mutex.Unlock()
 	}
 }
 
@@ -206,8 +270,8 @@ func ListTasks() []*commonmodels.WorkflowQueue {
 	return queues
 }
 
-// NextWaitingTask 查询下一个等待的task
-func NextWaitingTask() (*commonmodels.WorkflowQueue, error) {
+// WaitingTasks 查询所有等待的task
+func WaitingTasks() ([]*commonmodels.WorkflowQueue, error) {
 	opt := &commonrepo.ListWorfklowQueueOption{
 		Status: config.StatusWaiting,
 	}
@@ -217,11 +281,44 @@ func NextWaitingTask() (*commonmodels.WorkflowQueue, error) {
 		return nil, err
 	}
 
-	for _, t := range tasks {
-		return t, nil
+	if len(tasks) > 0 {
+		return tasks, nil
+	}
+	return nil, errors.New("no waiting task found")
+}
+
+func RunningWorkflowTasks(name string) ([]*commonmodels.WorkflowQueue, error) {
+	opt := &commonrepo.ListWorfklowQueueOption{
+		WorkflowName: name,
+		Status:       config.StatusRunning,
 	}
 
-	return nil, errors.New("no waiting task found")
+	tasks, err := commonrepo.NewWorkflowQueueColl().List(opt)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return tasks, nil
+}
+
+func WaitForApproveWorkflowTasks(name string) ([]*commonmodels.WorkflowQueue, error) {
+	opt := &commonrepo.ListWorfklowQueueOption{
+		WorkflowName: name,
+		Status:       config.StatusWaitingApprove,
+	}
+
+	tasks, err := commonrepo.NewWorkflowQueueColl().List(opt)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	return tasks, nil
 }
 
 func BlockedTaskQueue() ([]*commonmodels.WorkflowQueue, error) {
@@ -263,6 +360,7 @@ func updateQueueAndRunTask(t *commonmodels.WorkflowQueue, jobConcurrency int) er
 		logger.Errorf("%s:%d update t status error", t.WorkflowName, t.TaskID)
 		return fmt.Errorf("%s:%d update t status error", t.WorkflowName, t.TaskID)
 	}
+
 	ctx := context.Background()
 	go NewWorkflowController(workflowTask, logger).Run(ctx, jobConcurrency)
 	return nil
@@ -286,7 +384,7 @@ func ConvertTaskToQueue(task *commonmodels.WorkflowTask) *commonmodels.WorkflowQ
 		TaskCreator:         task.TaskCreator,
 		TaskRevoker:         task.TaskRevoker,
 		CreateTime:          task.CreateTime,
-		MultiRun:            task.MultiRun,
+		Type:                task.Type,
 	}
 }
 

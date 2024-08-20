@@ -20,10 +20,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 // Context ...
@@ -134,6 +134,7 @@ type Context struct {
 	ScannerFlag           bool   `yaml:"scanner_flag"`
 	ScannerType           string `yaml:"scanner_type"`
 	SonarParameter        string `yaml:"sonar_parameter"`
+	SonarEnableScanner    bool   `yaml:"sonar_enable_scanner"`
 	SonarServer           string `yaml:"sonar_server"`
 	SonarLogin            string `yaml:"sonar_login"`
 	SonarCheckQualityGate bool   `yaml:"sonar_check_quality_gate"`
@@ -239,6 +240,7 @@ type Repo struct {
 	AuthType           types.AuthType `yaml:"auth_type,omitempty"`
 	SSHKey             string         `yaml:"ssh_key,omitempty"`
 	PrivateAccessToken string         `yaml:"private_access_token,omitempty"`
+	SubmissionID       string         `yaml:"submission_id"`
 }
 
 // PRRef returns refs format

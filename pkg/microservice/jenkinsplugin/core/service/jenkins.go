@@ -27,11 +27,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/bndr/gojenkins"
+	"github.com/koderover/gojenkins"
 	"gopkg.in/yaml.v3"
 
-	"github.com/koderover/zadig/pkg/microservice/jenkinsplugin/config"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/jenkinsplugin/config"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 // JenkinsPlugin ...

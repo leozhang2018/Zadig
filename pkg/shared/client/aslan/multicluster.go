@@ -21,9 +21,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/httpclient"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
@@ -65,6 +66,7 @@ func (c *Client) GetLocalCluster() (*clusterResp, error) {
 	clusterResp := &clusterResp{}
 	resp, err := c.Get(url, httpclient.SetResult(clusterResp))
 	if err != nil {
+		log.Errorf("failed to get local cluster, err: %v", err)
 		errorMessage := new(ErrorMessage)
 		err := json.Unmarshal(resp.Body(), errorMessage)
 		if err != nil {
@@ -101,7 +103,16 @@ type ClusterDetail struct {
 	KubeConfig string `json:"kube_config"    bson:"kube_config"`
 
 	// Deprecated field, it should be deleted in version 1.15 since no more namespace settings is used
-	Namespace string `json:"namespace"                 bson:"namespace"`
+	Namespace      string          `json:"namespace"                 bson:"namespace"`
+	AdvancedConfig *AdvancedConfig `json:"advanced_config"           bson:"advanced_config"`
+}
+
+type AdvancedConfig struct {
+	Strategy          string   `json:"strategy,omitempty"       bson:"strategy,omitempty"`
+	ProjectNames      []string `json:"-"                        bson:"-"`
+	Tolerations       string   `json:"tolerations"              bson:"tolerations"`
+	ClusterAccessYaml string   `json:"cluster_access_yaml"      bson:"cluster_access_yaml"`
+	ScheduleWorkflow  bool     `json:"schedule_workflow"        bson:"schedule_workflow"`
 }
 
 func (c *Client) GetClusterInfo(clusterID string) (*ClusterDetail, error) {
@@ -120,6 +131,5 @@ func (c *Client) GetClusterInfo(clusterID string) (*ClusterDetail, error) {
 		}
 		return nil, fmt.Errorf("Failed to get cluster, error: %s", err)
 	}
-
 	return clusterResp, nil
 }

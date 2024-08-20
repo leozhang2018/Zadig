@@ -25,28 +25,32 @@ import (
 	"strings"
 	"text/template"
 
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/pkg/errors"
 	"go.uber.org/zap"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/intstr"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
-	config2 "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/setting"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	"github.com/koderover/zadig/pkg/tool/crypto"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/kube/multicluster"
+	config2 "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/crypto"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/multicluster"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 func GetKubeAPIReader(clusterID string) (client.Reader, error) {
@@ -113,21 +117,36 @@ func (s *Service) CreateCluster(cluster *models.K8SCluster, id string, logger *z
 	}
 
 	cluster.Status = setting.Pending
-	if cluster.Type == setting.KubeConfigClusterType {
-		// since we will always be able to connect with direct connection
-		cluster.Status = setting.Normal
-	}
 	if id == setting.LocalClusterID {
 		cluster.Status = setting.Normal
 		cluster.Local = true
-		cluster.AdvancedConfig = &commonmodels.AdvancedConfig{
-			Strategy: "normal",
-		}
 		cluster.DindCfg = nil
+	}
+	if cluster.Type == setting.KubeConfigClusterType {
+		// kube config type is always connected
+		cluster.Status = setting.Normal
 	}
 	err = s.coll.Create(cluster, id)
 	if err != nil {
 		return nil, e.ErrCreateCluster.AddErr(err)
+	}
+
+	if cluster.Type == setting.KubeConfigClusterType {
+		// if scheduleWorkflow==false, we don't need to create resources in the cluster
+		// resource: Namespace: koderover-agent | Service: dind | StatefulSet: dind
+		if cluster.AdvancedConfig != nil && cluster.AdvancedConfig.ScheduleWorkflow {
+			// since we will always be able to connect with direct connection
+			err := InitializeExternalCluster(config.HubServerAddress(), cluster.ID.Hex())
+			if err != nil {
+				return nil, err
+			}
+		}
+
+		cluster.Status = setting.Normal
+		err = s.coll.UpdateStatus(cluster)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if cluster.AdvancedConfig != nil {
@@ -148,15 +167,6 @@ func (s *Service) CreateCluster(cluster *models.K8SCluster, id string, logger *z
 		return nil, err
 	}
 	cluster.Token = token
-
-	if cluster.Type == setting.KubeConfigClusterType {
-		err := InitializeExternalCluster(config.HubServerAddress(), cluster.ID.Hex())
-		if err != nil {
-			s.coll.Delete(cluster.ID.Hex())
-			return nil, err
-		}
-		cluster.Status = setting.Normal
-	}
 
 	return cluster, nil
 }
@@ -191,14 +201,22 @@ func (s *Service) UpdateCluster(id string, cluster *models.K8SCluster, logger *z
 }
 
 func (s *Service) DeleteCluster(user string, id string, logger *zap.SugaredLogger) error {
-	_, err := s.coll.Get(id)
-	if err != nil {
-		return e.ErrDeleteCluster.AddErr(e.ErrClusterNotFound.AddDesc(id))
-	}
+	//clusterInfo, err := s.coll.Get(id)
+	//if err != nil {
+	//	return e.ErrDeleteCluster.AddErr(e.ErrClusterNotFound.AddDesc(id))
+	//}
 
-	err = RemoveClusterResources(config.HubServerAddress(), id)
+	// Now we only clear the cluster resources when the cluster is using a kubeconfig
+	// This logic is required if the cluster need to be re-applied to Zadig.
+	// 2023-12-06 this logic is removed. Cluster resource under koderover-agent ns is no longer maintained
+	//if clusterInfo.Type == setting.KubeConfigClusterType {
+	//	err = RemoveClusterResources(config.HubServerAddress(), id)
+	//	if err != nil {
+	//		return e.ErrDeleteCluster.AddDesc(err.Error())
+	//	}
+	//}
 
-	err = s.coll.Delete(id)
+	err := s.coll.Delete(id)
 	if err != nil {
 		logger.Errorf("failed to delete cluster by id %s %v", id, err)
 		return e.ErrDeleteCluster.AddErr(err)
@@ -210,6 +228,7 @@ func (s *Service) DeleteCluster(user string, id string, logger *zap.SugaredLogge
 func (s *Service) GetCluster(id string, logger *zap.SugaredLogger) (*models.K8SCluster, error) {
 	cluster, err := s.coll.Get(id)
 	if err != nil {
+		logger.Errorf("failed to get cluster by id %s %v", id, err)
 		return nil, e.ErrClusterNotFound.AddErr(err)
 	}
 
@@ -231,6 +250,11 @@ func (s *Service) GetCluster(id string, logger *zap.SugaredLogger) (*models.K8SC
 				Type: DefaultDindStorageType,
 			},
 		}
+	}
+
+	if cluster.AdvancedConfig != nil && cluster.AdvancedConfig.ClusterAccessYaml == "" {
+		cluster.AdvancedConfig.ScheduleWorkflow = true
+		cluster.AdvancedConfig.ClusterAccessYaml = ClusterAccessYamlTemplate
 	}
 
 	cluster.Token = token
@@ -267,7 +291,7 @@ func (s *Service) ListConnectedClusters(logger *zap.SugaredLogger) ([]*models.K8
 	return clusters, nil
 }
 
-func (s *Service) GetYaml(id, agentImage, rsImage, aslanURL, hubURI string, useDeployment bool, logger *zap.SugaredLogger) ([]byte, error) {
+func (s *Service) GetYaml(id, agentImage, aslanURL, hubURI string, useDeployment bool, logger *zap.SugaredLogger) ([]byte, error) {
 	var (
 		cluster *models.K8SCluster
 		err     error
@@ -296,10 +320,32 @@ func (s *Service) GetYaml(id, agentImage, rsImage, aslanURL, hubURI string, useD
 
 	dindReplicas, dindLimitsCPU, dindLimitsMemory, dindEnablePV, dindSCName, dindStorageSizeInGiB := getDindCfg(cluster)
 
+	yaml := agentYaml
+	if cluster.AdvancedConfig != nil {
+		if cluster.AdvancedConfig.ClusterAccessYaml != "" {
+			yaml = fmt.Sprintf("%s\n---\n%s", yaml, cluster.AdvancedConfig.ClusterAccessYaml)
+			if cluster.AdvancedConfig.ScheduleWorkflow {
+				yaml = fmt.Sprintf("%s\n---\n%s", yaml, WorkflowResourceYaml)
+			}
+			// if cluster.AdvancedConfig.ClusterAccessYaml is empty, it means the cluster is created before the cluster access function, so we need to contain the old one.
+		} else {
+			yaml = fmt.Sprintf("%s\n---\n%s", yaml, ClusterAccessYamlTemplate)
+			yaml = fmt.Sprintf("%s\n---\n%s", yaml, WorkflowResourceYaml)
+		}
+	} else {
+		yaml = fmt.Sprintf("%s\n---\n%s", yaml, ClusterAccessYamlTemplate)
+		yaml = fmt.Sprintf("%s\n---\n%s", yaml, WorkflowResourceYaml)
+	}
+
+	var YamlTemplate = template.Must(template.New("agentYaml").Parse(yaml))
+	scheduleWorkflow := true
+	if cluster.AdvancedConfig != nil && cluster.AdvancedConfig.ClusterAccessYaml != "" {
+		scheduleWorkflow = cluster.AdvancedConfig.ScheduleWorkflow
+	}
+
 	if cluster.Namespace == "" {
 		err = YamlTemplate.Execute(buffer, TemplateSchema{
 			HubAgentImage:        agentImage,
-			ResourceServerImage:  rsImage,
 			ClientToken:          token,
 			HubServerBaseAddr:    hubBase.String(),
 			AslanBaseAddr:        config2.SystemAddress(),
@@ -311,11 +357,11 @@ func (s *Service) GetYaml(id, agentImage, rsImage, aslanURL, hubURI string, useD
 			DindEnablePV:         dindEnablePV,
 			DindStorageClassName: dindSCName,
 			DindStorageSizeInGiB: dindStorageSizeInGiB,
+			ScheduleWorkflow:     scheduleWorkflow,
 		})
 	} else {
 		err = YamlTemplateForNamespace.Execute(buffer, TemplateSchema{
 			HubAgentImage:        agentImage,
-			ResourceServerImage:  rsImage,
 			ClientToken:          token,
 			HubServerBaseAddr:    hubBase.String(),
 			AslanBaseAddr:        config2.SystemAddress(),
@@ -382,8 +428,7 @@ func getDindCfg(cluster *models.K8SCluster) (replicas int, limitsCPU, limitsMemo
 // InitializeExternalCluster initialized the resources in the cluster for zadig to run correctly.
 // if the cluster is of type kubeconfig, we need to create following resource:
 // Namespace: koderover-agent
-// Deployment: resource-server
-// Service:    resource-server, dind
+// Service: dind
 // StatefulSet: dind
 func InitializeExternalCluster(hubserverAddr, clusterID string) error {
 	clientset, err := kubeclient.GetKubeClientSet(hubserverAddr, clusterID)
@@ -391,10 +436,11 @@ func InitializeExternalCluster(hubserverAddr, clusterID string) error {
 		return err
 	}
 
+	namespace := "koderover-agent"
 	// if no namespace named "koderover-agent" exists, we create one
-	if _, err := clientset.CoreV1().Namespaces().Get(context.TODO(), "koderover-agent", metav1.GetOptions{}); err != nil {
+	if _, err := clientset.CoreV1().Namespaces().Get(context.TODO(), namespace, metav1.GetOptions{}); err != nil {
 		namespaceSpec := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
-			Name: "koderover-agent",
+			Name: namespace,
 		}}
 
 		_, err := clientset.CoreV1().Namespaces().Create(context.TODO(), namespaceSpec, metav1.CreateOptions{})
@@ -403,77 +449,58 @@ func InitializeExternalCluster(hubserverAddr, clusterID string) error {
 		}
 	}
 
-	resourceServerLabelMap := map[string]string{
-		"app.kubernetes.io/component": "resource-server",
-		"app.kubernetes.io/name":      "zadig",
-	}
-
-	// Then we create the resource-server deployment
-	resourceServerDeploymentSpec := &appsv1.Deployment{
-		TypeMeta: metav1.TypeMeta{},
+	// create role
+	role := &rbacv1.Role{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   "resource-server",
-			Labels: resourceServerLabelMap,
+			Name:      "workflow-cm-manager",
+			Namespace: namespace,
 		},
-		Spec: appsv1.DeploymentSpec{
-			Selector: &metav1.LabelSelector{
-				MatchLabels: resourceServerLabelMap,
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels: resourceServerLabelMap,
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{
-						corev1.Container{
-							Name:  "resource-server",
-							Image: config.ResourceServerImage(),
-							Resources: corev1.ResourceRequirements{
-								Limits: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse(strconv.Itoa(500) + setting.CpuUintM),
-									corev1.ResourceMemory: resource.MustParse(strconv.Itoa(500) + setting.MemoryUintMi),
-								},
-								Requests: corev1.ResourceList{
-									corev1.ResourceCPU:    resource.MustParse(strconv.Itoa(100) + setting.CpuUintM),
-									corev1.ResourceMemory: resource.MustParse(strconv.Itoa(100) + setting.MemoryUintMi),
-								},
-							},
-							ImagePullPolicy: "Always",
-						},
-					},
-				},
+		Rules: []rbacv1.PolicyRule{
+			{
+				APIGroups: []string{""},
+				Resources: []string{"configmaps"},
+				Verbs:     []string{"*"},
 			},
 		},
 	}
-
-	_, err = clientset.AppsV1().Deployments("koderover-agent").Create(context.TODO(), resourceServerDeploymentSpec, metav1.CreateOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to create resource server deployment to initialize cluster, err: %s", err)
+	if _, err := clientset.RbacV1().Roles(namespace).Create(context.Background(), role, metav1.CreateOptions{}); err != nil {
+		return errors.Errorf("cluster %s create role err: %s", clusterID, err)
 	}
 
-	// Resource-server service
-	resourceServerService := &corev1.Service{
+	// create service account
+	serviceAccount := &corev1.ServiceAccount{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:   "resource-server",
-			Labels: resourceServerLabelMap,
+			Name:      "workflow-cm-sa",
+			Namespace: namespace,
 		},
-		Spec: corev1.ServiceSpec{
-			Ports: []corev1.ServicePort{
-				{
-					Protocol:   "TCP",
-					Port:       80,
-					TargetPort: intstr.FromInt(80),
-				},
-			},
-			Selector: resourceServerLabelMap,
-			Type:     "ClusterIP",
-		},
+	}
+	if _, err := clientset.CoreV1().ServiceAccounts(namespace).Create(context.Background(), serviceAccount, metav1.CreateOptions{}); err != nil {
+		return errors.Errorf("cluster %s create serviceAccount err: %s", clusterID, err)
 	}
 
-	_, err = clientset.CoreV1().Services("koderover-agent").Create(context.TODO(), resourceServerService, metav1.CreateOptions{})
-	if err != nil {
-		return fmt.Errorf("failed to create resource server service to initialize cluster, err: %s", err)
+	// create role binding
+	roleBinding := &rbacv1.RoleBinding{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "workflow-cm-rolebinding",
+			Namespace: namespace,
+		},
+		Subjects: []rbacv1.Subject{
+			{
+				Kind:      "ServiceAccount",
+				Name:      "workflow-cm-sa",
+				Namespace: namespace,
+			},
+		},
+		RoleRef: rbacv1.RoleRef{
+			Kind:     "Role",
+			Name:     "workflow-cm-manager",
+			APIGroup: "rbac.authorization.k8s.io",
+		},
 	}
+	if _, err := clientset.RbacV1().RoleBindings(namespace).Create(context.Background(), roleBinding, metav1.CreateOptions{}); err != nil {
+		return errors.Errorf("cluster %s create role binding err: %s", clusterID, err)
+	}
+	log.Infof("cluster %s create role binding successfully", clusterID)
 
 	dindLabelMap := map[string]string{
 		"app.kubernetes.io/component": "dind",
@@ -591,16 +618,6 @@ func RemoveClusterResources(hubserverAddr, clusterID string) error {
 		log.Errorf("failed to delete dind service, err: %s", err)
 	}
 
-	err = clientset.CoreV1().Services("koderover-agent").Delete(context.TODO(), "resource-server", metav1.DeleteOptions{})
-	if err != nil {
-		log.Errorf("failed to delete dind service, err: %s", err)
-	}
-
-	err = clientset.AppsV1().Deployments("koderover-agent").Delete(context.TODO(), "resource-server", metav1.DeleteOptions{})
-	if err != nil {
-		log.Errorf("failed to delete resource-server deployment, err: %s", err)
-	}
-
 	err = clientset.AppsV1().StatefulSets("koderover-agent").Delete(context.TODO(), "dind", metav1.DeleteOptions{})
 	if err != nil {
 		log.Errorf("failed to delete dind statefulset, err: %s", err)
@@ -614,9 +631,33 @@ func RemoveClusterResources(hubserverAddr, clusterID string) error {
 	return nil
 }
 
+func ValidateClusterRoleYAML(k8sYaml string, logger *zap.SugaredLogger) error {
+	resKind := new(types.KubeResourceKind)
+	if err := yaml.Unmarshal([]byte(k8sYaml), &resKind); err != nil {
+		msg := fmt.Errorf("the cluster access permission yaml file format does not conform to the k8s resource yaml format, yaml:%s", k8sYaml)
+		logger.Error(msg)
+		return e.ErrInvalidParam.AddErr(msg)
+	}
+	if resKind.APIVersion != "rbac.authorization.k8s.io/v1" {
+		msg := fmt.Errorf("the cluster access permission yaml resource apiVersion is %s, the fixed value of apiVersion is rbac.authorization.k8s.io/v1", resKind.APIVersion)
+		logger.Error(msg)
+		return e.ErrInvalidParam.AddErr(msg)
+	}
+	if resKind.Kind != "ClusterRole" {
+		msg := fmt.Errorf("the cluster access permission yaml resource kind is %s, the fixed value of kind is ClusterRole", resKind.Kind)
+		logger.Error(msg)
+		return e.ErrInvalidParam.AddErr(msg)
+	}
+	if resKind.Metadata.Name != "koderover-agent-admin" {
+		msg := fmt.Errorf("the cluster access permission yaml resource name is %s, the fixed value of name is koderover-agent-admin", resKind.Metadata.Name)
+		logger.Error(msg)
+		return e.ErrInvalidParam.AddErr(msg)
+	}
+	return nil
+}
+
 type TemplateSchema struct {
 	HubAgentImage        string
-	ResourceServerImage  string
 	ClientToken          string
 	HubServerBaseAddr    string
 	Namespace            string
@@ -629,6 +670,7 @@ type TemplateSchema struct {
 	DindEnablePV         bool
 	DindStorageClassName string
 	DindStorageSizeInGiB int
+	ScheduleWorkflow     bool
 }
 
 const (
@@ -641,7 +683,7 @@ const (
 	DefaultDindStorageSizeInGiB int                          = 10
 )
 
-var YamlTemplate = template.Must(template.New("agentYaml").Parse(`
+var agentYaml = `
 ---
 
 apiVersion: v1
@@ -672,24 +714,6 @@ roleRef:
   kind: ClusterRole
   name: koderover-agent-admin
   apiGroup: rbac.authorization.k8s.io
-
----
-
-apiVersion: rbac.authorization.k8s.io/v1
-kind: ClusterRole
-metadata:
-  name: koderover-agent-admin
-rules:
-- apiGroups:
-  - '*'
-  resources:
-  - '*'
-  verbs:
-  - '*'
-- nonResourceURLs:
-  - '*'
-  verbs:
-  - '*'
 
 ---
 
@@ -762,6 +786,8 @@ spec:
           value: "{{.HubServerBaseAddr}}"
         - name: ASLAN_BASE_ADDR
           value: "{{.AslanBaseAddr}}"
+        - name: SCHEDULE_WORKFLOW
+          value: "{{.ScheduleWorkflow}}"
         resources:
           limits:
             cpu: 1000m
@@ -775,144 +801,7 @@ spec:
   updateStrategy:
     type: RollingUpdate
 {{- end }}
-
----
-
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: resource-server
-  namespace: koderover-agent
-  labels:
-    app.kubernetes.io/component: resource-server
-    app.kubernetes.io/name: zadig
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/component: resource-server
-      app.kubernetes.io/name: zadig
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/component: resource-server
-        app.kubernetes.io/name: zadig
-    spec:
-      containers:
-        - image: {{.ResourceServerImage}}
-          imagePullPolicy: Always
-          name: resource-server
-          resources:
-            limits:
-              cpu: 500m
-              memory: 500Mi
-            requests:
-              cpu: 100m
-              memory: 100Mi
-
----
-
-apiVersion: v1
-kind: Service
-metadata:
-  name: resource-server
-  namespace: koderover-agent
-  labels:
-    app.kubernetes.io/component: resource-server
-    app.kubernetes.io/name: zadig
-spec:
-  type: ClusterIP
-  ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 80
-  selector:
-    app.kubernetes.io/component: resource-server
-    app.kubernetes.io/name: zadig
-
----
-
-apiVersion: apps/v1
-kind: StatefulSet
-metadata:
-  name: dind
-  namespace: koderover-agent
-  labels:
-    app.kubernetes.io/component: dind
-    app.kubernetes.io/name: zadig
-spec:
-  serviceName: dind
-  replicas: {{.DindReplicas}}
-  selector:
-    matchLabels:
-      app.kubernetes.io/component: dind
-      app.kubernetes.io/name: zadig
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/component: dind
-        app.kubernetes.io/name: zadig
-    spec:
-      affinity:
-        podAntiAffinity:
-          preferredDuringSchedulingIgnoredDuringExecution:
-            - weight: 100
-              podAffinityTerm:
-                topologyKey: kubernetes.io/hostname
-      containers:
-        - name: dind
-          image: {{.DindImage}}
-          env:
-            - name: DOCKER_TLS_CERTDIR
-              value: ""
-          securityContext:
-            privileged: true
-          ports:
-            - protocol: TCP
-              containerPort: 2375
-          resources:
-            limits:
-              cpu: {{.DindLimitsCPU}}
-              memory: {{.DindLimitsMemory}}
-            requests:
-              cpu: 100m
-              memory: 128Mi
-{{- if .DindEnablePV }}
-          volumeMounts:
-          - name: zadig-docker
-            mountPath: /var/lib/docker
-  volumeClaimTemplates:
-  - metadata:
-      name: zadig-docker
-    spec:
-      accessModes: [ "ReadWriteOnce" ]
-      storageClassName: {{.DindStorageClassName}}
-      resources:
-        requests:
-          storage: {{.DindStorageSizeInGiB}}Gi
-{{- end }}
-
----
-
-apiVersion: v1
-kind: Service
-metadata:
-  name: dind
-  namespace: koderover-agent
-  labels:
-    app.kubernetes.io/component: dind
-    app.kubernetes.io/name: zadig
-spec:
-  ports:
-    - name: dind
-      protocol: TCP
-      port: 2375
-      targetPort: 2375
-  clusterIP: None
-  selector:
-    app.kubernetes.io/component: dind
-    app.kubernetes.io/name: zadig
-`))
+`
 
 var YamlTemplateForNamespace = template.Must(template.New("agentYaml").Parse(`
 ---
@@ -953,6 +842,42 @@ rules:
   - '*'
   verbs:
   - '*'
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workflow-cm-manager
+  namespace: {{.Namespace}}
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["*"]
+
+---
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workflow-cm-sa
+  namespace: {{.Namespace}}
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: workflow-cm-rolebinding
+  namespace: {{.Namespace}}
+subjects:
+- kind: ServiceAccount
+  name: workflow-cm-sa
+  namespace: {{.Namespace}}
+roleRef:
+  kind: Role
+  name: workflow-cm-manager
+  apiGroup: rbac.authorization.k8s.io
 
 ---
 
@@ -1042,61 +967,6 @@ spec:
 ---
 
 apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: resource-server
-  namespace: {{.Namespace}}
-  labels:
-    app.kubernetes.io/component: resource-server
-    app.kubernetes.io/name: zadig
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app.kubernetes.io/component: resource-server
-      app.kubernetes.io/name: zadig
-  template:
-    metadata:
-      labels:
-        app.kubernetes.io/component: resource-server
-        app.kubernetes.io/name: zadig
-    spec:
-      containers:
-        - image: {{.ResourceServerImage}}
-          imagePullPolicy: Always
-          name: resource-server
-          resources:
-            limits:
-              cpu: 500m
-              memory: 500Mi
-            requests:
-              cpu: 100m
-              memory: 100Mi
-
----
-
-apiVersion: v1
-kind: Service
-metadata:
-  name: resource-server
-  namespace: {{.Namespace}}
-  labels:
-    app.kubernetes.io/component: resource-server
-    app.kubernetes.io/instance: zadig-zadig
-    app.kubernetes.io/name: zadig
-spec:
-  type: ClusterIP
-  ports:
-    - protocol: TCP
-      port: 80
-      targetPort: 80
-  selector:
-    app.kubernetes.io/component: resource-server
-    app.kubernetes.io/name: zadig
-
----
-
-apiVersion: apps/v1
 kind: StatefulSet
 metadata:
   name: dind
@@ -1177,3 +1047,140 @@ spec:
     app.kubernetes.io/component: dind
     app.kubernetes.io/name: zadig
 `))
+
+var ClusterAccessYamlTemplate = `
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: koderover-agent-admin
+rules:
+- apiGroups:
+  - '*'
+  resources:
+  - '*'
+  verbs:
+  - '*'
+- nonResourceURLs:
+  - '*'
+  verbs:
+  - '*'
+`
+
+var WorkflowResourceYaml = `
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: workflow-cm-manager
+  namespace: koderover-agent
+rules:
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["*"]
+
+---
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: workflow-cm-sa
+  namespace: koderover-agent
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: workflow-cm-rolebinding
+  namespace: koderover-agent
+subjects:
+- kind: ServiceAccount
+  name: workflow-cm-sa
+  namespace: koderover-agent
+roleRef:
+  kind: Role
+  name: workflow-cm-manager
+  apiGroup: rbac.authorization.k8s.io
+
+---
+
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: dind
+  namespace: koderover-agent
+  labels:
+    app.kubernetes.io/component: dind
+    app.kubernetes.io/name: zadig
+spec:
+  serviceName: dind
+  replicas: {{.DindReplicas}}
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: dind
+      app.kubernetes.io/name: zadig
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/component: dind
+        app.kubernetes.io/name: zadig
+    spec:
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+      containers:
+        - name: dind
+          image: {{.DindImage}}
+          env:
+            - name: DOCKER_TLS_CERTDIR
+              value: ""
+          securityContext:
+            privileged: true
+          ports:
+            - protocol: TCP
+              containerPort: 2375
+          resources:
+            limits:
+              cpu: {{.DindLimitsCPU}}
+              memory: {{.DindLimitsMemory}}
+            requests:
+              cpu: 100m
+              memory: 128Mi
+{{- if .DindEnablePV }}
+          volumeMounts:
+          - name: zadig-docker
+            mountPath: /var/lib/docker
+  volumeClaimTemplates:
+  - metadata:
+      name: zadig-docker
+    spec:
+      accessModes: [ "ReadWriteOnce" ]
+      storageClassName: {{.DindStorageClassName}}
+      resources:
+        requests:
+          storage: {{.DindStorageSizeInGiB}}Gi
+{{- end }}
+
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: dind
+  namespace: koderover-agent
+  labels:
+    app.kubernetes.io/component: dind
+    app.kubernetes.io/name: zadig
+spec:
+  ports:
+    - name: dind
+      protocol: TCP
+      port: 2375
+      targetPort: 2375
+  clusterIP: None
+  selector:
+    app.kubernetes.io/component: dind
+    app.kubernetes.io/name: zadig
+`

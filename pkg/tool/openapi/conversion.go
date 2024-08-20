@@ -19,24 +19,35 @@ package openapi
 import (
 	"fmt"
 
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/systemconfig/core/codehost/repository/mongodb"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/codehost/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
-func ToScanningAdvancedSetting(arg *types.OpenAPIAdvancedSetting) (*types.ScanningAdvancedSetting, error) {
+func ToScanningAdvancedSetting(arg *types.OpenAPIAdvancedSetting) (*models.ScanningAdvancedSetting, error) {
 	cluster, err := commonrepo.NewK8SClusterColl().FindByName(arg.ClusterName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find cluster of name: %s, the error is: %s", arg.ClusterName, err)
 	}
 
+	strategy := &models.ScheduleStrategy{}
+	if cluster.AdvancedConfig != nil {
+		for _, s := range cluster.AdvancedConfig.ScheduleStrategy {
+			if s.StrategyName == arg.StrategyName {
+				strategy = s
+				break
+			}
+		}
+	}
 	scanninghooks, err := ToScanningHookCtl(arg.Webhooks)
 	if err != nil {
 		return nil, err
 	}
 
-	return &types.ScanningAdvancedSetting{
+	return &models.ScanningAdvancedSetting{
 		ClusterID:  cluster.ID.Hex(),
+		StrategyID: strategy.StrategyID,
 		Timeout:    arg.Timeout,
 		ResReq:     arg.Spec.FindResourceRequestType(),
 		ResReqSpec: arg.Spec,
@@ -44,22 +55,22 @@ func ToScanningAdvancedSetting(arg *types.OpenAPIAdvancedSetting) (*types.Scanni
 	}, nil
 }
 
-func ToScanningHookCtl(req *types.OpenAPIWebhookSetting) (*types.ScanningHookCtl, error) {
+func ToScanningHookCtl(req *types.OpenAPIWebhookSetting) (*models.ScanningHookCtl, error) {
 	if req == nil || req.Enabled == false {
-		return &types.ScanningHookCtl{
+		return &models.ScanningHookCtl{
 			Enabled: false,
 			Items:   nil,
 		}, nil
 	}
 
-	ret := make([]*types.ScanningHook, 0)
+	ret := make([]*models.ScanningHook, 0)
 
 	for _, hook := range req.HookList {
-		repoInfo, err := mongodb.NewCodehostColl().GetCodeHostByAlias(hook.CodeHostName)
+		repoInfo, err := mongodb.NewCodehostColl().GetSystemCodeHostByAlias(hook.CodeHostName)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find codehost with name [%s], error is: %s", hook.CodeHostName, err)
 		}
-		newHook := &types.ScanningHook{
+		newHook := &models.ScanningHook{
 			CodehostID:   repoInfo.ID,
 			Source:       repoInfo.Type,
 			RepoOwner:    hook.RepoNamespace,
@@ -70,14 +81,14 @@ func ToScanningHookCtl(req *types.OpenAPIWebhookSetting) (*types.ScanningHookCtl
 		}
 		ret = append(ret, newHook)
 	}
-	return &types.ScanningHookCtl{
+	return &models.ScanningHookCtl{
 		Enabled: true,
 		Items:   ret,
 	}, nil
 }
 
 func ToScanningRepository(repo *types.OpenAPIRepoInput) (*types.Repository, error) {
-	repoInfo, err := mongodb.NewCodehostColl().GetCodeHostByAlias(repo.CodeHostName)
+	repoInfo, err := mongodb.NewCodehostColl().GetSystemCodeHostByAlias(repo.CodeHostName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find codehost with name [%s], error is: %s", repo.CodeHostName, err)
 	}
@@ -96,7 +107,7 @@ func ToScanningRepository(repo *types.OpenAPIRepoInput) (*types.Repository, erro
 }
 
 func ToBuildRepository(repo *types.OpenAPIRepoInput) (*types.Repository, error) {
-	repoInfo, err := mongodb.NewCodehostColl().GetCodeHostByAlias(repo.CodeHostName)
+	repoInfo, err := mongodb.NewCodehostColl().GetSystemCodeHostByAlias(repo.CodeHostName)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find codehost with name [%s], error is: %s", repo.CodeHostName, err)
 	}

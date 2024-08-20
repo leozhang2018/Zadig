@@ -25,18 +25,18 @@ import (
 
 	"go.uber.org/zap"
 
-	configbase "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/task"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/github"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	"github.com/koderover/zadig/pkg/util"
+	configbase "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/task"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/github"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/s3"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 type Service struct {
@@ -245,7 +245,7 @@ func downloadReport(taskInfo *task.Task, fileName, testName string, logger *zap.
 	var store *s3.S3
 	var err error
 
-	if store, err = s3.NewS3StorageFromEncryptedURI(taskInfo.StorageURI); err != nil {
+	if store, err = s3.UnmarshalNewS3StorageFromEncrypted(taskInfo.StorageURI); err != nil {
 		logger.Errorf("failed to create s3 storage %s", taskInfo.StorageURI)
 		return nil, err
 	}
@@ -507,6 +507,21 @@ func (s *Service) UpdateWebhookCommentForWorkflowV4(task *models.WorkflowTask, l
 				Status: status,
 			}
 
+			if task.Type == config.WorkflowTaskTypeScanning {
+				segs := strings.Split(task.WorkflowName, "-")
+				if len(segs) != 3 {
+					logger.Errorf("invalid workflow task originated from scanning. workflow name: %s", task.WorkflowName)
+					return fmt.Errorf("invalid workflow task originated from scanning. workflow name: %s", task.WorkflowName)
+				}
+				scmTask.ScanningName = task.WorkflowDisplayName
+				scmTask.ScanningID = segs[2]
+
+			}
+
+			if task.Type == config.WorkflowTaskTypeTesting {
+				scmTask.TestName = task.WorkflowDisplayName
+			}
+
 			tasks = append(tasks, scmTask)
 			taskExist = true
 		} else {
@@ -515,13 +530,31 @@ func (s *Service) UpdateWebhookCommentForWorkflowV4(task *models.WorkflowTask, l
 	}
 
 	if !taskExist {
-		tasks = append(tasks, &models.NotificationTask{
+		scmTask := &models.NotificationTask{
 			ProductName:         task.ProjectName,
 			WorkflowName:        task.WorkflowName,
 			ID:                  task.TaskID,
 			WorkflowDisplayName: task.WorkflowDisplayName,
 			Status:              status,
-		})
+		}
+
+		if task.Type == config.WorkflowTaskTypeScanning {
+			segs := strings.Split(task.WorkflowName, "-")
+			if len(segs) != 3 {
+				logger.Errorf("invalid workflow task originated from scanning. workflow name: %s", task.WorkflowName)
+				return fmt.Errorf("invalid workflow task originated from scanning. workflow name: %s", task.WorkflowName)
+			}
+			scmTask.ScanningName = task.WorkflowDisplayName
+			scmTask.ScanningID = segs[2]
+
+		}
+
+		if task.Type == config.WorkflowTaskTypeTesting {
+			scmTask.TestName = task.WorkflowDisplayName
+		}
+
+		tasks = append(tasks, scmTask)
+
 		shouldComment = true
 	}
 

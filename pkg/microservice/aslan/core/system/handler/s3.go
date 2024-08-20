@@ -24,17 +24,32 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/system/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/service"
+	"github.com/koderover/zadig/v2/pkg/shared/client/plutusvendor"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func ListS3Storage(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.S3StorageManagement.View {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	encryptedKey := c.Query("encryptedKey")
 	if len(encryptedKey) == 0 {
@@ -44,9 +59,50 @@ func ListS3Storage(c *gin.Context) {
 	ctx.Resp, ctx.Err = service.ListS3Storage(encryptedKey, ctx.Logger)
 }
 
-func CreateS3Storage(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+// @Summary List S3 Storage By Project
+// @Description List S3 Storage By Project
+// @Tags 	system
+// @Accept 	json
+// @Produce json
+// @Param 	projectName	query		string										true	"project name"
+// @Success 200 		{array} 	commonmodels.S3Storage
+// @Router /api/aslan/system/s3storage/project [get]
+func ListS3StorageByProject(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Logger.Errorf("failed to generate authorization info for user: %s, error: %s", ctx.UserID, err)
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectName := c.Query("projectName")
+	if len(projectName) == 0 {
+		ctx.Err = e.ErrInvalidParam
+		return
+	}
+
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = service.ListS3StorageByProject(projectName, ctx.Logger)
+}
+
+func CreateS3Storage(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	args := new(commonmodels.S3Storage)
 	data, err := c.GetRawData()
@@ -59,9 +115,31 @@ func CreateS3Storage(c *gin.Context) {
 	internalhandler.InsertOperationLog(c, ctx.UserName, "", "新增", "系统设置-对象存储", fmt.Sprintf("地址:%s", c.GetString("s3StorageEndpoint")), string(data), ctx.Logger)
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(data))
 
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.S3StorageManagement.Create {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
 	if err := c.BindJSON(args); err != nil {
 		ctx.Err = e.ErrInvalidParam.AddErr(err)
 		return
+	}
+
+	licenseStatus, err := plutusvendor.New().CheckZadigXLicenseStatus()
+	if err != nil {
+		ctx.Err = fmt.Errorf("failed to validate zadig license status, error: %s", err)
+		return
+	}
+	if args.Provider == config.S3StorageProviderAmazonS3 {
+		if !((licenseStatus.Type == plutusvendor.ZadigSystemTypeProfessional ||
+			licenseStatus.Type == plutusvendor.ZadigSystemTypeEnterprise) &&
+			licenseStatus.Status == plutusvendor.ZadigXLicenseStatusNormal) {
+			ctx.Err = e.ErrLicenseInvalid.AddDesc("")
+			return
+		}
 	}
 
 	storage := &s3.S3{
@@ -76,15 +154,36 @@ func CreateS3Storage(c *gin.Context) {
 }
 
 func GetS3Storage(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.S3StorageManagement.View {
+			ctx.UnAuthorized = true
+		}
+		return
+	}
 
 	ctx.Resp, ctx.Err = service.GetS3Storage(c.Param("id"), ctx.Logger)
 }
 
 func UpdateS3Storage(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	args := new(commonmodels.S3Storage)
 	data, err := c.GetRawData()
@@ -97,9 +196,31 @@ func UpdateS3Storage(c *gin.Context) {
 	internalhandler.InsertOperationLog(c, ctx.UserName, "", "更新", "系统设置-对象存储", fmt.Sprintf("地址:%s", c.GetString("s3StorageEndpoint")), string(data), ctx.Logger)
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(data))
 
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.S3StorageManagement.Edit {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
 	if err := c.BindJSON(args); err != nil {
 		ctx.Err = e.ErrInvalidParam.AddErr(err)
 		return
+	}
+
+	licenseStatus, err := plutusvendor.New().CheckZadigXLicenseStatus()
+	if err != nil {
+		ctx.Err = fmt.Errorf("failed to validate zadig license status, error: %s", err)
+		return
+	}
+	if args.Provider == config.S3StorageProviderAmazonS3 {
+		if !((licenseStatus.Type == plutusvendor.ZadigSystemTypeProfessional ||
+			licenseStatus.Type == plutusvendor.ZadigSystemTypeEnterprise) &&
+			licenseStatus.Status == plutusvendor.ZadigXLicenseStatusNormal) {
+			ctx.Err = e.ErrLicenseInvalid.AddDesc("")
+			return
+		}
 	}
 
 	storage := &s3.S3{
@@ -115,10 +236,24 @@ func UpdateS3Storage(c *gin.Context) {
 }
 
 func DeleteS3Storage(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
 	internalhandler.InsertOperationLog(c, ctx.UserName, "", "删除", "系统设置-对象存储", fmt.Sprintf("s3Storage ID:%s", c.Param("id")), "", ctx.Logger)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.S3StorageManagement.Delete {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	ctx.Err = service.DeleteS3Storage(ctx.UserName, c.Param("id"), ctx.Logger)
 }

@@ -18,11 +18,18 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/multicluster/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/multicluster/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
 )
 
 func CheckIstiod(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	ctx.Resp, ctx.Err = service.CheckIstiod(c, c.Param("id"))
+}
+
+func OpenAPICheckIstiod(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 

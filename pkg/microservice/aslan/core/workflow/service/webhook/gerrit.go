@@ -33,20 +33,22 @@ import (
 	"github.com/otiai10/copy"
 	"go.uber.org/zap"
 
-	systemConfig "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/command"
-	gerritservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/gerrit"
-	environmentservice "github.com/koderover/zadig/pkg/microservice/aslan/core/environment/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/service/service"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/gerrit"
-	"github.com/koderover/zadig/pkg/util"
+	systemConfig "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/command"
+	gerritservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/gerrit"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/repository"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	environmentservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/environment/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/service/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/gerrit"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 const (
@@ -75,13 +77,13 @@ func ProcessGerritHook(payload []byte, req *http.Request, requestID string, log 
 	var wg sync.WaitGroup
 	var errorList = &multierror.Error{}
 
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		if err := TriggerWorkflowByGerritEvent(gerritTypeEventObj, payload, req.RequestURI, baseURI, req.Header.Get("X-Forwarded-Host"), requestID, log); err != nil {
-			errorList = multierror.Append(errorList, err)
-		}
-	}()
+	//wg.Add(1)
+	//go func() {
+	//	defer wg.Done()
+	//	if err := TriggerWorkflowByGerritEvent(gerritTypeEventObj, payload, req.RequestURI, baseURI, req.Header.Get("X-Forwarded-Host"), requestID, log); err != nil {
+	//		errorList = multierror.Append(errorList, err)
+	//	}
+	//}()
 
 	wg.Add(1)
 	go func() {
@@ -95,93 +97,108 @@ func ProcessGerritHook(payload []byte, req *http.Request, requestID string, log 
 }
 
 func updateServiceTemplateByGerritEvent(uri string, log *zap.SugaredLogger) error {
-	serviceTmpls, err := GetGerritServiceTemplates()
+	svcTmplsMap := map[bool][]*commonmodels.Service{}
+	serviceTmpls, err := GetGerritTestingServiceTemplates()
 	log.Infof("updateServiceTemplateByGerritEvent service templates: %v", serviceTmpls)
 	if err != nil {
-		log.Errorf("updateServiceTemplateByGerritEvent Failed to get gerrit service templates, error: %v", err)
+		log.Errorf("updateServiceTemplateByGerritEvent Failed to get gerrit testing service templates, error: %v", err)
 		return err
 	}
+	svcTmplsMap[false] = serviceTmpls
+	productionServiceTmpls, err := GetGerritProductionServiceTemplates()
+	log.Infof("updateServiceTemplateByGerritEvent service templates: %v", serviceTmpls)
+	if err != nil {
+		log.Errorf("updateServiceTemplateByGerritEvent Failed to get gerrit production service templates, error: %v", err)
+		return err
+	}
+	svcTmplsMap[true] = productionServiceTmpls
+
 	errs := &multierror.Error{}
-	for _, serviceTmpl := range serviceTmpls {
-		if strings.Contains(uri, "?") {
-			if !strings.Contains(uri, serviceTmpl.ServiceName) {
-				continue
+	for production, serviceTmpls := range svcTmplsMap {
+		for _, serviceTmpl := range serviceTmpls {
+			serviceTmpl.Production = production
+
+			if strings.Contains(uri, "?") {
+				if !strings.Contains(uri, serviceTmpl.ServiceName) {
+					continue
+				}
 			}
-		}
-		service, err := commonservice.GetServiceTemplate(serviceTmpl.ServiceName, serviceTmpl.Type, serviceTmpl.ProductName, setting.ProductStatusDeleting, serviceTmpl.Revision, log)
-		if err != nil {
-			log.Errorf("updateServiceTemplateByGerritEvent GetServiceTemplate err:%v", err)
-			errs = multierror.Append(errs, err)
-		}
-		detail, err := systemconfig.New().GetCodeHost(service.GerritCodeHostID)
-		if err != nil {
-			log.Errorf("updateServiceTemplateByGerritEvent GetCodehostDetail err:%v", err)
-			errs = multierror.Append(errs, err)
-		}
-		newRepoName := fmt.Sprintf("%s-new", service.GerritRepoName)
-		err = command.RunGitCmds(detail, setting.GerritDefaultOwner, setting.GerritDefaultOwner, newRepoName, service.GerritBranchName, service.GerritRemoteName)
-		if err != nil {
-			log.Errorf("updateServiceTemplateByGerritEvent runGitCmds err:%v", err)
-			errs = multierror.Append(errs, err)
-		}
 
-		newBase, err := GetGerritWorkspaceBasePath(newRepoName)
-		if err != nil {
-			errs = multierror.Append(errs, err)
-		}
+			service, err := commonservice.GetServiceTemplate(serviceTmpl.ServiceName, serviceTmpl.Type, serviceTmpl.ProductName, setting.ProductStatusDeleting, serviceTmpl.Revision, production, log)
+			if err != nil {
+				log.Errorf("updateServiceTemplateByGerritEvent GetServiceTemplate err:%v", err)
+				errs = multierror.Append(errs, err)
+			}
+			detail, err := systemconfig.New().GetCodeHost(service.GerritCodeHostID)
+			if err != nil {
+				log.Errorf("updateServiceTemplateByGerritEvent GetCodehostDetail err:%v", err)
+				errs = multierror.Append(errs, err)
+			}
+			newRepoName := fmt.Sprintf("%s-new", service.GerritRepoName)
+			err = command.RunGitCmds(detail, setting.GerritDefaultOwner, setting.GerritDefaultOwner, newRepoName, service.GerritBranchName, service.GerritRemoteName)
+			if err != nil {
+				log.Errorf("updateServiceTemplateByGerritEvent runGitCmds err:%v", err)
+				errs = multierror.Append(errs, err)
+			}
 
-		oldBase, err := GetGerritWorkspaceBasePath(service.GerritRepoName)
-		if err != nil {
-			errs = multierror.Append(errs, err)
-			err = command.RunGitCmds(detail, setting.GerritDefaultOwner, setting.GerritDefaultOwner, service.GerritRepoName, service.GerritBranchName, service.GerritRemoteName)
+			newBase, err := GetGerritWorkspaceBasePath(newRepoName)
 			if err != nil {
 				errs = multierror.Append(errs, err)
 			}
-		}
 
-		filePath, err := os.Stat(path.Join(newBase, service.LoadPath))
-		if err != nil {
-			errs = multierror.Append(errs, err)
-		}
+			oldBase, err := GetGerritWorkspaceBasePath(service.GerritRepoName)
+			if err != nil {
+				errs = multierror.Append(errs, err)
+				err = command.RunGitCmds(detail, setting.GerritDefaultOwner, setting.GerritDefaultOwner, service.GerritRepoName, service.GerritBranchName, service.GerritRemoteName)
+				if err != nil {
+					errs = multierror.Append(errs, err)
+				}
+			}
 
-		var newYamlContent string
-		var oldYamlContent string
-		if filePath.IsDir() {
-			if newFileContents, err := readAllFileContentUnderDir(path.Join(newBase, service.LoadPath)); err == nil {
-				newYamlContent = strings.Join(newFileContents, setting.YamlFileSeperator)
+			filePath, err := os.Stat(path.Join(newBase, service.LoadPath))
+			if err != nil {
+				errs = multierror.Append(errs, err)
+			}
+
+			var newYamlContent string
+			var oldYamlContent string
+			if filePath.IsDir() {
+				if newFileContents, err := readAllFileContentUnderDir(path.Join(newBase, service.LoadPath)); err == nil {
+					newYamlContent = util.JoinYamls(newFileContents)
+				} else {
+					errs = multierror.Append(errs, err)
+				}
+
+				if oldFileContents, err := readAllFileContentUnderDir(path.Join(oldBase, service.LoadPath)); err == nil {
+					oldYamlContent = util.JoinYamls(oldFileContents)
+				} else {
+					errs = multierror.Append(errs, err)
+				}
+
 			} else {
-				errs = multierror.Append(errs, err)
+				if contentBytes, err := ioutil.ReadFile(path.Join(newBase, service.LoadPath)); err == nil {
+					newYamlContent = string(contentBytes)
+				} else {
+					errs = multierror.Append(errs, err)
+				}
+
+				if contentBytes, err := ioutil.ReadFile(path.Join(oldBase, service.LoadPath)); err == nil {
+					oldYamlContent = string(contentBytes)
+				} else {
+					errs = multierror.Append(errs, err)
+				}
 			}
 
-			if oldFileContents, err := readAllFileContentUnderDir(path.Join(oldBase, service.LoadPath)); err == nil {
-				oldYamlContent = strings.Join(oldFileContents, setting.YamlFileSeperator)
+			if strings.Compare(newYamlContent, oldYamlContent) != 0 || service.Type == setting.HelmDeployType {
+				log.Infof("Started to sync service template %s from gerrit %s", service.ServiceName, service.LoadPath)
+				service.CreateBy = "system"
+				service.Yaml = newYamlContent
+				if err := SyncServiceTemplateFromGerrit(service, log); err != nil {
+					errs = multierror.Append(errs, err)
+				}
 			} else {
-				errs = multierror.Append(errs, err)
+				log.Infof("Service template %s from gerrit %s is not affected, no sync", service.ServiceName, service.LoadPath)
 			}
-
-		} else {
-			if contentBytes, err := ioutil.ReadFile(path.Join(newBase, service.LoadPath)); err == nil {
-				newYamlContent = string(contentBytes)
-			} else {
-				errs = multierror.Append(errs, err)
-			}
-
-			if contentBytes, err := ioutil.ReadFile(path.Join(oldBase, service.LoadPath)); err == nil {
-				oldYamlContent = string(contentBytes)
-			} else {
-				errs = multierror.Append(errs, err)
-			}
-		}
-
-		if strings.Compare(newYamlContent, oldYamlContent) != 0 || service.Type == setting.HelmDeployType {
-			log.Infof("Started to sync service template %s from gerrit %s", service.ServiceName, service.LoadPath)
-			service.CreateBy = "system"
-			service.Yaml = newYamlContent
-			if err := SyncServiceTemplateFromGerrit(service, log); err != nil {
-				errs = multierror.Append(errs, err)
-			}
-		} else {
-			log.Infof("Service template %s from gerrit %s is not affected, no sync", service.ServiceName, service.LoadPath)
 		}
 	}
 
@@ -192,12 +209,20 @@ func GetGerritWorkspaceBasePath(repoName string) (string, error) {
 	return gerritservice.GetGerritWorkspaceBasePath(repoName)
 }
 
-// GetGerritServiceTemplates Get all service templates maintained in gerrit
-func GetGerritServiceTemplates() ([]*commonmodels.Service, error) {
+// GetGerritTestingServiceTemplates Get all service templates maintained in gerrit
+func GetGerritTestingServiceTemplates() ([]*commonmodels.Service, error) {
 	opt := &commonrepo.ServiceListOption{
 		Source: setting.SourceFromGerrit,
 	}
 	return commonrepo.NewServiceColl().ListMaxRevisions(opt)
+}
+
+// GetGerritProductionServiceTemplates Get all service templates maintained in gerrit
+func GetGerritProductionServiceTemplates() ([]*commonmodels.Service, error) {
+	opt := &commonrepo.ServiceListOption{
+		Source: setting.SourceFromGerrit,
+	}
+	return commonrepo.NewProductionServiceColl().ListMaxRevisions(opt)
 }
 
 // SyncServiceTemplateFromGerrit Force to sync Service Template to the latest commit and content,
@@ -220,12 +245,12 @@ func SyncServiceTemplateFromGerrit(service *commonmodels.Service, log *zap.Sugar
 			return e.ErrValidateTemplate.AddDesc(err.Error())
 		}
 		// Update to database, revision+1
-		if err := commonrepo.NewServiceColl().Create(service); err != nil {
+		if err := repository.Create(service, service.Production); err != nil {
 			log.Errorf("SyncServiceTemplateFromGerrit Failed to sync service %s from gerrit path %s error: %v", service.ServiceName, service.SrcPath, err)
 			return e.ErrCreateTemplate.AddDesc(err.Error())
 		}
 
-		return environmentservice.AutoDeployYamlServiceToEnvs(service.CreateBy, "", service, log)
+		return environmentservice.AutoDeployYamlServiceToEnvs(service.CreateBy, "", service, service.Production, log)
 	}
 	// remove old repo dir
 	oldRepoDir := filepath.Join(config.S3StoragePath(), service.GerritRepoName)
@@ -296,11 +321,11 @@ func ensureServiceTmpl(userName string, args *commonmodels.Service, log *zap.Sug
 			// 替换分隔符
 			args.Yaml = util.ReplaceWrapLine(args.Yaml)
 			// 分隔符为\n---\n
-			args.KubeYamls = SplitYaml(args.Yaml)
+			args.KubeYamls = util.SplitYaml(args.Yaml)
 		}
 
 		// 遍历args.KubeYamls，获取 Deployment 或者 StatefulSet 里面所有containers 镜像和名称
-		if err := setCurrentContainerImages(args); err != nil {
+		if err := commonutil.SetCurrentContainerImages(args); err != nil {
 			return err
 		}
 
@@ -308,8 +333,7 @@ func ensureServiceTmpl(userName string, args *commonmodels.Service, log *zap.Sug
 	}
 
 	// 设置新的版本号
-	serviceTemplate := fmt.Sprintf(setting.ServiceTemplateCounterName, args.ServiceName, args.ProductName)
-	rev, err := commonrepo.NewCounterColl().GetNextSeq(serviceTemplate)
+	rev, err := commonutil.GenerateServiceNextRevision(args.Production, args.ServiceName, args.ProductName)
 	if err != nil {
 		return fmt.Errorf("get next service template revision error: %v", err)
 	}
@@ -333,6 +357,7 @@ func reloadServiceTmplFromGerrit(svc *commonmodels.Service, log *zap.SugaredLogg
 			Branch:     svc.BranchName,
 			Paths:      []string{svc.LoadPath},
 		},
+		Production: svc.Production,
 	}, true, log)
 	return err
 }

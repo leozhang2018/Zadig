@@ -7,16 +7,19 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/types"
 	"github.com/pkg/errors"
 
 	"github.com/imroc/req/v3"
 	"github.com/tidwall/gjson"
 	"go.uber.org/zap"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/apollo"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func ListConfigurationManagement(_type string, log *zap.SugaredLogger) ([]*commonmodels.ConfigurationManagement, error) {
@@ -38,6 +41,9 @@ func CreateConfigurationManagement(args *commonmodels.ConfigurationManagement, l
 		return e.ErrCreateConfigurationManagement.AddErr(err)
 	}
 
+	if _, err := mongodb.NewConfigurationManagementColl().GetBySystemIdentity(args.SystemIdentity); err == nil {
+		return e.ErrCreateConfigurationManagement.AddErr(fmt.Errorf("can't set the same system identity"))
+	}
 	err := mongodb.NewConfigurationManagementColl().Create(context.Background(), args)
 	if err != nil {
 		log.Errorf("create configuration management error: %v", err)
@@ -65,7 +71,17 @@ func UpdateConfigurationManagement(id string, args *commonmodels.ConfigurationMa
 		return e.ErrUpdateConfigurationManagement.AddErr(err)
 	}
 
-	err := mongodb.NewConfigurationManagementColl().Update(context.Background(), id, args)
+	var oldSystemIdentity string
+	oldCm, err := mongodb.NewConfigurationManagementColl().GetByID(context.Background(), id)
+	if err == nil {
+		oldSystemIdentity = oldCm.SystemIdentity
+	}
+	if oldCm.SystemIdentity != "" && args.SystemIdentity != oldSystemIdentity {
+		if _, err := mongodb.NewConfigurationManagementColl().GetBySystemIdentity(args.SystemIdentity); err == nil {
+			return e.ErrUpdateConfigurationManagement.AddErr(fmt.Errorf("can't set the same system identity"))
+		}
+	}
+	err = mongodb.NewConfigurationManagementColl().Update(context.Background(), id, args)
 	if err != nil {
 		log.Errorf("update configuration management error: %v", err)
 		return e.ErrUpdateConfigurationManagement.AddErr(err)
@@ -165,6 +181,7 @@ func marshalConfigurationManagementAuthConfig(management *commonmodels.Configura
 	case setting.SourceFromApollo:
 		management.AuthConfig = &commonmodels.ApolloAuthConfig{
 			Token: gjson.Get(rawJson, "token").String(),
+			User:  gjson.Get(rawJson, "user").String(),
 		}
 	case setting.SourceFromNacos:
 		management.AuthConfig = &commonmodels.NacosAuthConfig{
@@ -182,4 +199,166 @@ func validateConfigurationManagementType(management *commonmodels.ConfigurationM
 		return errors.New("invalid type")
 	}
 	return nil
+}
+
+func ListApolloApps(id string, log *zap.SugaredLogger) ([]string, error) {
+	info, err := mongodb.NewConfigurationManagementColl().GetApolloByID(context.Background(), id)
+	if err != nil {
+		return nil, errors.Errorf("failed to get apollo info from mongo: %v", err)
+	}
+	cli := apollo.NewClient(info.ServerAddress, info.Token)
+	apps, err := cli.ListApp()
+	if err != nil {
+		return nil, e.ErrGetApolloInfo.AddErr(err)
+	}
+	var idList []string
+	for _, app := range apps {
+		idList = append(idList, app.AppID)
+	}
+	return idList, nil
+}
+
+func ListApolloEnvAndClusters(id string, appID string, log *zap.SugaredLogger) ([]*apollo.EnvAndCluster, error) {
+	info, err := mongodb.NewConfigurationManagementColl().GetApolloByID(context.Background(), id)
+	if err != nil {
+		return nil, errors.Errorf("failed to get apollo info from mongo: %v", err)
+	}
+	cli := apollo.NewClient(info.ServerAddress, info.Token)
+	envs, err := cli.ListAppEnvsAndClusters(appID)
+	if err != nil {
+		return nil, e.ErrGetApolloInfo.AddErr(err)
+	}
+	return envs, nil
+}
+
+func ListApolloConfigByType(id, appID, format string, log *zap.SugaredLogger) ([]*apollo.BriefNamespace, error) {
+	resp := make([]*apollo.BriefNamespace, 0)
+	info, err := mongodb.NewConfigurationManagementColl().GetApolloByID(context.Background(), id)
+	if err != nil {
+		log.Errorf("failed to get apollo info in database, error: %s", err)
+		return nil, errors.Errorf("failed to get apollo info from mongo: %v", err)
+	}
+	cli := apollo.NewClient(info.ServerAddress, info.Token)
+	envs, err := cli.ListAppEnvsAndClusters(appID)
+	if err != nil {
+		log.Errorf("failed to list env and clusters for app id: %s, error is: %s", id, err)
+		return nil, e.ErrGetApolloInfo.AddErr(err)
+	}
+	for _, env := range envs {
+		for _, cluster := range env.Clusters {
+			namesapceList, err := cli.ListAppNamespace(appID, env.Env, cluster)
+			if err != nil {
+				log.Errorf("failed to get namespace info from apollo for app: %s, env: %s, cluster: %s, error: %s", appID, env.Env, cluster, err)
+				return nil, e.ErrGetApolloInfo.AddErr(err)
+			}
+			for _, namespace := range namesapceList {
+				if format != "" && namespace.Format != format {
+					continue
+				}
+				resp = append(resp, &apollo.BriefNamespace{
+					AppID:         appID,
+					Env:           env.Env,
+					ClusterName:   cluster,
+					NamespaceName: namespace.NamespaceName,
+					Format:        namespace.Format,
+				})
+			}
+		}
+	}
+
+	return resp, nil
+}
+
+func ListApolloNamespaces(id string, appID string, env string, cluster string, log *zap.SugaredLogger) ([]string, error) {
+	info, err := mongodb.NewConfigurationManagementColl().GetApolloByID(context.Background(), id)
+	if err != nil {
+		return nil, errors.Errorf("failed to get apollo info from mongo: %v", err)
+	}
+	cli := apollo.NewClient(info.ServerAddress, info.Token)
+	namespaces, err := cli.ListAppNamespace(appID, env, cluster)
+	if err != nil {
+		return nil, e.ErrGetApolloInfo.AddErr(err)
+	}
+	var namespaceNameList []string
+	for _, v := range namespaces {
+		namespaceNameList = append(namespaceNameList, v.NamespaceName)
+	}
+	return namespaceNameList, nil
+}
+
+func ListApolloConfig(id, appID, env, cluster, namespace string, log *zap.SugaredLogger) (*ApolloConfig, error) {
+	info, err := mongodb.NewConfigurationManagementColl().GetApolloByID(context.Background(), id)
+	if err != nil {
+		log.Errorf("failed to get apollo info in database, error: %s", err)
+		return nil, errors.Errorf("failed to get apollo info from mongo: %v", err)
+	}
+	cli := apollo.NewClient(info.ServerAddress, info.Token)
+	namespaceInfo, err := cli.GetNamespace(appID, env, cluster, namespace)
+	if err != nil {
+		log.Errorf("failed to get namespace from apollo, error: %s", err)
+		return nil, fmt.Errorf("failed to get namespace info from apollo, error: %s", err)
+	}
+	resp := make([]*commonmodels.ApolloKV, 0)
+	for _, item := range namespaceInfo.Items {
+		if item.Key == "" {
+			continue
+		}
+		resp = append(resp, &commonmodels.ApolloKV{
+			Key: item.Key,
+			Val: item.Value,
+		})
+	}
+	return &ApolloConfig{
+		ConfigType: namespaceInfo.Format,
+		Config:     resp,
+	}, nil
+}
+
+func ListNacosConfigByType(id, format string, log *zap.SugaredLogger) ([]*BriefNacosConfig, error) {
+	resp := make([]*BriefNacosConfig, 0)
+	cli, err := service.GetNacosClient(id)
+	if err != nil {
+		log.Errorf("failed to get nacos client, error is: %s", err)
+		return nil, e.ErrGetNacosInfo.AddErr(err)
+	}
+	namespaces, err := cli.ListNamespaces()
+	if err != nil {
+		log.Errorf("failed to list nacos namespaces for id: %s, error is: %s", id, err)
+		return nil, e.ErrGetNacosInfo.AddErr(err)
+	}
+	for _, namespace := range namespaces {
+		configs, err := cli.ListConfigs(namespace.NamespaceID)
+		if err != nil {
+			log.Errorf("failed to list nacos config for namespace: %s, error is: %s", namespace.NamespacedName, err)
+			return nil, e.ErrGetNacosInfo.AddErr(err)
+		}
+		for _, config := range configs {
+			if format != "" && format != config.Format {
+				continue
+			}
+			resp = append(resp, &BriefNacosConfig{
+				DataID:        config.DataID,
+				Format:        config.Format,
+				Group:         config.Group,
+				NamespaceID:   namespace.NamespaceID,
+				NamespaceName: namespace.NamespacedName,
+			})
+		}
+	}
+
+	return resp, nil
+}
+
+func GetNacosConfig(id, namespace, groupName, dataName string, log *zap.SugaredLogger) (*types.NacosConfig, error) {
+	cli, err := service.GetNacosClient(id)
+	if err != nil {
+		log.Errorf("failed to get nacos client, error is: %s", err)
+		return nil, e.ErrGetNacosInfo.AddErr(err)
+	}
+	resp, err := cli.GetConfig(dataName, groupName, namespace)
+	if err != nil {
+		log.Errorf("failed to get config info for nacos data: %s under namespace: %s, error: %s", dataName, namespace, err)
+		return nil, e.ErrGetNacosInfo.AddErr(err)
+	}
+	return resp, nil
 }

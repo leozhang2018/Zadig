@@ -17,11 +17,14 @@ limitations under the License.
 package service
 
 import (
+	"fmt"
+
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	templaterepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	templaterepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
 )
 
 type QueryVerbosity string
@@ -37,6 +40,15 @@ type ProjectListOptions struct {
 	IgnoreNoVersions bool
 	Verbosity        QueryVerbosity
 	Names            []string
+	PageSize         int64
+	PageNum          int64
+	Filter           string
+	GroupName        string
+	Ungrouped        bool
+}
+type ProjectDetailedResponse struct {
+	ProjectDetailedRepresentation []*ProjectDetailedRepresentation `json:"projects"`
+	Total                         int                              `json:"total"`
 }
 
 type ProjectDetailedRepresentation struct {
@@ -50,6 +62,11 @@ type ProjectDetailedRepresentation struct {
 	DeployType string `json:"deployType"`
 }
 
+type ProjectBriefResponse struct {
+	ProjectBriefRepresentation []*ProjectBriefRepresentation `json:"projects"`
+	Total                      int                           `json:"total"`
+}
+
 type ProjectBriefRepresentation struct {
 	*ProjectMinimalRepresentation
 	Envs []string `json:"envs"`
@@ -60,6 +77,60 @@ type ProjectMinimalRepresentation struct {
 }
 
 func ListProjects(opts *ProjectListOptions, logger *zap.SugaredLogger) (interface{}, error) {
+	authorizedProjectList := sets.NewString(opts.Names...)
+	projectKeys := make([]string, 0)
+
+	var err error
+	if opts.Ungrouped {
+		projectKeys, err = GetUnGroupedProjectKeys()
+		if err != nil {
+			msg := fmt.Errorf("failed to list ungrouped projects, err: %s", err)
+			logger.Error(msg)
+			return nil, msg
+		}
+
+		if len(projectKeys) == 0 {
+			return &ProjectDetailedResponse{
+				ProjectDetailedRepresentation: nil,
+				Total:                         0,
+			}, nil
+		}
+	} else if opts.GroupName != "" {
+		group, err := mongodb.NewProjectGroupColl().Find(mongodb.ProjectGroupOpts{Name: opts.GroupName})
+		if err != nil && (err != mongo.ErrNoDocuments && err != mongo.ErrNilDocument) {
+			logger.Errorf("Failed to list projects, err: %s", err)
+			return nil, err
+		}
+
+		// if the project group does not hava any projects, return empty
+		if group != nil && len(group.Projects) == 0 {
+			return &ProjectDetailedResponse{
+				ProjectDetailedRepresentation: nil,
+				Total:                         0,
+			}, nil
+		}
+
+		if group != nil && group.Projects != nil {
+			for _, project := range group.Projects {
+				projectKeys = append(projectKeys, project.ProjectKey)
+			}
+		}
+	}
+
+	if len(projectKeys) > 0 && len(authorizedProjectList) > 0 {
+		opts.Names = authorizedProjectList.Intersection(sets.NewString(projectKeys...)).List()
+		if len(opts.Names) == 0 {
+			return &ProjectDetailedResponse{
+				ProjectDetailedRepresentation: nil,
+				Total:                         0,
+			}, nil
+		}
+	} else if len(projectKeys) == 0 && len(authorizedProjectList) > 0 {
+		opts.Names = authorizedProjectList.List()
+	} else {
+		opts.Names = projectKeys
+	}
+
 	switch opts.Verbosity {
 	case VerbosityDetailed:
 		return listDetailedProjectInfos(opts, logger)
@@ -72,16 +143,19 @@ func ListProjects(opts *ProjectListOptions, logger *zap.SugaredLogger) (interfac
 	}
 }
 
-func listDetailedProjectInfos(opts *ProjectListOptions, logger *zap.SugaredLogger) ([]*ProjectDetailedRepresentation, error) {
-	var res []*ProjectDetailedRepresentation
+func listDetailedProjectInfos(opts *ProjectListOptions, logger *zap.SugaredLogger) (*ProjectDetailedResponse, error) {
+	var representation []*ProjectDetailedRepresentation
 
-	nameSet, nameMap, err := getProjects(opts)
+	nameOrder, nameSet, nameMap, total, err := getProjects(opts)
 	if err != nil {
 		logger.Errorf("Failed to list projects, err: %s", err)
 		return nil, err
 	}
 
-	nameWithEnvSet, nameWithEnvMap, err := getProjectsWithEnvs(opts)
+	newOpts := &ProjectListOptions{
+		Names: nameSet.List(),
+	}
+	nameWithEnvSet, nameWithEnvMap, err := getProjectsWithEnvs(newOpts)
 	if err != nil {
 		logger.Errorf("Failed to list projects, err: %s", err)
 		return nil, err
@@ -92,17 +166,14 @@ func listDetailedProjectInfos(opts *ProjectListOptions, logger *zap.SugaredLogge
 		desiredSet = nameSet.Intersection(nameWithEnvSet)
 	}
 
-	for name := range desiredSet {
-		info := nameMap[name]
-		var deployType string
-		if info.CreateEnvType == "external" {
-			deployType = "external"
-		} else if info.BasicFacility == "cloud_host" {
-			deployType = "cloud_host"
-		} else {
-			deployType = info.DeployType
+	for _, name := range nameOrder {
+		if !desiredSet.Has(name) {
+			continue
 		}
-		res = append(res, &ProjectDetailedRepresentation{
+
+		info := nameMap[name]
+		deployType := info.ProductFeature.GetDeployType()
+		representation = append(representation, &ProjectDetailedRepresentation{
 			ProjectBriefRepresentation: &ProjectBriefRepresentation{
 				ProjectMinimalRepresentation: &ProjectMinimalRepresentation{Name: name},
 				Envs:                         nameWithEnvMap[name],
@@ -117,19 +188,27 @@ func listDetailedProjectInfos(opts *ProjectListOptions, logger *zap.SugaredLogge
 		})
 	}
 
+	res := &ProjectDetailedResponse{
+		ProjectDetailedRepresentation: representation,
+		Total:                         total,
+	}
+
 	return res, nil
 }
 
-func listBriefProjectInfos(opts *ProjectListOptions, logger *zap.SugaredLogger) ([]*ProjectBriefRepresentation, error) {
-	var res []*ProjectBriefRepresentation
+func listBriefProjectInfos(opts *ProjectListOptions, logger *zap.SugaredLogger) (*ProjectBriefResponse, error) {
+	var representation []*ProjectBriefRepresentation
 
-	nameSet, _, err := getProjects(opts)
+	nameOrder, nameSet, _, total, err := getProjects(opts)
 	if err != nil {
 		logger.Errorf("Failed to list projects, err: %s", err)
 		return nil, err
 	}
 
-	nameWithEnvSet, nameWithEnvMap, err := getProjectsWithEnvs(opts)
+	newOpts := &ProjectListOptions{
+		Names: nameSet.List(),
+	}
+	nameWithEnvSet, nameWithEnvMap, err := getProjectsWithEnvs(newOpts)
 	if err != nil {
 		logger.Errorf("Failed to list projects, err: %s", err)
 		return nil, err
@@ -140,11 +219,20 @@ func listBriefProjectInfos(opts *ProjectListOptions, logger *zap.SugaredLogger) 
 		desiredSet = nameSet.Intersection(nameWithEnvSet)
 	}
 
-	for name := range desiredSet {
-		res = append(res, &ProjectBriefRepresentation{
+	for _, name := range nameOrder {
+		if !desiredSet.Has(name) {
+			continue
+		}
+
+		representation = append(representation, &ProjectBriefRepresentation{
 			ProjectMinimalRepresentation: &ProjectMinimalRepresentation{Name: name},
 			Envs:                         nameWithEnvMap[name],
 		})
+	}
+
+	res := &ProjectBriefResponse{
+		ProjectBriefRepresentation: representation,
+		Total:                      total,
 	}
 
 	return res, nil
@@ -223,18 +311,26 @@ func getProjectsWithEnvs(opts *ProjectListOptions) (sets.String, map[string][]st
 	return nameSet, nameMap, nil
 }
 
-func getProjects(opts *ProjectListOptions) (sets.String, map[string]*templaterepo.ProjectInfo, error) {
-	res, err := templaterepo.NewProductColl().ListProjectBriefs(opts.Names)
+func getProjects(opts *ProjectListOptions) ([]string, sets.String, map[string]*templaterepo.ProjectInfo, int, error) {
+	listOpts := templaterepo.ProductListByFilterOpt{
+		Names:  opts.Names,
+		Filter: opts.Filter,
+		Limit:  opts.PageSize,
+		Skip:   (opts.PageNum - 1) * opts.PageSize,
+	}
+	res, total, err := templaterepo.NewProductColl().PageListProjectByFilter(listOpts)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, 0, err
 	}
 
+	nameOrder := []string{}
 	nameSet := sets.NewString()
 	nameMap := make(map[string]*templaterepo.ProjectInfo)
 	for _, r := range res {
 		nameSet.Insert(r.Name)
 		nameMap[r.Name] = r
+		nameOrder = append(nameOrder, r.Name)
 	}
 
-	return nameSet, nameMap, nil
+	return nameOrder, nameSet, nameMap, total, nil
 }

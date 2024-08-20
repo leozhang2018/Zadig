@@ -25,9 +25,10 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commontypes "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/types"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type YamlTemplateColl struct {
@@ -83,15 +84,15 @@ func (c *YamlTemplateColl) Update(idString string, obj *models.YamlTemplate) err
 	return err
 }
 
-func (c *YamlTemplateColl) UpdateVariable(idString string, variable string, serviceVars []string) error {
+func (c *YamlTemplateColl) UpdateVariable(idString string, variable string, serviceVariableKVs []*commontypes.ServiceVariableKV) error {
 	id, err := primitive.ObjectIDFromHex(idString)
 	if err != nil {
 		return fmt.Errorf("invalid id")
 	}
 	filter := bson.M{"_id": id}
 	update := bson.M{"$set": bson.M{
-		"variable_yaml": variable,
-		"service_vars":  serviceVars,
+		"variable_yaml":        variable,
+		"service_variable_kvs": serviceVariableKVs,
 	}}
 
 	_, err = c.UpdateOne(context.TODO(), filter, update)
@@ -131,6 +132,17 @@ func (c *YamlTemplateColl) GetById(idstring string) (*models.YamlTemplate, error
 	query := bson.M{"_id": id}
 
 	err = c.FindOne(context.TODO(), query).Decode(&resp)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *YamlTemplateColl) GetByName(name string) (*models.YamlTemplate, error) {
+	resp := new(models.YamlTemplate)
+	query := bson.M{"name": name}
+
+	err := c.FindOne(context.TODO(), query).Decode(&resp)
 	if err != nil {
 		return nil, err
 	}

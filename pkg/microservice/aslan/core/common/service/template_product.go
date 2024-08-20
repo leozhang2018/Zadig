@@ -18,17 +18,14 @@ package service
 
 import (
 	"fmt"
-	"sync"
 
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	templaterepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 	"go.uber.org/zap"
-	"k8s.io/apimachinery/pkg/util/sets"
-
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/template"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	templaterepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
 )
 
 type PipelineResource struct {
@@ -47,29 +44,11 @@ func GetProductTemplate(productName string, log *zap.SugaredLogger) (*template.P
 		return nil, e.ErrGetProduct.AddDesc(err.Error())
 	}
 
-	err = FillProductTemplateVars([]*template.Product{resp}, log)
-	if err != nil {
-		return nil, fmt.Errorf("FillProductTemplateVars err : %v", err)
-	}
-
 	var totalServices []*models.Service
-	if resp.ProductFeature != nil && resp.ProductFeature.CreateEnvType == setting.SourceFromExternal {
-		totalServices, err = commonrepo.NewServiceColl().ListExternalWorkloadsBy(productName, "")
-		if err != nil {
-			return resp, fmt.Errorf("ListExternalWorkloadsBy err : %s", err)
-		}
-		serviceNamesSet := sets.NewString()
-		for _, service := range totalServices {
-			serviceNamesSet.Insert(service.ServiceName)
-		}
-		if len(resp.Services) > 0 {
-			resp.Services[0] = serviceNamesSet.List()
-		}
-	} else {
-		totalServices, err = commonrepo.NewServiceColl().ListMaxRevisionsByProduct(productName)
-		if err != nil {
-			return resp, fmt.Errorf("ListMaxRevisionsByProduct err : %s", err)
-		}
+
+	totalServices, err = commonrepo.NewServiceColl().ListMaxRevisionsByProduct(productName)
+	if err != nil {
+		return resp, fmt.Errorf("ListMaxRevisionsByProduct err : %s", err)
 	}
 
 	totalBuilds, err := commonrepo.NewBuildColl().List(&commonrepo.BuildListOption{ProductName: productName, IsSort: true})
@@ -104,7 +83,7 @@ func GetProductTemplate(productName string, log *zap.SugaredLogger) (*template.P
 
 	resp.TotalServiceNum = len(totalServices)
 	if len(totalServices) > 0 {
-		serviceObj, err := GetServiceTemplate(totalServices[0].ServiceName, totalServices[0].Type, productName, setting.ProductStatusDeleting, totalServices[0].Revision, log)
+		serviceObj, err := GetServiceTemplate(totalServices[0].ServiceName, totalServices[0].Type, productName, setting.ProductStatusDeleting, totalServices[0].Revision, false, log)
 		if err != nil {
 			log.Errorf("GetServiceTemplate err : %s", err)
 		} else {
@@ -135,50 +114,4 @@ func GetProductTemplate(productName string, log *zap.SugaredLogger) (*template.P
 	resp.TotalEnvTemplateServiceNum = totalEnvTemplateServiceNum
 
 	return resp, nil
-}
-
-func FillProductTemplateVars(productTemplates []*template.Product, log *zap.SugaredLogger) error {
-	var (
-		wg            sync.WaitGroup
-		maxRoutineNum = 20                            // 协程池最大协程数量
-		ch            = make(chan int, maxRoutineNum) // 控制协程数量
-		errStr        string
-	)
-
-	defer close(ch)
-
-	for _, tmpl := range productTemplates {
-		wg.Add(1)
-		ch <- 1
-
-		go func(tmpl *template.Product) {
-			defer func() {
-				<-ch
-				wg.Done()
-			}()
-			//renderSet, err := GetRenderSet(tmpl.ProductName, 0, true, "", log)
-			//if err != nil {
-			//	errStr += fmt.Sprintf("Failed to find render set for product template, productName:%s, err:%v\n", tmpl.ProductName, err)
-			//	log.Errorf("Failed to find render set for product template %s", tmpl.ProductName)
-			//	return
-			//}
-			tmpl.Vars = make([]*template.RenderKV, 0)
-			//for _, kv := range renderSet.KVs {
-			//	tmpl.Vars = append(tmpl.Vars, &template.RenderKV{
-			//		Key:      kv.Key,
-			//		Value:    kv.Value,
-			//		State:    string(kv.State),
-			//		Alias:    kv.Alias,
-			//		Services: kv.Services,
-			//	})
-			//}
-		}(tmpl)
-	}
-
-	wg.Wait()
-	if errStr != "" {
-		return e.ErrGetRenderSet.AddDesc(errStr)
-	}
-
-	return nil
 }

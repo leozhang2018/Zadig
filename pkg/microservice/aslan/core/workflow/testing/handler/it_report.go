@@ -21,11 +21,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/testing/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/testing/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func GetLocalTestSuite(c *gin.Context) {
@@ -86,5 +86,5 @@ func GetTestLocalTestSuite(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = service.GetTestLocalTestSuite(c.Param("serviceName"), ctx.Logger)
+	ctx.Resp, ctx.Err = service.GetTestLocalTestSuite(c.Param("testName"), ctx.Logger)
 }

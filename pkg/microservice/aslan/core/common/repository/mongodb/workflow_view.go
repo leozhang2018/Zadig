@@ -27,9 +27,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type WorkflowViewColl struct {
@@ -137,12 +137,38 @@ func (c *WorkflowViewColl) FindByID(idString string) (*models.WorkflowView, erro
 func (c *WorkflowViewColl) Find(projectName, viewName string) (*models.WorkflowView, error) {
 	resp := new(models.WorkflowView)
 
-	query := bson.M{"project_name": projectName, "name": viewName}
+	query := bson.M{}
+
+	if projectName != "" {
+		query["project_name"] = projectName
+	}
+
+	if viewName != "" {
+		query["name"] = viewName
+	}
 
 	if err := c.FindOne(context.TODO(), query).Decode(&resp); err != nil {
 		return nil, err
 	}
 	return resp, nil
+}
+
+func (c *WorkflowViewColl) DeleteByProject(projectName, viewName string) error {
+	query := bson.M{}
+
+	if projectName != "" {
+		query["project_name"] = projectName
+	}
+
+	if viewName != "" {
+		query["name"] = viewName
+	}
+
+	_, err := c.Collection.DeleteMany(context.TODO(), query)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *WorkflowViewColl) DeleteByID(idString string) error {

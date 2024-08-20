@@ -19,8 +19,8 @@ package login
 import (
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/user/core/service/login"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
+	"github.com/koderover/zadig/v2/pkg/microservice/user/core/service/login"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
 )
 
 func LocalLogin(c *gin.Context) {
@@ -31,5 +31,49 @@ func LocalLogin(c *gin.Context) {
 		ctx.Err = err
 		return
 	}
-	ctx.Resp, ctx.Err = login.LocalLogin(args, ctx.Logger)
+	resp, failedCount, err := login.LocalLogin(args, ctx.Logger)
+	if failedCount >= 5 {
+		c.Header("x-require-captcha", "true")
+	} else {
+		c.Header("x-require-captcha", "false")
+	}
+	ctx.Resp, ctx.Err = resp, err
+}
+
+type getCaptchaResp struct {
+	ID      string `json:"id"`
+	Content string `json:"content"`
+}
+
+func GetCaptcha(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	id, picBase64, err := login.GetCaptcha(ctx.Logger)
+	if err != nil {
+		ctx.Err = err
+		return
+	}
+	ctx.Resp = &getCaptchaResp{
+		ID:      id,
+		Content: picBase64,
+	}
+}
+
+type LocalLogoutResp struct {
+	EnableRedirect bool   `json:"enable_redirect"`
+	RedirectURL    string `json:"redirect_url"`
+}
+
+func LocalLogout(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	shouldRedirect, redirectURL, _ := login.LocalLogout(ctx.UserID, ctx.Logger)
+	// TODO: for now only oauth2 service need to actually logout, so we just do nothing when an error happen
+	// this need to be fixed when there are more logout logic.
+	ctx.Resp = &LocalLogoutResp{
+		EnableRedirect: shouldRedirect,
+		RedirectURL:    redirectURL,
+	}
 }

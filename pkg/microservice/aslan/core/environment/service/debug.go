@@ -31,18 +31,19 @@ import (
 	corev1client "k8s.io/client-go/kubernetes/typed/core/v1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
 )
 
 const ZadigDebugContainerName = "zadig-debug"
 const K8sBetaVersionForEphemeralContainer = "v1.23"
 
-func PatchDebugContainer(ctx context.Context, projectName, envName, podName, debugImage string) error {
+func PatchDebugContainer(ctx context.Context, projectName, envName, podName, debugImage string, production bool) error {
 	prod, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
 		Name:    projectName,
 		EnvName: envName,
+		Production: &production,
 	})
 	if err != nil {
 		return fmt.Errorf("failed to query env %q in project %q: %s", envName, projectName, err)

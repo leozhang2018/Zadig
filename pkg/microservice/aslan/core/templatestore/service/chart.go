@@ -31,22 +31,22 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	configbase "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/command"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/fs"
-	s3service "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/template"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/service/service"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	"github.com/koderover/zadig/pkg/tool/log"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	fsutil "github.com/koderover/zadig/pkg/util/fs"
+	configbase "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/command"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/fs"
+	s3service "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/template"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/service/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	fsutil "github.com/koderover/zadig/v2/pkg/util/fs"
 )
 
 var (
@@ -333,6 +333,19 @@ func GetChartTemplateReference(name string, logger *zap.SugaredLogger) ([]*templ
 		ret = append(ret, &template.ServiceReference{
 			ServiceName: reference.ServiceName,
 			ProjectName: reference.ProductName,
+			Production:  false,
+		})
+	}
+
+	productionReferenceList, err := commonrepo.NewProductionServiceColl().GetChartTemplateReference(name)
+	if err != nil {
+		log.Errorf("Failed to get chart reference of production services for template name: %s, the error is: %s", name, err)
+	}
+	for _, reference := range productionReferenceList {
+		ret = append(ret, &template.ServiceReference{
+			ServiceName: reference.ServiceName,
+			ProjectName: reference.ProductName,
+			Production:  true,
 		})
 	}
 	return ret, nil

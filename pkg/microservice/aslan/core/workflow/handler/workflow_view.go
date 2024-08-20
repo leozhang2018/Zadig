@@ -20,16 +20,21 @@ import (
 	"fmt"
 
 	"github.com/gin-gonic/gin"
-
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	workflowservice "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	"github.com/koderover/zadig/pkg/tool/errors"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	workflowservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	"github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func CreateWorkflowView(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	req := &commonmodels.WorkflowView{}
 	if err := c.ShouldBindJSON(&req); err != nil {
@@ -44,26 +49,85 @@ func CreateWorkflowView(c *gin.Context) {
 		ctx.Err = fmt.Errorf("project name cannot be empty")
 		return
 	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[req.ProjectName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[req.ProjectName].IsProjectAdmin {
+			// check if the permission is given by collaboration mode
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
 	ctx.Err = workflowservice.CreateWorkflowView(req.Name, req.ProjectName, req.Workflows, ctx.UserName, ctx.Logger)
 }
 
 func UpdateWorkflowView(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	req := &commonmodels.WorkflowView{}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		ctx.Err = errors.ErrInvalidParam.AddDesc(err.Error())
 		return
 	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[req.ProjectName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[req.ProjectName].IsProjectAdmin {
+			// check if the permission is given by collaboration mode
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
 	ctx.Err = workflowservice.UpdateWorkflowView(req, ctx.UserName, ctx.Logger)
 }
 
 func GetWorkflowViewPreset(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = workflowservice.GetWorkflowViewPreset(c.Query("projectName"), c.Query("viewName"), ctx.Logger)
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin {
+			// check if the permission is given by collaboration mode
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = workflowservice.GetWorkflowViewPreset(projectKey, c.Query("viewName"), ctx.Logger)
 }
 
 func ListWorkflowViewNames(c *gin.Context) {
@@ -74,8 +138,31 @@ func ListWorkflowViewNames(c *gin.Context) {
 }
 
 func DeleteWorkflowView(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Err = workflowservice.DeleteWorkflowView(c.Param("projectName"), c.Param("viewName"), ctx.Logger)
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	viewName := c.Query("viewName")
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin {
+			// check if the permission is given by collaboration mode
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	ctx.Err = workflowservice.DeleteWorkflowView(projectKey, viewName, ctx.Logger)
 }

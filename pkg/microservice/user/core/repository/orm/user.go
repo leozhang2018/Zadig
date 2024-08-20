@@ -17,11 +17,11 @@ limitations under the License.
 package orm
 
 import (
+	"github.com/koderover/zadig/v2/pkg/microservice/user/core/repository"
 	"gorm.io/gorm"
 
-	"github.com/koderover/zadig/pkg/microservice/user/core"
-	"github.com/koderover/zadig/pkg/microservice/user/core/repository/models"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/user/core/repository/models"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 // CreateUser create a user
@@ -58,6 +58,26 @@ func GetUserByUid(uid string, db *gorm.DB) (*models.User, error) {
 	return &user, nil
 }
 
+// GetUserByName Get a user based on name
+func GetUserByName(name string, db *gorm.DB) (*models.User, error) {
+	var user models.User
+	err := db.Where("name = ?", name).First(&user).Error
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+func ListAllUsers(db *gorm.DB) ([]*models.User, error) {
+	resp := make([]*models.User, 0)
+
+	err := db.Find(&resp).Error
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
 // ListUsers gets a list of users based on paging constraints
 func ListUsers(page int, perPage int, name string, db *gorm.DB) ([]models.User, error) {
 	var (
@@ -72,6 +92,21 @@ func ListUsers(page int, perPage int, name string, db *gorm.DB) ([]models.User, 
 	}
 
 	return users, nil
+}
+
+func ListUsersByGroup(groupID string, db *gorm.DB) ([]*models.User, error) {
+	resp := make([]*models.User, 0)
+
+	err := db.Joins("INNER JOIN group_binding on group_binding.uid = user.uid").
+		Where("group_binding.group_id = ?", groupID).
+		Find(&resp).
+		Error
+
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, nil
 }
 
 // ListUsersByUIDs gets a list of users based on paging constraints
@@ -134,7 +169,7 @@ func GetUsersCount(name string) (int64, error) {
 		count int64
 	)
 
-	err = core.DB.Where("name LIKE ?", "%"+name+"%").Find(&users).Count(&count).Error
+	err = repository.DB.Where("name LIKE ?", "%"+name+"%").Find(&users).Count(&count).Error
 
 	if err != nil {
 		return 0, err

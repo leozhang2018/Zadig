@@ -27,9 +27,11 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/setting"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type WorkflowTemplateQueryOption struct {
@@ -38,6 +40,7 @@ type WorkflowTemplateQueryOption struct {
 }
 
 type WorkflowTemplateListOption struct {
+	CreatedBy      string
 	Category       string
 	ExcludeBuildIn bool
 }
@@ -99,6 +102,12 @@ func (c *WorkflowV4TemplateColl) UpsertByName(obj *models.WorkflowV4Template) er
 	return err
 }
 
+func (c *WorkflowV4TemplateColl) DeleteInternalByName(name string) error {
+	query := bson.M{"template_name": name, "created_by": "system"}
+	_, err := c.DeleteOne(context.TODO(), query)
+	return err
+}
+
 func (c *WorkflowV4TemplateColl) Find(opt *WorkflowTemplateQueryOption) (*models.WorkflowV4Template, error) {
 	if opt == nil {
 		return nil, errors.New("nil FindOption")
@@ -124,7 +133,13 @@ func (c *WorkflowV4TemplateColl) Find(opt *WorkflowTemplateQueryOption) (*models
 
 func (c *WorkflowV4TemplateColl) List(option *WorkflowTemplateListOption) ([]*models.WorkflowV4Template, error) {
 	resp := make([]*models.WorkflowV4Template, 0)
-	query := bson.M{"category": option.Category}
+	query := bson.M{}
+	if option.CreatedBy != "" {
+		query["create_by"] = option.CreatedBy
+	}
+	if option.Category != "" {
+		query["category"] = option.Category
+	}
 	if option.ExcludeBuildIn {
 		query["build_in"] = false
 	}
@@ -150,4 +165,22 @@ func (c *WorkflowV4TemplateColl) DeleteByID(idStr string) error {
 	query := bson.M{"_id": id}
 	_, err = c.DeleteOne(context.TODO(), query)
 	return err
+}
+
+type ListWorkflowV4TemplateOption struct {
+	Names    []string
+	Category setting.WorkflowCategory
+}
+
+func (c *WorkflowV4TemplateColl) ListByCursor(opt *ListWorkflowV4TemplateOption) (*mongo.Cursor, error) {
+	query := bson.M{}
+
+	if len(opt.Names) > 0 {
+		query["template_name"] = bson.M{"$in": opt.Names}
+	}
+	if opt.Category != "" {
+		query["category"] = opt.Category
+	}
+
+	return c.Collection.Find(context.TODO(), query)
 }

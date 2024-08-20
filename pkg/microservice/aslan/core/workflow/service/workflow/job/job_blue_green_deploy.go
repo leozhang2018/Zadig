@@ -23,14 +23,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/setting"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/log"
 	"k8s.io/apimachinery/pkg/labels"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
+
+/*
+
+  This job type is no longer supported, there should not be any changes to this job anymore
+
+*/
 
 type BlueGreenDeployJob struct {
 	job      *commonmodels.Job
@@ -73,6 +82,10 @@ func (j *BlueGreenDeployJob) MergeArgs(args *commonmodels.Job) error {
 	return nil
 }
 
+func (j *BlueGreenDeployJob) UpdateWithLatestSetting() error {
+	return nil
+}
+
 func (j *BlueGreenDeployJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, error) {
 	logger := log.SugaredLogger()
 	resp := []*commonmodels.JobTask{}
@@ -94,7 +107,7 @@ func (j *BlueGreenDeployJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, erro
 			logger.Error(msg)
 			return resp, errors.New(msg)
 		}
-		delete(service.Spec.Selector, config.BlueGreenVerionLabelName)
+		delete(service.Spec.Selector, config.BlueGreenVersionLabelName)
 		selector := labels.Set(service.Spec.Selector).AsSelector()
 		deployments, err := getter.ListDeployments(j.spec.Namespace, selector, kubeClient)
 		if err != nil {
@@ -121,8 +134,12 @@ func (j *BlueGreenDeployJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, erro
 		target.BlueK8sServiceName = target.K8sServiceName + config.BlueServiceNameSuffix
 		target.BlueWorkloadName = getBlueWorkloadName(deployment.Name, version)
 		task := &commonmodels.JobTask{
-			Name:    jobNameFormat(j.job.Name + "-" + target.K8sServiceName),
-			Key:     strings.Join([]string{j.job.Name, target.K8sServiceName}, "."),
+			Name: jobNameFormat(j.job.Name + "-" + target.K8sServiceName),
+			Key:  strings.Join([]string{j.job.Name, target.K8sServiceName}, "."),
+			JobInfo: map[string]string{
+				JobNameKey:         j.job.Name,
+				"k8s_service_name": target.K8sServiceName,
+			},
 			JobType: string(config.JobK8sBlueGreenDeploy),
 			Spec: &commonmodels.JobTaskBlueGreenDeploySpec{
 				Namespace:          j.spec.Namespace,
@@ -138,6 +155,7 @@ func (j *BlueGreenDeployJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, erro
 				Image:              target.Image,
 				Version:            version,
 			},
+			ErrorPolicy: j.job.ErrorPolicy,
 		}
 		resp = append(resp, task)
 	}
@@ -148,6 +166,9 @@ func (j *BlueGreenDeployJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, erro
 
 func (j *BlueGreenDeployJob) LintJob() error {
 	j.spec = &commonmodels.BlueGreenDeployJobSpec{}
+	if err := util.CheckZadigProfessionalLicense(); err != nil {
+		return e.ErrLicenseInvalid.AddDesc("")
+	}
 	if err := commonmodels.IToiYaml(j.job.Spec, j.spec); err != nil {
 		return err
 	}

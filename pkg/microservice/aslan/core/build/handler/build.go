@@ -19,45 +19,155 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 
 	"github.com/gin-gonic/gin"
+	"github.com/koderover/zadig/v2/pkg/types"
 
-	buildservice "github.com/koderover/zadig/pkg/microservice/aslan/core/build/service"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
+	buildservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/build/service"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func FindBuildModule(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = buildservice.FindBuild(c.Param("name"), c.Query("projectName"), ctx.Logger)
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Build.View {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = buildservice.FindBuild(c.Param("name"), projectKey, ctx.Logger)
 }
 
 func ListBuildModules(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = buildservice.ListBuild(c.Query("name"), c.Query("targets"), c.Query("projectName"), ctx.Logger)
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+
+	// TODO: Authorization leak
+	// this API is sometimes used in edit env scenario, thus giving the edit/create workflow permission
+	// authorization check
+	permitted := false
+
+	if ctx.Resources.IsSystemAdmin {
+		permitted = true
+	} else if projectAuthInfo, ok := ctx.Resources.ProjectAuthInfo[projectKey]; ok {
+		// first check if the user is projectAdmin
+		if projectAuthInfo.IsProjectAdmin {
+			permitted = true
+		} else if projectAuthInfo.Env.EditConfig ||
+			projectAuthInfo.Build.View {
+			// then check if user has edit workflow permission
+			permitted = true
+		} else {
+			// finally check if the permission is given by collaboration mode
+			collaborationAuthorizedEdit, err := internalhandler.CheckPermissionGivenByCollaborationMode(ctx.UserID, projectKey, types.ResourceTypeEnvironment, types.EnvActionEditConfig)
+			if err == nil && collaborationAuthorizedEdit {
+				permitted = true
+			}
+		}
+	}
+
+	if !permitted {
+		ctx.UnAuthorized = true
+		return
+	}
+
+	ctx.Resp, ctx.Err = buildservice.ListBuild(c.Query("name"), c.Query("targets"), projectKey, ctx.Logger)
 }
 
 func ListBuildModulesByServiceModule(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
-	var excludeJenkins bool
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+
+	// TODO: Authorization leak
+	// this API is sometimes used in edit/create workflow scenario, thus giving the edit/create workflow permission
+	// authorization check
+	permitted := false
+
+	if ctx.Resources.IsSystemAdmin {
+		permitted = true
+	} else if ctx.Resources.SystemActions.Template.Create ||
+		ctx.Resources.SystemActions.Template.Edit {
+		permitted = true
+	} else if projectAuthInfo, ok := ctx.Resources.ProjectAuthInfo[projectKey]; ok {
+		// first check if the user is projectAdmin
+		if projectAuthInfo.IsProjectAdmin {
+			permitted = true
+		} else if projectAuthInfo.Workflow.Edit ||
+			projectAuthInfo.Workflow.Create ||
+			projectAuthInfo.Build.View {
+			// then check if user has edit workflow permission
+			permitted = true
+		} else {
+			// finally check if the permission is given by collaboration mode
+			collaborationAuthorizedEdit, err := internalhandler.CheckPermissionGivenByCollaborationMode(ctx.UserID, projectKey, types.ResourceTypeWorkflow, types.WorkflowActionEdit)
+			if err == nil && collaborationAuthorizedEdit {
+				permitted = true
+			}
+		}
+	}
+
+	if !permitted {
+		ctx.UnAuthorized = true
+		return
+	}
+
+	var excludeJenkins, updateServiceRevision bool
 	if c.Query("excludeJenkins") == "true" {
 		excludeJenkins = true
 	}
+	updateServiceRevision = c.Query("updateServiceRevision") == "true"
+	envName := c.Query("envName")
 
-	ctx.Resp, ctx.Err = buildservice.ListBuildModulesByServiceModule(c.Query("encryptedKey"), c.Query("projectName"), excludeJenkins, ctx.Logger)
+	ctx.Resp, ctx.Err = buildservice.ListBuildModulesByServiceModule(c.Query("encryptedKey"), projectKey, envName, excludeJenkins, updateServiceRevision, ctx.Logger)
 }
 
 func CreateBuildModule(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	args := new(commonmodels.Build)
 	data, err := c.GetRawData()
@@ -76,12 +186,32 @@ func CreateBuildModule(c *gin.Context) {
 		return
 	}
 
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[args.ProductName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[args.ProductName].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[args.ProductName].Build.Create {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
 	ctx.Err = buildservice.CreateBuild(ctx.UserName, args, ctx.Logger)
 }
 
 func UpdateBuildModule(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	args := new(commonmodels.Build)
 	data, err := c.GetRawData()
@@ -99,28 +229,71 @@ func UpdateBuildModule(c *gin.Context) {
 		ctx.Err = e.ErrInvalidParam.AddDesc("invalid Build args")
 		return
 	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[args.ProductName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[args.ProductName].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[args.ProductName].Build.Edit {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
 	ctx.Err = buildservice.UpdateBuild(ctx.UserName, args, ctx.Logger)
 }
 
 func DeleteBuildModule(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
 	name := c.Query("name")
-	productName := c.Query("projectName")
-	internalhandler.InsertOperationLog(c, ctx.UserName, productName, "删除", "项目管理-构建", name, "", ctx.Logger)
+	projectKey := c.Query("projectName")
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "删除", "项目管理-构建", name, "", ctx.Logger)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Build.Delete {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	if name == "" {
 		ctx.Err = e.ErrInvalidParam.AddDesc("empty Name")
 		return
 	}
 
-	ctx.Err = buildservice.DeleteBuild(name, productName, ctx.Logger)
+	ctx.Err = buildservice.DeleteBuild(name, projectKey, ctx.Logger)
 }
 
 func UpdateBuildTargets(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
 
 	args := new(struct {
 		Name    string                              `json:"name"    binding:"required"`
@@ -137,12 +310,25 @@ func UpdateBuildTargets(c *gin.Context) {
 		ctx.Err = e.ErrInvalidParam.AddErr(err)
 		return
 	}
-	internalhandler.InsertOperationLog(c, ctx.UserName, c.Query("projectName"), "更新", "项目管理-服务组件", args.Name, string(data), ctx.Logger)
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "更新", "项目管理-服务组件", args.Name, string(data), ctx.Logger)
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(data))
 
 	if err := c.BindJSON(args); err != nil {
 		ctx.Err = e.ErrInvalidParam.AddErr(err)
 		return
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Build.Edit {
+			ctx.UnAuthorized = true
+			return
+		}
 	}
 
 	ctx.Err = buildservice.UpdateBuildTargets(args.Name, c.Query("projectName"), args.Targets, ctx.Logger)

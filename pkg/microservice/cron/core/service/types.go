@@ -22,11 +22,11 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/lark"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/lark"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 // ScheduleType 触发模式
@@ -78,18 +78,21 @@ type PipelineSpec struct {
 }
 
 type Schedule struct {
-	ID             primitive.ObjectID `bson:"_id,omitempty"                 json:"id,omitempty"`
-	Number         uint64             `bson:"number"                        json:"number"`
-	Frequency      string             `bson:"frequency"                     json:"frequency"`
-	Time           string             `bson:"time"                          json:"time"`
-	MaxFailures    int                `bson:"max_failures,omitempty"        json:"max_failures,omitempty"`
-	TaskArgs       *TaskArgs          `bson:"task_args,omitempty"           json:"task_args,omitempty"`
-	WorkflowArgs   *WorkflowTaskArgs  `bson:"workflow_args,omitempty"       json:"workflow_args,omitempty"`
-	TestArgs       *TestTaskArgs      `bson:"test_args,omitempty"           json:"test_args,omitempty"`
-	WorkflowV4Args *WorkflowV4        `bson:"workflow_v4_args"              json:"workflow_v4_args"`
-	Type           ScheduleType       `bson:"type"                          json:"type"`
-	Cron           string             `bson:"cron"                          json:"cron"`
-	IsModified     bool               `bson:"-"                             json:"-"`
+	ID              primitive.ObjectID `bson:"_id,omitempty"                 json:"id,omitempty"`
+	Number          uint64             `bson:"number"                        json:"number"`
+	Frequency       string             `bson:"frequency"                     json:"frequency"`
+	Time            string             `bson:"time"                          json:"time"`
+	MaxFailures     int                `bson:"max_failures,omitempty"        json:"max_failures,omitempty"`
+	TaskArgs        *TaskArgs          `bson:"task_args,omitempty"           json:"task_args,omitempty"`
+	WorkflowArgs    *WorkflowTaskArgs  `bson:"workflow_args,omitempty"       json:"workflow_args,omitempty"`
+	TestArgs        *TestTaskArgs      `bson:"test_args,omitempty"           json:"test_args,omitempty"`
+	WorkflowV4Args  *WorkflowV4        `bson:"workflow_v4_args"              json:"workflow_v4_args"`
+	EnvAnalysisArgs *EnvArgs           `bson:"env_analysis_args,omitempty"   json:"env_analysis_args,omitempty"`
+	EnvArgs         *EnvArgs           `bson:"env_args,omitempty"            json:"env_args,omitempty"`
+	ReleasePlanArgs *ReleasePlanArgs   `bson:"release_plan_args,omitempty"   json:"release_plan_args,omitempty"`
+	Type            ScheduleType       `bson:"type"                          json:"type"`
+	Cron            string             `bson:"cron"                          json:"cron"`
+	IsModified      bool               `bson:"-"                             json:"-"`
 	// 自由编排工作流的开关是放在schedule里面的
 	Enabled bool `bson:"enabled"                       json:"enabled"`
 }
@@ -196,6 +199,8 @@ type Repository struct {
 	CommitMessage string `bson:"commit_message,omitempty"  json:"commit_message,omitempty"`
 	CheckoutPath  string `bson:"checkout_path,omitempty"   json:"checkout_path,omitempty"`
 	SubModules    bool   `bson:"submodules,omitempty"      json:"submodules,omitempty"`
+	// Hidden defines whether the frontend needs to hide this repo
+	Hidden bool `bson:"hidden" json:"hidden"`
 	// UseDefault defines if the repo can be configured in start pipeline task page
 	UseDefault bool `bson:"use_default,omitempty"          json:"use_default,omitempty"`
 	// IsPrimary used to generated image and package name, each build has one primary repo
@@ -364,6 +369,19 @@ type TestTaskArgs struct {
 	CodehostID     int    `bson:"codehost_id"      json:"codehost_id"`
 	RepoOwner      string `bson:"repo_owner"       json:"repo_owner"`
 	RepoName       string `bson:"repo_name"        json:"repo_name"`
+}
+
+type EnvArgs struct {
+	Name        string `bson:"name"                   json:"name"`
+	ProductName string `bson:"product_name"           json:"product_name"`
+	EnvName     string `bson:"env_name"               json:"env_name"`
+	Production  bool   `bson:"production"             json:"production"`
+}
+
+type ReleasePlanArgs struct {
+	ID    string `bson:"id"             json:"id"`
+	Name  string `bson:"name"           json:"name"`
+	Index int64  `bson:"index"          json:"index"`
 }
 
 type CreateBuildRequest struct {

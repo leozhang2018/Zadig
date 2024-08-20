@@ -23,24 +23,47 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/systemconfig/core/codehost/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/systemconfig/core/codehost/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/codehost/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/codehost/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
-func CreateCodeHost(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+func CreateSystemCodeHost(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
-	rep := new(models.CodeHost)
-	if err := c.ShouldBindJSON(rep); err != nil {
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	if !ctx.Resources.IsSystemAdmin {
+		ctx.UnAuthorized = true
+		return
+	}
+
+	req := new(models.CodeHost)
+	if err := c.ShouldBindJSON(req); err != nil {
 		ctx.Err = err
 		return
 	}
-	ctx.Resp, ctx.Err = service.CreateCodeHost(rep, ctx.Logger)
+
+	err = commonutil.CheckZadigEnterpriseLicense()
+	if err != nil {
+		if req.Type == setting.SourceFromGiteeEE {
+			ctx.Err = err
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = service.CreateSystemCodeHost(req, ctx.Logger)
 }
 
-func ListCodeHost(c *gin.Context) {
+func ListSystemCodeHost(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 	encryptedKey := c.Query("encryptedKey")
@@ -48,7 +71,7 @@ func ListCodeHost(c *gin.Context) {
 		ctx.Err = e.ErrInvalidParam
 		return
 	}
-	ctx.Resp, ctx.Err = service.List(encryptedKey, c.Query("address"), c.Query("owner"), c.Query("source"), ctx.Logger)
+	ctx.Resp, ctx.Err = service.SystemList(encryptedKey, c.Query("address"), c.Query("owner"), c.Query("source"), ctx.Logger)
 }
 
 func ListCodeHostInternal(c *gin.Context) {
@@ -57,9 +80,21 @@ func ListCodeHostInternal(c *gin.Context) {
 	ctx.Resp, ctx.Err = service.ListInternal(c.Query("address"), c.Query("owner"), c.Query("source"), ctx.Logger)
 }
 
-func DeleteCodeHost(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+func DeleteSystemCodeHost(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	if !ctx.Resources.IsSystemAdmin {
+		ctx.UnAuthorized = true
+		return
+	}
+
 	idParam := c.Param("id")
 	id, err := strconv.Atoi(idParam)
 	if err != nil {
@@ -69,7 +104,7 @@ func DeleteCodeHost(c *gin.Context) {
 	ctx.Err = service.DeleteCodeHost(id, ctx.Logger)
 }
 
-func GetCodeHost(c *gin.Context) {
+func GetSystemCodeHost(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 	idParam := c.Param("id")
@@ -125,9 +160,21 @@ func Callback(c *gin.Context) {
 	c.Redirect(http.StatusFound, redirectURL)
 }
 
-func UpdateCodeHost(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+func UpdateSystemCodeHost(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	if !ctx.Resources.IsSystemAdmin {
+		ctx.UnAuthorized = true
+		return
+	}
+
 	idParam := c.Param("id")
 	id, err := strconv.Atoi(idParam)
 	if err != nil {
@@ -140,5 +187,14 @@ func UpdateCodeHost(c *gin.Context) {
 		return
 	}
 	req.ID = id
+
+	err = commonutil.CheckZadigProfessionalLicense()
+	if err != nil {
+		if req.Type == setting.SourceFromGiteeEE {
+			ctx.Err = e.ErrLicenseInvalid.AddDesc("")
+			return
+		}
+	}
+
 	ctx.Resp, ctx.Err = service.UpdateCodeHost(req, ctx.Logger)
 }

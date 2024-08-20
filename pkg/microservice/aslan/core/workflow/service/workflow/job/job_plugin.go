@@ -21,11 +21,11 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 type PluginJob struct {
@@ -49,6 +49,18 @@ func (j *PluginJob) SetPreset() error {
 		return err
 	}
 	j.job.Spec = j.spec
+	return nil
+}
+
+func (j *PluginJob) SetOptions() error {
+	return nil
+}
+
+func (j *PluginJob) ClearSelectionField() error {
+	return nil
+}
+
+func (j *PluginJob) UpdateWithLatestSetting() error {
 	return nil
 }
 
@@ -82,11 +94,15 @@ func (j *PluginJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, error) {
 		Plugin:     j.spec.Plugin,
 	}
 	jobTask := &commonmodels.JobTask{
-		Name:    j.job.Name,
-		Key:     j.job.Name,
-		JobType: string(config.JobPlugin),
-		Spec:    jobTaskSpec,
-		Outputs: j.spec.Plugin.Outputs,
+		Name: j.job.Name,
+		Key:  j.job.Name,
+		JobInfo: map[string]string{
+			JobNameKey: j.job.Name,
+		},
+		JobType:     string(config.JobPlugin),
+		Spec:        jobTaskSpec,
+		Outputs:     j.spec.Plugin.Outputs,
+		ErrorPolicy: j.job.ErrorPolicy,
 	}
 	registries, err := commonservice.ListRegistryNamespaces("", true, logger)
 	if err != nil {

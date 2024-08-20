@@ -20,21 +20,22 @@ import (
 	"fmt"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/hashicorp/go-multierror"
 	"github.com/xanzy/go-gitlab"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/scmnotify"
-	workflowservice "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow/job"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	gitlabtool "github.com/koderover/zadig/pkg/tool/git/gitlab"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/scmnotify"
+	workflowservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow/job"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	gitlabtool "github.com/koderover/zadig/v2/pkg/tool/git/gitlab"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type gitlabMergeEventMatcherForWorkflowV4 struct {
@@ -193,15 +194,25 @@ func (gpem *gitlabPushEventMatcherForWorkflowV4) Match(hookRepo *commonmodels.Ma
 		return false, err
 	}
 
-	// compare接口获取两个commit之间的最终的改动
-	diffs, err := client.Compare(ev.ProjectID, ev.Before, ev.After)
-	if err != nil {
-		gpem.log.Errorf("Failed to get push event diffs, error: %s", err)
-		return false, err
-	}
-	for _, diff := range diffs {
-		changedFiles = append(changedFiles, diff.NewPath)
-		changedFiles = append(changedFiles, diff.OldPath)
+	// When push a new branch, ev.Before will be a lot of "0"
+	// So we should not use Compare
+	if strings.Count(ev.Before, "0") == len(ev.Before) {
+		for _, commit := range ev.Commits {
+			changedFiles = append(changedFiles, commit.Added...)
+			changedFiles = append(changedFiles, commit.Removed...)
+			changedFiles = append(changedFiles, commit.Modified...)
+		}
+	} else {
+		// compare接口获取两个commit之间的最终的改动
+		diffs, err := client.Compare(ev.ProjectID, ev.Before, ev.After)
+		if err != nil {
+			gpem.log.Errorf("Failed to get push event diffs, error: %s", err)
+			return false, err
+		}
+		for _, diff := range diffs {
+			changedFiles = append(changedFiles, diff.NewPath)
+			changedFiles = append(changedFiles, diff.OldPath)
+		}
 	}
 	if gpem.isYaml {
 		serviceChangeds := ServicesMatchChangesFiles(gpem.trigger.Rules.MatchFolders, changedFiles)
@@ -240,28 +251,6 @@ func (gtem gitlabTagEventMatcherForWorkflowV4) Match(hookRepo *commonmodels.Main
 
 	if !EventConfigured(hookRepo, config.HookEventTag) {
 		return false, nil
-	}
-	if gtem.isYaml {
-		refFlag := false
-		for _, ref := range gtem.trigger.Rules.Branchs {
-			if matched, _ := regexp.MatchString(ref, ev.Project.DefaultBranch); matched {
-				refFlag = true
-				break
-			}
-		}
-		if !refFlag {
-			return false, nil
-		}
-	} else {
-		isRegular := hookRepo.IsRegular
-		if !isRegular && hookRepo.Branch != ev.Project.DefaultBranch {
-			return false, nil
-		}
-		if isRegular {
-			if matched, _ := regexp.MatchString(hookRepo.Branch, ev.Project.DefaultBranch); !matched {
-				return false, nil
-			}
-		}
 	}
 
 	hookRepo.Committer = ev.UserName
@@ -346,25 +335,24 @@ func TriggerWorkflowV4ByGitlabEvent(event interface{}, baseURI, requestID string
 			}
 			log.Infof("event match hook %v of %s", item.MainRepo, workflow.Name)
 			eventRepo := matcher.GetHookRepo(item.MainRepo)
-			var mergeRequestID, commitID string
-			if ev, isPr := event.(*gitlab.MergeEvent); isPr {
 
+			autoCancelOpt := &AutoCancelOpt{
+				TaskType:     config.WorkflowType,
+				MainRepo:     item.MainRepo,
+				AutoCancel:   item.AutoCancel,
+				WorkflowName: workflow.Name,
+			}
+			var mergeRequestID, commitID, ref, eventType string
+			var prID int
+			switch ev := event.(type) {
+			case *gitlab.MergeEvent:
+				eventType = EventTypePR
 				mergeRequestID = strconv.Itoa(ev.ObjectAttributes.IID)
 				commitID = ev.ObjectAttributes.LastCommit.ID
-				autoCancelOpt := &AutoCancelOpt{
-					MergeRequestID: mergeRequestID,
-					CommitID:       commitID,
-					TaskType:       config.WorkflowType,
-					MainRepo:       item.MainRepo,
-					AutoCancel:     item.AutoCancel,
-					WorkflowName:   workflow.Name,
-				}
-				err := AutoCancelWorkflowV4Task(autoCancelOpt, log)
-				if err != nil {
-					log.Errorf("failed to auto cancel workflowV4 task when receive event %v due to %v ", event, err)
-					mErr = multierror.Append(mErr, err)
-				}
-
+				prID = ev.ObjectAttributes.IID
+				autoCancelOpt.Type = eventType
+				autoCancelOpt.MergeRequestID = mergeRequestID
+				autoCancelOpt.CommitID = commitID
 				hookPayload = &commonmodels.HookPayload{
 					Owner:          eventRepo.RepoOwner,
 					Repo:           eventRepo.RepoName,
@@ -373,14 +361,44 @@ func TriggerWorkflowV4ByGitlabEvent(event interface{}, baseURI, requestID string
 					MergeRequestID: mergeRequestID,
 					CommitID:       commitID,
 					CodehostID:     eventRepo.CodehostID,
+					EventType:      eventType,
 				}
-
-				if notification == nil {
+			case *gitlab.PushEvent:
+				eventType = EventTypePush
+				ref = ev.Ref
+				commitID = ev.After
+				autoCancelOpt.Type = EventTypePush
+				autoCancelOpt.Ref = ref
+				autoCancelOpt.CommitID = commitID
+				hookPayload = &commonmodels.HookPayload{
+					Owner:      eventRepo.RepoOwner,
+					Repo:       eventRepo.RepoName,
+					Branch:     eventRepo.Branch,
+					Ref:        ref,
+					IsPr:       false,
+					CommitID:   commitID,
+					CodehostID: eventRepo.CodehostID,
+					EventType:  eventType,
+				}
+			case *gitlab.TagEvent:
+				eventType = EventTypeTag
+				hookPayload = &commonmodels.HookPayload{
+					EventType: eventType,
+				}
+			}
+			if autoCancelOpt.Type != "" {
+				err := AutoCancelWorkflowV4Task(autoCancelOpt, log)
+				if err != nil {
+					log.Errorf("failed to auto cancel workflowV4 task when receive event %v due to %v ", event, err)
+					mErr = multierror.Append(mErr, err)
+				}
+				if autoCancelOpt.Type == EventTypePR && notification == nil {
 					notification, _ = scmnotify.NewService().SendInitWebhookComment(
-						item.MainRepo, ev.ObjectAttributes.IID, baseURI, false, false, false, true, log,
+						item.MainRepo, prID, baseURI, false, false, false, true, log,
 					)
 				}
 			}
+
 			if err := job.MergeArgs(workflow, item.WorkflowArg); err != nil {
 				errMsg := fmt.Sprintf("merge workflow args error: %v", err)
 				log.Error(errMsg)

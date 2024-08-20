@@ -27,9 +27,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type ListTestOption struct {
@@ -184,4 +184,10 @@ func (c *TestingColl) Update(testing *models.Testing) error {
 
 	_, err := c.UpdateOne(context.TODO(), query, change)
 	return err
+}
+
+func (c *TestingColl) ListByCursor() (*mongo.Cursor, error) {
+	query := bson.M{}
+
+	return c.Collection.Find(context.TODO(), query)
 }

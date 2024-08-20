@@ -29,9 +29,9 @@ import (
 	"k8s.io/apimachinery/pkg/util/wait"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/kube/patcher"
-	"github.com/koderover/zadig/pkg/tool/kube/util"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/patcher"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/util"
 )
 
 func patchObject(obj client.Object, patchBytes []byte, cl client.Client) error {
@@ -69,6 +69,11 @@ func deleteObjectsWithDefaultOptions(ns string, selector labels.Selector, obj cl
 	}
 
 	return deleteObjects(obj, cl, delOpt)
+}
+
+func DeleteObject(obj client.Object, cl client.Client) error {
+	deletePolicy := metav1.DeletePropagationBackground
+	return util.IgnoreNotFoundError(deleteObject(obj, cl, &client.DeleteOptions{PropagationPolicy: &deletePolicy}))
 }
 
 func createObject(obj client.Object, cl client.Client) error {
@@ -187,6 +192,22 @@ func deleteObjectAndWait(obj client.Object, cl client.Client) error {
 	}
 
 	return wait.PollImmediate(time.Second, 60*time.Second, func() (done bool, err error) {
+		found, err := getter.GetResourceInCache(obj.GetNamespace(), obj.GetName(), obj, cl)
+		if err != nil {
+			return false, err
+		}
+
+		return !found, nil
+	})
+}
+
+func deleteObjectAndWaitWithTimeout(obj client.Object, cl client.Client, timeout time.Duration) error {
+	err := deleteObjectWithDefaultOptions(obj, cl)
+	if err != nil && !apierrors.IsNotFound(err) {
+		return err
+	}
+
+	return wait.PollImmediate(time.Second, timeout, func() (done bool, err error) {
 		found, err := getter.GetResourceInCache(obj.GetNamespace(), obj.GetName(), obj, cl)
 		if err != nil {
 			return false, err

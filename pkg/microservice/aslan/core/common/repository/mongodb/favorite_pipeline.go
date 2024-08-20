@@ -25,9 +25,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type FavoriteArgs struct {
@@ -114,5 +114,28 @@ func (c *FavoriteColl) Delete(args *FavoriteArgs) error {
 	query := bson.M{"user_id": args.UserID, "product_name": args.ProductName, "name": args.Name, "type": args.Type}
 
 	_, err := c.DeleteOne(context.TODO(), query)
+	return err
+}
+
+func (c *FavoriteColl) DeleteManyByArgs(args *FavoriteArgs) error {
+	if args == nil {
+		return errors.New("nil Favorite args")
+	}
+
+	query := bson.M{}
+	if args.UserID != "" {
+		query["user_id"] = args.UserID
+	}
+	if args.ProductName != "" {
+		query["product_name"] = args.ProductName
+	}
+	if args.Name != "" {
+		query["name"] = args.Name
+	}
+	if args.Type != "" {
+		query["type"] = args.Type
+	}
+
+	_, err := c.DeleteMany(context.TODO(), query)
 	return err
 }

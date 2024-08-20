@@ -22,8 +22,8 @@ import (
 	"strings"
 
 	"github.com/imroc/req/v3"
-	"github.com/koderover/zadig/pkg/tool/httpclient"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
+	"github.com/koderover/zadig/v2/pkg/types"
 	"github.com/pkg/errors"
 )
 
@@ -69,7 +69,7 @@ const (
 func NewNacosClient(serverAddr, userName, password string) (*Client, error) {
 	host, err := url.Parse(serverAddr)
 	if err != nil {
-		return nil, errors.New("parse nacos server address failed")
+		return nil, errors.Wrap(err, "parse nacos server address failed")
 	}
 	// add default context path
 	if host.Path == "" {
@@ -82,7 +82,7 @@ func NewNacosClient(serverAddr, userName, password string) (*Client, error) {
 		SetResult(&result).
 		Post(loginURL)
 	if err != nil {
-		return nil, errors.New("login nacos failed")
+		return nil, errors.Wrap(err, "login nacos failed")
 	}
 	if !resp.IsSuccess() {
 		return nil, errors.New("login nacos failed")
@@ -120,7 +120,7 @@ func (c *Client) ListNamespaces() ([]*types.NacosNamespace, error) {
 	url := "/v1/console/namespaces"
 	res := &namespaceResp{}
 	if _, err := c.Client.Get(url, httpclient.SetResult(res)); err != nil {
-		return nil, errors.New("list nacos namespace failed")
+		return nil, errors.Wrap(err, "list nacos namespace failed")
 	}
 	resp := []*types.NacosNamespace{}
 	for _, namespace := range res.Data {
@@ -137,22 +137,23 @@ func (c *Client) ListConfigs(namespaceID string) ([]*types.NacosConfig, error) {
 	url := "/v1/cs/configs"
 	resp := []*types.NacosConfig{}
 	pageNum := 1
-	pageSize := 20
+	pageSize := 500
 	end := false
 	for !end {
 		res := &configResp{}
 		numString := strconv.Itoa(pageNum)
 		sizeString := strconv.Itoa(pageSize)
 		params := httpclient.SetQueryParams(map[string]string{
-			"dataId":   "",
-			"group":    "",
-			"search":   "accurate",
-			"pageNo":   numString,
-			"pageSize": sizeString,
-			"tenant":   namespaceID,
+			"dataId":      "",
+			"group":       "",
+			"search":      "accurate",
+			"pageNo":      numString,
+			"pageSize":    sizeString,
+			"tenant":      namespaceID,
+			"accessToken": c.token,
 		})
 		if _, err := c.Client.Get(url, params, httpclient.SetResult(res)); err != nil {
-			return nil, errors.New("list nacos config failed")
+			return nil, errors.Wrap(err, "list nacos config failed")
 		}
 		for _, conf := range res.PageItems {
 			resp = append(resp, &types.NacosConfig{
@@ -162,6 +163,7 @@ func (c *Client) ListConfigs(namespaceID string) ([]*types.NacosConfig, error) {
 				Content: conf.Content,
 			})
 		}
+		pageNum++
 		if len(res.PageItems) < pageSize {
 			end = true
 		}
@@ -174,13 +176,14 @@ func (c *Client) GetConfig(dataID, group, namespaceID string) (*types.NacosConfi
 	url := "/v1/cs/configs"
 	res := &config{}
 	params := httpclient.SetQueryParams(map[string]string{
-		"dataId": dataID,
-		"group":  group,
-		"tenant": namespaceID,
-		"show":   "all",
+		"dataId":      dataID,
+		"group":       group,
+		"tenant":      namespaceID,
+		"show":        "all",
+		"accessToken": c.token,
 	})
 	if _, err := c.Client.Get(url, params, httpclient.SetResult(res)); err != nil {
-		return nil, errors.New("get nacos config failed")
+		return nil, errors.Wrap(err, "get nacos config failed")
 	}
 	return &types.NacosConfig{
 		DataID:  res.DataID,
@@ -194,14 +197,15 @@ func (c *Client) UpdateConfig(dataID, group, namespaceID, content, format string
 	namespaceID = getNamespaceID(namespaceID)
 	path := "/v1/cs/configs"
 	formValues := map[string]string{
-		"dataId":  dataID,
-		"group":   group,
-		"tenant":  namespaceID,
-		"content": content,
-		"type":    setFormat(format),
+		"dataId":      dataID,
+		"group":       group,
+		"tenant":      namespaceID,
+		"content":     content,
+		"type":        setFormat(format),
+		"accessToken": c.token,
 	}
 	if _, err := c.Client.Post(path, httpclient.SetFormData(formValues)); err != nil {
-		return errors.New("update nacos config failed")
+		return errors.Wrap(err, "update nacos config failed")
 	}
 	return nil
 }

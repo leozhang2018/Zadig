@@ -22,18 +22,16 @@ import (
 	"strings"
 
 	"github.com/hashicorp/go-multierror"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/util"
 	"go.uber.org/zap"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
-	"k8s.io/apimachinery/pkg/util/sets"
-
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/setting"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
-	"github.com/koderover/zadig/pkg/util"
 )
 
 const SplitSymbol = "&"
@@ -175,6 +173,45 @@ func DeleteNamespaceIfMatch(namespace string, selector labels.Selector, clusterI
 	return nil
 }
 
+func DeleteZadigLabelFromNamespace(namespace string, clusterID string, log *zap.SugaredLogger) error {
+	log.Infof("removing zadig label from namespace [%s]", namespace)
+
+	clientset, err := kubeclient.GetKubeClientSet(config.HubServerAddress(), clusterID)
+	if err != nil {
+		log.Errorf("failed to create kubernetes clientset for clusterID: %s, the error is: %s", clusterID, err)
+		return err
+	}
+	kubeClient, err := kubeclient.GetKubeClient(config.HubServerAddress(), clusterID)
+	if err != nil {
+		return err
+	}
+
+	ns, err := clientset.CoreV1().Namespaces().Get(context.TODO(), namespace, metav1.GetOptions{})
+	if err != nil {
+		log.Errorf("failed to list namespace to delete matching namespace in cluster ID: %s, the error is: %s", clusterID, err)
+		return err
+	}
+
+	curLabels := ns.Labels
+	filteredLabels := make(map[string]string)
+	for name, value := range curLabels {
+		if name == setting.EnvCreatedBy && value == setting.EnvCreator {
+			continue
+		}
+		if name == setting.ProductLabel {
+			continue
+		}
+		filteredLabels[name] = value
+	}
+	ns.Labels = filteredLabels
+
+	err = updater.UpdateNamespace(ns, kubeClient)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
 func GetProductEnvNamespace(envName, productName, namespace string) string {
 	if namespace != "" {
 		return namespace
@@ -185,7 +222,7 @@ func GetProductEnvNamespace(envName, productName, namespace string) string {
 	})
 	if err != nil {
 		product = &commonmodels.Product{EnvName: envName, ProductName: productName}
-		return product.GetNamespace()
+		return product.GetDefaultNamespace()
 	}
 	return product.Namespace
 }
@@ -193,45 +230,7 @@ func GetProductEnvNamespace(envName, productName, namespace string) string {
 func GetProductTargetMap(prod *commonmodels.Product) (map[string][]commonmodels.DeployEnv, map[string]string) {
 	resp := make(map[string][]commonmodels.DeployEnv)
 	imageNameM := make(map[string]string)
-	if prod.Source == setting.SourceFromExternal {
-		services, _ := commonrepo.NewServiceColl().ListExternalWorkloadsBy(prod.ProductName, prod.EnvName)
 
-		currentServiceNames := sets.NewString()
-		for _, service := range services {
-			currentServiceNames.Insert(service.ServiceName)
-		}
-
-		servicesInExternalEnv, _ := commonrepo.NewServicesInExternalEnvColl().List(&commonrepo.ServicesInExternalEnvArgs{
-			ProductName: prod.ProductName,
-			EnvName:     prod.EnvName,
-		})
-
-		externalServiceNames := sets.NewString()
-		for _, serviceInExternalEnv := range servicesInExternalEnv {
-			if !currentServiceNames.Has(serviceInExternalEnv.ServiceName) {
-				externalServiceNames.Insert(serviceInExternalEnv.ServiceName)
-			}
-		}
-
-		if len(externalServiceNames) > 0 {
-			newServices, _ := commonrepo.NewServiceColl().ListExternalWorkloadsBy(prod.ProductName, "", externalServiceNames.List()...)
-			for _, service := range newServices {
-				services = append(services, service)
-			}
-		}
-
-		for _, service := range services {
-			for _, container := range service.Containers {
-				env := service.ServiceName + "/" + container.Name
-				deployEnv := commonmodels.DeployEnv{Type: setting.K8SDeployType, Env: env}
-				target := strings.Join([]string{service.ProductName, service.ServiceName, container.Name}, SplitSymbol)
-				resp[target] = append(resp[target], deployEnv)
-
-				imageNameM[target] = util.GetImageNameFromContainerInfo(container.ImageName, container.Name)
-			}
-		}
-		return resp, imageNameM
-	}
 	for _, services := range prod.Services {
 		for _, serviceObj := range services {
 			switch serviceObj.Type {

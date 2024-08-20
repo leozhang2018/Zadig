@@ -24,14 +24,14 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type CounterColl struct {
 	*mongo.Collection
-
+	mongo.Session
 	coll string
 }
 
@@ -39,6 +39,15 @@ func NewCounterColl() *CounterColl {
 	name := models.Counter{}.TableName()
 	return &CounterColl{
 		Collection: mongotool.Database(config.MongoDatabase()).Collection(name),
+		coll:       name,
+	}
+}
+
+func NewCounterCollWithSession(session mongo.Session) *CounterColl {
+	name := models.Counter{}.TableName()
+	return &CounterColl{
+		Collection: mongotool.Database(config.MongoDatabase()).Collection(name),
+		Session:    session,
 		coll:       name,
 	}
 }
@@ -59,7 +68,7 @@ func (c *CounterColl) GetNextSeq(counterName string) (int64, error) {
 	opts.SetUpsert(true)
 	opts.SetReturnDocument(options.After)
 
-	res := c.FindOneAndUpdate(context.TODO(), query, bson.M{"$inc": bson.M{"seq": int64(1)}}, opts)
+	res := c.FindOneAndUpdate(mongotool.SessionContext(context.TODO(), c.Session), query, bson.M{"$inc": bson.M{"seq": int64(1)}}, opts)
 	if res.Err() != nil {
 		return 0, res.Err()
 	}

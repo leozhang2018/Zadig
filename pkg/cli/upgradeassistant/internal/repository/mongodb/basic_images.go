@@ -20,9 +20,9 @@ import (
 	"context"
 	"time"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 )
@@ -69,8 +69,8 @@ func (c *BasicImageColl) GetSonarTypeImage() ([]*models.BasicImage, error) {
 
 func (c *BasicImageColl) CreateZadigSonarImage() error {
 	args := &models.BasicImage{
-		Value:      "sonarsource/sonar-scanner-cli",
-		Label:      "sonar:latest",
+		Value:      "sonarsource/sonar-scanner-cli:5.0.1",
+		Label:      "sonar:5.0.1",
 		CreateTime: time.Now().Unix(),
 		UpdateTime: time.Now().Unix(),
 		UpdateBy:   "system",

@@ -22,11 +22,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/code/service"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func GetCodeHostList(c *gin.Context) {
@@ -226,6 +226,39 @@ func CodeHostGetPRList(c *gin.Context) {
 	ctx.Resp, ctx.Err = service.CodeHostListPRs(chID, repoName, strings.Replace(repoOwner, "%2F", "/", -1), targetBr, args.Key, args.Page, args.PerPage, ctx.Logger)
 }
 
+func CodeHostGetCommits(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	codehostID := c.Param("codehostId")
+	repoNamespace := c.Query("repoNamespace")
+	repoName := c.Query("repoName") // pro Name, id/name -> gitlab = id
+
+	args := new(CodeHostGetPageNateListArgs)
+	if err := c.ShouldBindQuery(args); err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
+		return
+	}
+
+	if codehostID == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("empty codehostId")
+		return
+	}
+	if repoNamespace == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("empty repoNamespace")
+		return
+	}
+	if repoName == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("empty repoName")
+		return
+	}
+
+	targetBr := c.Query("branchName")
+
+	chID, _ := strconv.Atoi(codehostID)
+	ctx.Resp, ctx.Err = service.CodeHostListCommits(chID, repoName, strings.Replace(repoNamespace, "%2F", "/", -1), targetBr, args.Page, args.PerPage, ctx.Logger)
+}
+
 func ListRepoInfos(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
@@ -239,20 +272,40 @@ func ListRepoInfos(c *gin.Context) {
 	ctx.Resp, ctx.Err = service.ListRepoInfos(args.Infos, ctx.Logger)
 }
 
-type BranchesRequest struct {
-	Regular  string   `json:"regular"`
-	Branches []string `json:"branches"`
-}
-
 func MatchBranchesList(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	args := new(BranchesRequest)
-	err := c.ShouldBindJSON(args)
-	if err != nil {
-		ctx.Err = e.ErrInvalidParam.AddDesc("invalid branches args")
+	codehostID := c.Param("codehostId")
+	repoOwner := c.Query("repoOwner")
+	repoName := c.Query("repoName") // pro Name, id/name -> gitlab = id
+	regular := c.Query("regular")
+
+	if codehostID == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("empty codehostId")
 		return
 	}
-	ctx.Resp = service.MatchBranchesList(args.Regular, args.Branches)
+	if repoOwner == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("empty repoOwner")
+		return
+	}
+	if repoName == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("empty repoName")
+		return
+	}
+	if regular == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("empty regular")
+		return
+	}
+
+	chID, _ := strconv.Atoi(codehostID)
+	ctx.Resp, ctx.Err = service.MatchBranchesList(
+		chID,
+		repoName,
+		strings.Replace(repoOwner, "%2F", "/", -1),
+		"",
+		1,
+		500,
+		regular,
+		ctx.Logger)
 }

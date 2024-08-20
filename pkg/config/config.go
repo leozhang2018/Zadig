@@ -22,7 +22,7 @@ import (
 
 	"github.com/spf13/viper"
 
-	"github.com/koderover/zadig/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 // SystemAddress is the fully qualified domain name of the system, or an IP Address.
@@ -32,8 +32,8 @@ func SystemAddress() string {
 	return viper.GetString(setting.ENVSystemAddress)
 }
 
-func Enterprise() bool {
-	return viper.GetBool(setting.ENVEnterprise)
+func ChartVersion() string {
+	return viper.GetString(setting.ENVChartVersion)
 }
 
 func Mode() string {
@@ -81,6 +81,10 @@ func AslanServiceInfo() *setting.ServiceInfo {
 	return GetServiceByCode(setting.Aslan)
 }
 
+func UserServiceInfo() *setting.ServiceInfo {
+	return GetServiceByCode(setting.User)
+}
+
 func SecretKey() string {
 	return viper.GetString(setting.ENVSecretKey)
 }
@@ -90,29 +94,9 @@ func AslanServiceAddress() string {
 	return GetServiceAddress(s.Name, s.Port)
 }
 
-func AslanServiceName() string {
-	return AslanServiceInfo().Name
-}
-
-func AslanServicePort() int32 {
-	return AslanServiceInfo().Port
-}
-
-func AslanxServiceInfo() *setting.ServiceInfo {
-	return GetServiceByCode(setting.Aslanx)
-}
-
-func AslanxServiceAddress() string {
-	s := AslanxServiceInfo()
+func UserServiceAddress() string {
+	s := UserServiceInfo()
 	return GetServiceAddress(s.Name, s.Port)
-}
-
-func AslanxServiceName() string {
-	return AslanxServiceInfo().Name
-}
-
-func AslanxServicePort() int32 {
-	return AslanxServiceInfo().Port
 }
 
 func HubServerServiceInfo() *setting.ServiceInfo {
@@ -183,36 +167,39 @@ func MinioServiceName() string {
 func DataPath() string {
 	return "/app/data"
 }
-func WorkflowDataPath() string {
-	return "/workflow/data"
+
+func VMTaskLogPath() string {
+	return filepath.Join(DataPath(), "%vm-task%", "log")
 }
 
 func ObjectStorageServicePath(project, service string) string {
 	return filepath.Join(project, "service", service)
 }
 
-func ObjectStorageTemplatePath(name, kind string) string {
-	return filepath.Join("templates", kind, name)
+func ObjectStorageProductionServicePath(project, service string) string {
+	return filepath.Join(project, "production-service", service)
 }
 
-func ObjectStorageDeliveryVersionPath(project string) string {
-	return filepath.Join("delivery-distributes", "files", project)
+func ObjectStorageTemplatePath(name, kind string) string {
+	return filepath.Join("templates", kind, name)
 }
 
 func ObjectStorageChartTemplatePath(name string) string {
 	return ObjectStorageTemplatePath(name, setting.ChartTemplatesPath)
 }
 
-func LocalServicePath(project, service string) string {
-	return filepath.Join(DataPath(), project, service)
+func LocalTestServicePath(project, service string) string {
+	return filepath.Join(DataPath(), project, "test", service)
 }
 
-func LocalWorkflowServicePath(project, service string) string {
-	return filepath.Join(WorkflowDataPath(), project, service)
+// LocalTestServicePathWithRevision returns a test service path with a given revision.
+func LocalTestServicePathWithRevision(project, service, revision string) string {
+	return filepath.Join(DataPath(), project, "test", service, revision)
 }
 
-func LocalServicePathWithRevision(project, service, revision string) string {
-	return filepath.Join(DataPath(), project, service, revision)
+// LocalProductionServicePathWithRevision returns a production service path with a given revision.
+func LocalProductionServicePathWithRevision(project, service, revision string) string {
+	return filepath.Join(DataPath(), project, "production", service, revision)
 }
 
 func LocalTemplatePath(name, kind string) string {
@@ -251,12 +238,12 @@ func MysqlHost() string {
 	return viper.GetString(setting.ENVMysqlHost)
 }
 
-func AdminEmail() string {
-	return viper.GetString(setting.ENVAdminEmail)
+func MysqlDexDB() string {
+	return viper.GetString(setting.ENVMysqlDexDB)
 }
 
-func AdminPassword() string {
-	return viper.GetString(setting.ENVAdminPassword)
+func MysqlUseDM() bool {
+	return viper.GetBool(setting.ENVMysqlUseDM)
 }
 
 func Namespace() string {
@@ -269,4 +256,24 @@ func RoleBindingNameFromUIDAndRole(uid string, role setting.RoleType, roleNamesp
 
 func BuildResourceKey(resourceType, projectName, labelBinding string) string {
 	return fmt.Sprintf("%s-%s-%s", resourceType, projectName, labelBinding)
+}
+
+func RedisHost() string {
+	return viper.GetString(setting.ENVRedisHost)
+}
+
+func RedisPort() int {
+	return viper.GetInt(setting.ENVRedisPort)
+}
+
+func RedisUserName() string {
+	return viper.GetString(setting.ENVRedisUserName)
+}
+
+func RedisPassword() string {
+	return viper.GetString(setting.ENVRedisPassword)
+}
+
+func RedisCommonCacheTokenDB() int {
+	return viper.GetInt(setting.ENVRedisCommonCacheDB)
 }

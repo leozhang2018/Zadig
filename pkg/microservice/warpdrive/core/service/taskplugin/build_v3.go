@@ -29,11 +29,11 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	krkubeclient "github.com/koderover/zadig/pkg/tool/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/label"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	krkubeclient "github.com/koderover/zadig/v2/pkg/tool/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/label"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
 )
 
 const (
@@ -63,6 +63,7 @@ type BuildTaskV3Plugin struct {
 	restConfig    *rest.Config
 	Task          *task.Build
 	Log           *zap.SugaredLogger
+	Timeout       <-chan time.Time
 
 	ack func()
 }
@@ -116,7 +117,7 @@ func (p *BuildTaskV3Plugin) Run(ctx context.Context, pipelineTask *task.Task, pi
 	p.KubeNamespace = pipelineTask.ConfigPayload.Build.KubeNamespace
 
 	//instantiates variables like ${<REPO>_BRANCH} ${${REPO_index}_BRANCH} ...
-	p.Task.JobCtx.EnvVars = append(p.Task.JobCtx.EnvVars, InstantiateBuildSysVariables(&p.Task.JobCtx)...)
+	p.Task.JobCtx.EnvVars = append(p.Task.JobCtx.EnvVars, CreateEnvsFromRepoInfo(p.Task.JobCtx.Builds)...)
 
 	jobCtx := JobCtxBuilder{
 		JobName:     p.JobName,
@@ -174,7 +175,7 @@ func (p *BuildTaskV3Plugin) Run(ctx context.Context, pipelineTask *task.Task, pi
 	jobImage := getReaperImage(pipelineTask.ConfigPayload.Release.ReaperImage, p.Task.BuildOS, p.Task.ImageFrom)
 
 	//Resource request default value is LOW
-	job, err := buildJob(p.Type(), jobImage, p.JobName, serviceName, "", pipelineTask.ConfigPayload.Build.KubeNamespace, p.Task.ResReq, p.Task.ResReqSpec, pipelineCtx, pipelineTask, p.Task.Registries)
+	job, err := buildJob(p.Type(), jobImage, p.JobName, serviceName, p.Task.ClusterID, p.Task.StrategyID, pipelineTask.ConfigPayload.Build.KubeNamespace, p.Task.ResReq, p.Task.ResReqSpec, pipelineCtx, pipelineTask, p.Task.Registries)
 	if err != nil {
 		msg := fmt.Sprintf("create build job context error: %v", err)
 		p.Log.Error(msg)
@@ -212,12 +213,13 @@ func (p *BuildTaskV3Plugin) Run(ctx context.Context, pipelineTask *task.Task, pi
 		p.SetBuildStatusCompleted(config.StatusFailed)
 		return
 	}
+	p.Timeout = time.After(time.Duration(p.TaskTimeout()) * time.Second)
 	p.Log.Infof("succeed to create build job %s", p.JobName)
 }
 
 // Wait ...
 func (p *BuildTaskV3Plugin) Wait(ctx context.Context) {
-	status, err := waitJobEndWithFile(ctx, p.TaskTimeout(), p.KubeNamespace, p.JobName, true, p.kubeClient, p.clientset, p.restConfig, p.Log)
+	status, err := waitJobEndWithFile(ctx, p.TaskTimeout(), p.Timeout, p.KubeNamespace, p.JobName, true, p.kubeClient, p.clientset, p.restConfig, p.Log)
 	p.SetBuildStatusCompleted(status)
 	if err != nil {
 		p.Task.Error = err.Error()

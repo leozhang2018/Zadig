@@ -21,20 +21,20 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/bndr/gojenkins"
+	"github.com/koderover/gojenkins"
 	"go.uber.org/zap"
-	yaml "gopkg.in/yaml.v3"
+	"gopkg.in/yaml.v3"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/microservice/jenkinsplugin/core/service"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	krkubeclient "github.com/koderover/zadig/pkg/tool/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/label"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/microservice/jenkinsplugin/core/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	krkubeclient "github.com/koderover/zadig/v2/pkg/tool/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/label"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
 )
 
 const (
@@ -63,6 +63,7 @@ type JenkinsBuildPlugin struct {
 	FileName      string
 	Task          *task.JenkinsBuild
 	Log           *zap.SugaredLogger
+	Timeout       <-chan time.Time
 
 	ack func()
 }
@@ -165,7 +166,7 @@ func (j *JenkinsBuildPlugin) Run(ctx context.Context, pipelineTask *task.Task, p
 	j.Log.Infof("succeed to create cm for jenkins build job %s", j.JobName)
 	j.Task.Registries = getMatchedRegistries(pipelineTask.ConfigPayload.JenkinsBuildConfig.JenkinsBuildImage, j.Task.Registries)
 
-	job, err := buildJob(j.Type(), pipelineTask.ConfigPayload.JenkinsBuildConfig.JenkinsBuildImage, j.JobName, serviceName, "", pipelineTask.ConfigPayload.Build.KubeNamespace, setting.MinRequest, setting.MinRequestSpec, pipelineCtx, pipelineTask, j.Task.Registries)
+	job, err := buildJob(j.Type(), pipelineTask.ConfigPayload.JenkinsBuildConfig.JenkinsBuildImage, j.JobName, serviceName, "", "", pipelineTask.ConfigPayload.Build.KubeNamespace, setting.MinRequest, setting.MinRequestSpec, pipelineCtx, pipelineTask, j.Task.Registries)
 	if err != nil {
 		msg := fmt.Sprintf("create jenkins build job context error: %v", err)
 		j.Log.Error(msg)
@@ -198,12 +199,13 @@ func (j *JenkinsBuildPlugin) Run(ctx context.Context, pipelineTask *task.Task, p
 		j.Task.Error = msg
 		return
 	}
+	j.Timeout = time.After(time.Duration(j.TaskTimeout()) * time.Second)
 	j.Log.Infof("succeed to create jenkins build job %s", j.JobName)
 }
 
 // Wait ...
 func (j *JenkinsBuildPlugin) Wait(ctx context.Context) {
-	jobStatus, err := waitJobEnd(ctx, j.TaskTimeout(), j.KubeNamespace, j.JobName, j.kubeClient, j.clientset, j.restConfig, j.Log)
+	jobStatus, err := waitJobEnd(ctx, j.TaskTimeout(), j.Timeout, j.KubeNamespace, j.JobName, j.kubeClient, j.clientset, j.restConfig, j.Log)
 	if err != nil {
 		j.SetStatus(config.StatusFailed)
 		msg := fmt.Sprintf("failed to wait job end, error: %s", err)

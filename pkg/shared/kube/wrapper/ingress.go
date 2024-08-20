@@ -17,11 +17,13 @@ limitations under the License.
 package wrapper
 
 import (
+	"fmt"
+
 	extensionsv1beta1 "k8s.io/api/extensions/v1beta1"
 	v1 "k8s.io/api/networking/v1"
 
-	"github.com/koderover/zadig/pkg/shared/kube/resource"
-	"github.com/koderover/zadig/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/shared/kube/resource"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 // ingress is the wrapper for extensionsv1beta1.Ingress type.
@@ -59,7 +61,7 @@ func GetIngressHostInfo(ing *v1.Ingress) []resource.HostInfo {
 		for _, path := range rule.HTTP.Paths {
 			backend := resource.Backend{
 				ServiceName: path.Backend.Service.Name,
-				ServicePort: string(path.Backend.Service.Port.Number),
+				ServicePort: fmt.Sprintf("%d", path.Backend.Service.Port.Number),
 			}
 			info.Backends = append(info.Backends, backend)
 		}

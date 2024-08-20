@@ -18,10 +18,11 @@ package client
 
 import (
 	"fmt"
+	"time"
 
 	"go.uber.org/zap"
 
-	configbase "github.com/koderover/zadig/pkg/config"
+	configbase "github.com/koderover/zadig/v2/pkg/config"
 )
 
 func (c *Client) InitStatData(log *zap.SugaredLogger) error {
@@ -39,33 +40,38 @@ func (c *Client) InitStatData(log *zap.SugaredLogger) error {
 	if err != nil {
 		log.Errorf("trigger init testStat error :%v", err)
 	}
-	//deploy
-	url = fmt.Sprintf("%s/api/stat/quality/initDeployStat", configbase.AslanServiceAddress())
-	log.Info("start init deployStat..")
-	_, err = c.sendPostRequest(url, nil, log)
-	if err != nil {
-		log.Errorf("trigger init deployStat error :%v", err)
+
+	// deploy now has 2 parts: weekly and monthly, do those separately when the time is right.
+
+	// if it is a monday, do the weekly deploy stats
+	if time.Now().Weekday() == time.Monday {
+		url = fmt.Sprintf("%s/api/stat/v2/quality/deploy/weekly", configbase.AslanServiceAddress())
+		log.Info("start creating weekly deploy stats..")
+		_, err = c.sendPostRequest(url, nil, log)
+		if err != nil {
+			log.Errorf("creating weekly deploy stats error :%v", err)
+		}
+	}
+
+	// if it is the first day of a month, do the monthly deploy stats
+	if time.Now().Day() == 1 {
+		url = fmt.Sprintf("%s/api/stat/v2/quality/deploy/weekly", configbase.AslanServiceAddress())
+		log.Info("start creating monthly deploy stats..")
+		_, err = c.sendPostRequest(url, nil, log)
+		if err != nil {
+			log.Errorf("creating monthly deploy stats error :%v", err)
+		}
+	}
+
+	// if it is the first day of a month, do the monthly release stats
+	if time.Now().Day() == 1 {
+		url = fmt.Sprintf("%s/api/stat/v2/quality/release/weekly", configbase.AslanServiceAddress())
+		log.Info("start creating monthly deploy stats..")
+		_, err = c.sendPostRequest(url, nil, log)
+		if err != nil {
+			log.Errorf("creating monthly deploy stats error :%v", err)
+		}
 	}
 
 	return nil
-}
-
-func (c *Client) InitOperationStatData(log *zap.SugaredLogger) error {
-	//operation
-	url := fmt.Sprintf("%s/api/operation/stat/initOperationStat", configbase.AslanxServiceAddress())
-	log.Info("start init operationStat..")
-	err := c.sendRequest(url)
-	if err != nil {
-		log.Errorf("trigger init operationStat error :%v", err)
-	}
-
-	if webHookUser, err := c.GetWebHookUser(log); err == nil {
-		if err = c.CreateWebHookUser(webHookUser, log); err != nil {
-			log.Errorf("CreateWebHookUser err:%v", err)
-		}
-	} else {
-		log.Errorf("GetWebHookUser err:%v", err)
-	}
-
-	return err
 }

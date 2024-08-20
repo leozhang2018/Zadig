@@ -26,9 +26,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type SonarIntegrationColl struct {
@@ -129,4 +129,13 @@ func (c *SonarIntegrationColl) DeleteByID(ctx context.Context, idstring string) 
 
 	_, err = c.DeleteOne(ctx, query)
 	return err
+}
+
+func (c *SonarIntegrationColl) GetBySystemIdentity(systemIdentity string) (*models.SonarIntegration, error) {
+	obj := &models.SonarIntegration{}
+	query := bson.M{"system_identity": systemIdentity}
+	if err := c.Collection.FindOne(context.TODO(), query).Decode(obj); err != nil {
+		return nil, err
+	}
+	return obj, nil
 }

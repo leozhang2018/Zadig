@@ -17,8 +17,11 @@ limitations under the License.
 package types
 
 import (
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 )
 
 type Product struct {
@@ -32,7 +35,6 @@ type Product struct {
 	Enabled     bool             `bson:"enabled"                   json:"enabled"`
 	EnvName     string           `bson:"env_name"                  json:"env_name"`
 	UpdateBy    string           `bson:"update_by"                 json:"update_by"`
-	Auth        []*ProductAuth   `bson:"auth"                      json:"auth"`
 	Visibility  string           `bson:"-"                         json:"visibility"`
 	Services    [][]*Service     `bson:"services"                  json:"services"`
 	Render      *task.RenderInfo `bson:"render"                    json:"render"`
@@ -45,13 +47,10 @@ type Product struct {
 	RecycleDay  int              `bson:"recycle_day"               json:"recycle_day"`
 	Source      string           `bson:"source"                    json:"source"`
 
-	ServiceDeployStrategy map[string]string `bson:"service_deploy_strategy" json:"service_deploy_strategy"`
+	// GlobalValues for helm projects
+	DefaultValues string `bson:"default_values,omitempty"       json:"default_values,omitempty"`
 
-	// used for cache
-	//KubeClient kubecli.Client `bson:"-" json:"-"`
-	//HelmClient helmclient.Client `bson:"-" json:"-"`
-	// TODO: temp flag
-	IsForkedProduct bool `bson:"-" json:"-"`
+	ServiceDeployStrategy map[string]string `bson:"service_deploy_strategy" json:"service_deploy_strategy"`
 }
 
 type RenderKV struct {
@@ -77,20 +76,20 @@ type RenderChart struct {
 	OverrideValues string      `json:"override_values,omitempty"`
 }
 
-type ProductAuth struct {
-	Type        config.ProductAuthType     `bson:"type"          json:"type"`
-	Name        string                     `bson:"name"          json:"name"`
-	Permissions []config.ProductPermission `bson:"permissions"   json:"permissions"`
+type ServiceResource struct {
+	schema.GroupVersionKind
+	Name string
 }
 
 type Service struct {
-	ServiceName string           `bson:"service_name"               json:"service_name"`
-	Type        string           `bson:"type"                       json:"type"`
-	Revision    int64            `bson:"revision"                   json:"revision"`
-	Containers  []*Container     `bson:"containers"                 json:"containers,omitempty"`
-	Configs     []*Config        `bson:"configs,omitempty"          json:"configs,omitempty"`
-	Render      *task.RenderInfo `bson:"render,omitempty"           json:"render,omitempty"` // 记录每个服务render信息 便于更新单个服务
-	EnvConfigs  []*EnvConfig     `bson:"-"                          json:"env_configs,omitempty"`
+	ServiceName string                  `bson:"service_name"               json:"service_name"`
+	Type        string                  `bson:"type"                       json:"type"`
+	Revision    int64                   `bson:"revision"                   json:"revision"`
+	Containers  []*models.Container     `bson:"containers"                 json:"containers,omitempty"`
+	Configs     []*Config               `bson:"configs,omitempty"          json:"configs,omitempty"`
+	Render      *template.ServiceRender `bson:"render,omitempty"           json:"render,omitempty"` // 记录每个服务render信息 便于更新单个服务
+	EnvConfigs  []*EnvConfig            `bson:"-"                          json:"env_configs,omitempty"`
+	Resources   []*ServiceResource      `bson:"resources,omitempty"        json:"resources,omitempty"`
 }
 
 // Config ...
@@ -114,4 +113,12 @@ func (p *Product) GetServiceMap() map[string]*Service {
 		}
 	}
 	return ret
+}
+
+func (p *Product) IsSleeping() bool {
+	return p.Status == setting.ProductStatusSleeping
+}
+
+func (p *Product) IsHostProject() bool {
+	return p.Source == setting.SourceFromExternal
 }

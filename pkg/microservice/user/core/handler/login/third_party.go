@@ -28,17 +28,18 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 	"github.com/gin-gonic/gin"
+	"github.com/koderover/zadig/v2/pkg/microservice/user/core/service/permission"
+	"github.com/koderover/zadig/v2/pkg/tool/cache"
 	"golang.org/x/oauth2"
 
-	configbase "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/user/config"
-	"github.com/koderover/zadig/pkg/microservice/user/core/service/login"
-	"github.com/koderover/zadig/pkg/microservice/user/core/service/user"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/aslan"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
+	configbase "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/user/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/user/core/service/login"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/aslan"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func provider() *oidc.Provider {
@@ -151,7 +152,9 @@ func Callback(c *gin.Context) {
 		return
 	}
 
-	user, err := user.SyncUser(&user.SyncUserInfo{
+	claims.IssuedAt = time.Now().Unix()
+
+	user, err := permission.SyncUser(&permission.SyncUserInfo{
 		Account:      claims.PreferredUsername,
 		Name:         claims.Name,
 		Email:        claims.Email,
@@ -161,12 +164,24 @@ func Callback(c *gin.Context) {
 		ctx.Err = err
 		return
 	}
+
+	systemSettings, err := aslan.New(configbase.AslanServiceAddress()).GetSystemSecurityAndPrivacySettings()
+	if err != nil {
+		log.Errorf("failed to get system security settings, error: %s", err)
+		ctx.Err = fmt.Errorf("failed to get system security settings, error: %s", err)
+		return
+	}
+
 	claims.UID = user.UID
-	claims.StandardClaims.ExpiresAt = time.Now().Add(time.Duration(config.TokenExpiresAt()) * time.Minute).Unix()
+	claims.StandardClaims.ExpiresAt = time.Now().Add(time.Duration(systemSettings.TokenExpirationTime) * time.Hour).Unix()
 	userToken, err := login.CreateToken(claims)
 	if err != nil {
 		ctx.Err = err
 		return
+	}
+	err = cache.NewRedisCache(config.RedisUserTokenDB()).Write(claims.UID, userToken, time.Duration(systemSettings.TokenExpirationTime)*time.Hour)
+	if err != nil {
+		log.Errorf("failed to write token into cache, error: %s\n warn: this will cause login failure", err)
 	}
 	v := url.Values{}
 	v.Add("token", userToken)

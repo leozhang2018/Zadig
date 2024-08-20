@@ -17,7 +17,12 @@ limitations under the License.
 package user
 
 import (
-	"github.com/koderover/zadig/pkg/tool/httpclient"
+	"fmt"
+	"net/http"
+	"net/url"
+
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type User struct {
@@ -34,7 +39,10 @@ type usersResp struct {
 }
 
 type SearchArgs struct {
-	UIDs []string `json:"uids"`
+	Name    string   `json:"name"`
+	UIDs    []string `json:"uids"`
+	PerPage int      `json:"per_page,omitempty"`
+	Page    int      `json:"page,omitempty"`
 }
 
 func (c *Client) ListUsers(args *SearchArgs) ([]*User, error) {
@@ -71,7 +79,12 @@ func (c *Client) CreateUser(args *CreateUserArgs) (*CreateUserResp, error) {
 }
 
 type SearchUserArgs struct {
-	Account string `json:"account"`
+	Name         string   `json:"name,omitempty"`
+	Account      string   `json:"account,omitempty"`
+	IdentityType string   `json:"identity_type,omitempty"`
+	UIDs         []string `json:"uids,omitempty"`
+	PerPage      int      `json:"per_page,omitempty"`
+	Page         int      `json:"page,omitempty"`
 }
 
 type SearchUserResp struct {
@@ -86,8 +99,64 @@ func (c *Client) SearchUser(args *SearchUserArgs) (*SearchUserResp, error) {
 	return resp, err
 }
 
+func (c *Client) CountUsers() (*types.UserStatistics, error) {
+	url := "/users/count"
+	resp := new(types.UserStatistics)
+	_, err := c.Get(url, httpclient.SetResult(resp))
+	return resp, err
+}
+
 func (c *Client) Healthz() error {
 	url := "/healthz"
 	_, err := c.Get(url)
 	return err
+}
+
+// moved from policy client, TODO: merge it with searchUser function
+func (c *Client) SearchUsers(header http.Header, qs url.Values, body interface{}) (*types.UsersResp, error) {
+	url := "/users/brief"
+	result := &types.UsersResp{}
+	_, err := c.Post(url, httpclient.SetHeadersFromHTTPHeader(header), httpclient.SetQueryParamsFromValues(qs), httpclient.SetBody(body), httpclient.SetResult(result))
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
+}
+
+func (c *Client) DeleteUser(userId string, header http.Header, qs url.Values) ([]byte, error) {
+	url := "/users/" + userId
+
+	res, err := c.Delete(url, httpclient.SetHeadersFromHTTPHeader(header), httpclient.SetQueryParamsFromValues(qs))
+	if err != nil {
+		return nil, err
+	}
+
+	return res.Body(), nil
+}
+
+func (c *Client) GetUserByID(uid string) (*types.UserInfo, error) {
+	url := fmt.Sprintf("%s/%s", "users", uid)
+	result := &types.UserInfo{}
+
+	_, err := c.Get(url, httpclient.SetResult(result))
+	return result, err
+}
+
+type userSearchRequest struct {
+	UIDs []string `json:"uids"`
+}
+
+func (c *Client) SearchUsersByIDList(idList []string) (*types.UsersResp, error) {
+	url := "/users/search"
+	result := &types.UsersResp{}
+
+	body := &userSearchRequest{
+		UIDs: idList,
+	}
+
+	_, err := c.Post(url, httpclient.SetBody(body), httpclient.SetResult(result))
+	if err != nil {
+		return nil, err
+	}
+	return result, nil
 }

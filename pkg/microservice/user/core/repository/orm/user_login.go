@@ -19,8 +19,8 @@ package orm
 import (
 	"gorm.io/gorm"
 
-	"github.com/koderover/zadig/pkg/microservice/user/config"
-	"github.com/koderover/zadig/pkg/microservice/user/core/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/user/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/user/core/repository/models"
 )
 
 // CreateUserLogin add a userLogin record
@@ -82,9 +82,18 @@ func UpdateUserLogin(uid string, userLogin *models.UserLogin, db *gorm.DB) error
 	return nil
 }
 
+func CountActiveUser(signatureUpdatedAt int64, db *gorm.DB) (int64, error) {
+	var count int64
+	err := db.Model(&models.UserLogin{}).Select("count(*)").Where("last_login_time > ?", signatureUpdatedAt).Find(&count).Error
+	if err != nil {
+		return 0, err
+	}
+	return count, nil
+}
+
 func CountUser(db *gorm.DB) (int64, error) {
 	var count int64
-	err := db.Model(&models.UserLogin{}).Select("count(*)").Where("last_login_time > 0").Find(&count).Error
+	err := db.Model(&models.UserLogin{}).Select("count(*)").Find(&count).Error
 	if err != nil {
 		return 0, err
 	}

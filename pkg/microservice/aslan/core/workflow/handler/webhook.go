@@ -25,17 +25,11 @@ import (
 	"github.com/xanzy/go-gitlab"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/webhook"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	"github.com/koderover/zadig/pkg/tool/codehub"
-	"github.com/koderover/zadig/pkg/tool/gitee"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/webhook"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	"github.com/koderover/zadig/v2/pkg/tool/gitee"
 )
 
-// @Router /workflow/webhook [POST]
-// @Summary Process webhook
-// @Accept  json
-// @Produce json
-// @Success 200 {object} map[string]string "map[string]string - {message: 'success information'}"
 func ProcessWebHook(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
@@ -45,12 +39,11 @@ func ProcessWebHook(c *gin.Context) {
 		ctx.Err = err
 		return
 	}
+
 	if github.WebHookType(c.Request) != "" {
 		ctx.Err = processGithub(payload, c.Request, ctx.RequestID, ctx.Logger)
 	} else if gitlab.HookEventType(c.Request) != "" {
 		ctx.Err = webhook.ProcessGitlabHook(payload, c.Request, ctx.RequestID, ctx.Logger)
-	} else if codehub.HookEventType(c.Request) != "" {
-		ctx.Err = webhook.ProcessCodehubHook(payload, c.Request, ctx.RequestID, ctx.Logger)
 	} else if gitee.HookEventType(c.Request) != "" {
 		ctx.Err = webhook.ProcessGiteeHook(payload, c.Request, ctx.RequestID, ctx.Logger)
 	} else {
@@ -62,14 +55,14 @@ func processGithub(payload []byte, req *http.Request, requestID string, log *zap
 	errs := &multierror.Error{}
 
 	// trigger classic pipeline
-	_, err := webhook.ProcessGithubHook(payload, req, requestID, log)
-	if err != nil {
-		log.Errorf("error happens to trigger classic pipeline %v", err)
-		errs = multierror.Append(errs, err)
-	}
+	//_, err := webhook.ProcessGithubHook(payload, req, requestID, log)
+	//if err != nil {
+	//	log.Errorf("error happens to trigger classic pipeline %v", err)
+	//	errs = multierror.Append(errs, err)
+	//}
 
 	// trigger workflow
-	err = webhook.ProcessGithubWebHook(payload, req, requestID, log)
+	err := webhook.ProcessGithubWebHook(payload, req, requestID, log)
 
 	if err != nil {
 		log.Errorf("error happens to trigger workflow %v", err)

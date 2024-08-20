@@ -25,15 +25,14 @@ import (
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/codehub"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/gitee"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/github"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/gitlab"
-	codehostdb "github.com/koderover/zadig/pkg/microservice/systemconfig/core/codehost/repository/mongodb"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/gitee"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/github"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/gitlab"
+	codehostdb "github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/codehost/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 type hookCreateDeleter interface {
@@ -165,8 +164,6 @@ func removeWebhook(t *task, logger *zap.Logger) {
 			t.doneCh <- struct{}{}
 			return
 		}
-	case setting.SourceFromCodeHub:
-		cl = codehub.NewClient(t.ak, t.sk, t.region, config.ProxyHTTPSAddr(), t.enableProxy)
 	case setting.SourceFromGitee, setting.SourceFromGiteeEE:
 		cl = gitee.NewClient(t.ID, t.token, config.ProxyHTTPSAddr(), t.enableProxy, t.address)
 	default:
@@ -207,13 +204,15 @@ func removeWebhook(t *task, logger *zap.Logger) {
 		}
 
 		if len(updated.References) == 0 {
-			logger.Info("Deleting webhook")
-			err = cl.DeleteWebHook(repoNamespace, t.repo, webhook.HookID)
-			if err != nil {
-				logger.Error("Failed to delete webhook", zap.Error(err))
-				t.err = err
-				t.doneCh <- struct{}{}
-				return
+			if !t.isManual {
+				logger.Info("Deleting webhook")
+				err = cl.DeleteWebHook(repoNamespace, t.repo, webhook.HookID)
+				if err != nil {
+					logger.Error("Failed to delete webhook", zap.Error(err))
+					t.err = err
+					t.doneCh <- struct{}{}
+					return
+				}
 			}
 
 			err = coll.Delete(repoNamespace, t.repo, t.address)
@@ -243,9 +242,6 @@ func addWebhook(t *task, logger *zap.Logger) {
 			t.doneCh <- struct{}{}
 			return
 		}
-
-	case setting.SourceFromCodeHub:
-		cl = codehub.NewClient(t.ak, t.sk, t.region, config.ProxyHTTPSAddr(), t.enableProxy)
 	case setting.SourceFromGitee, setting.SourceFromGiteeEE:
 		cl = gitee.NewClient(t.ID, t.token, config.ProxyHTTPSAddr(), t.enableProxy, t.address)
 	default:
@@ -267,19 +263,21 @@ func addWebhook(t *task, logger *zap.Logger) {
 		return
 	}
 
-	logger.Info("Creating webhook")
-	hookID, err = cl.CreateWebHook(repoNamespace, t.repo)
-	if err != nil {
-		t.err = err
-		logger.Error("Failed to create webhook", zap.Error(err))
-		if err = coll.Delete(repoNamespace, t.repo, t.address); err != nil {
-			logger.Error("Failed to delete webhook record in db", zap.Error(err))
-		}
-	} else {
-		if hookID != "" {
-			if err = coll.Update(repoNamespace, t.repo, t.address, hookID); err != nil {
-				t.err = err
-				logger.Error("Failed to update webhook", zap.Error(err))
+	if !t.isManual {
+		logger.Info("Creating webhook")
+		hookID, err = cl.CreateWebHook(repoNamespace, t.repo)
+		if err != nil {
+			t.err = err
+			logger.Error("Failed to create webhook", zap.Error(err))
+			if err = coll.Delete(repoNamespace, t.repo, t.address); err != nil {
+				logger.Error("Failed to delete webhook record in db", zap.Error(err))
+			}
+		} else {
+			if hookID != "" {
+				if err = coll.Update(repoNamespace, t.repo, t.address, hookID); err != nil {
+					t.err = err
+					logger.Error("Failed to update webhook", zap.Error(err))
+				}
 			}
 		}
 	}

@@ -19,7 +19,8 @@ package models
 import (
 	"reflect"
 
-	templatemodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/template"
+	templatemodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	commontypes "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/types"
 )
 
 // RenderSet ...
@@ -30,14 +31,15 @@ type RenderSet struct {
 	// 可以为空，空时为产品模板默认的渲染集，非空时为环境的渲染集
 	EnvName     string `bson:"env_name,omitempty"             json:"env_name,omitempty"`
 	ProductTmpl string `bson:"product_tmpl"                   json:"product_tmpl"`
-	Team        string `bson:"team,omitempty"                 json:"team,omitempty"`
-	UpdateTime  int64  `bson:"update_time"                    json:"update_time"`
-	UpdateBy    string `bson:"update_by"                      json:"update_by"`
-	IsDefault   bool   `bson:"is_default"                     json:"is_default"`
-	// yaml content, used as 'global variables' for both k8s/helm projects
-	DefaultValues string                     `bson:"default_values,omitempty"       json:"default_values,omitempty"`
-	YamlData      *templatemodels.CustomYaml `bson:"yaml_data,omitempty"            json:"yaml_data,omitempty"`
-	//KVs              []*templatemodels.RenderKV      `bson:"kvs,omitempty"                  json:"kvs,omitempty"`               // deprecated since 1.16.0
+	//Team        string `bson:"team,omitempty"                 json:"team,omitempty"`
+	UpdateTime int64  `bson:"update_time"                    json:"update_time"`
+	UpdateBy   string `bson:"update_by"                      json:"update_by"`
+	IsDefault  bool   `bson:"is_default"                     json:"is_default"`
+	// yaml content, used as 'global variables' for helm projects, DEPRECATED for k8s since 1.18.0
+	DefaultValues string `bson:"default_values,omitempty"       json:"default_values,omitempty"`
+	// current only used for k8s
+	GlobalVariables  []*commontypes.GlobalVariableKV `bson:"global_variables,omitempty"     json:"global_variables,omitempty"` // new since 1.18.0 replace DefaultValues
+	YamlData         *templatemodels.CustomYaml      `bson:"yaml_data,omitempty"            json:"yaml_data,omitempty"`
 	ServiceVariables []*templatemodels.ServiceRender `bson:"service_variables,omitempty"    json:"service_variables,omitempty"` // new since 1.16.0 replace kvs
 	ChartInfos       []*templatemodels.ServiceRender `bson:"chart_infos,omitempty"          json:"chart_infos,omitempty"`
 	Description      string                          `bson:"description,omitempty"          json:"description,omitempty"`
@@ -46,27 +48,6 @@ type RenderSet struct {
 func (RenderSet) TableName() string {
 	return "render_set"
 }
-
-//func (m *RenderSet) GetKeyValueMap() map[string]string {
-//	resp := make(map[string]string)
-//	for _, kv := range m.KVs {
-//		resp[kv.Key] = kv.Value
-//	}
-//	return resp
-//}
-
-// SetKVAlias ...
-//func (m *RenderSet) SetKVAlias() {
-//	if m == nil || len(m.KVs) == 0 {
-//		return
-//	}
-//	for _, kv := range m.KVs {
-//		if kv != nil {
-//			kv.SetAlias()
-//		}
-//
-//	}
-//}
 
 func (m *RenderSet) Diff(target *RenderSet) bool {
 	//if m.IsDefault != target.IsDefault || reflect.DeepEqual(m.KVs, target.KVs) {
@@ -82,4 +63,32 @@ func (m *RenderSet) HelmRenderDiff(target *RenderSet) bool {
 
 func (m *RenderSet) K8sServiceRenderDiff(target *RenderSet) bool {
 	return !m.Diff(target) || !reflect.DeepEqual(m.ServiceVariables, target.ServiceVariables)
+}
+
+func (m *RenderSet) GetServiceRenderMap() map[string]*templatemodels.ServiceRender {
+	serviceRenderMap := make(map[string]*templatemodels.ServiceRender)
+	for _, render := range m.ServiceVariables {
+		serviceRenderMap[render.ServiceName] = render
+	}
+	return serviceRenderMap
+}
+
+func (m *RenderSet) GetChartRenderMap() map[string]*templatemodels.ServiceRender {
+	serviceRenderMap := make(map[string]*templatemodels.ServiceRender)
+	for _, render := range m.ChartInfos {
+		if !render.IsHelmChartDeploy {
+			serviceRenderMap[render.ServiceName] = render
+		}
+	}
+	return serviceRenderMap
+}
+
+func (m *RenderSet) GetChartDeployRenderMap() map[string]*templatemodels.ServiceRender {
+	serviceRenderMap := make(map[string]*templatemodels.ServiceRender)
+	for _, render := range m.ChartInfos {
+		if render.IsHelmChartDeploy {
+			serviceRenderMap[render.ReleaseName] = render
+		}
+	}
+	return serviceRenderMap
 }

@@ -26,13 +26,13 @@ import (
 	v1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
 )
 
 type ListPvcsResponse struct {
@@ -45,10 +45,11 @@ type ListPvcsResponse struct {
 	Capacity     string `json:"capacity"`
 }
 
-func ListPvcs(envName, productName string, log *zap.SugaredLogger) ([]*ListPvcsResponse, error) {
+func ListPvcs(envName, productName string, production bool, log *zap.SugaredLogger) ([]*ListPvcsResponse, error) {
 	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    productName,
-		EnvName: envName,
+		Name:       productName,
+		EnvName:    envName,
+		Production: &production,
 	})
 	if err != nil {
 		return nil, e.ErrListResources.AddErr(err)
@@ -172,8 +173,9 @@ func UpdatePvc(args *models.CreateUpdateCommonEnvCfgArgs, userName string, log *
 	}
 
 	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    args.ProductName,
-		EnvName: args.EnvName,
+		Name:       args.ProductName,
+		EnvName:    args.EnvName,
+		Production: &args.Production,
 	})
 	if err != nil {
 		return e.ErrUpdateResource.AddErr(err)

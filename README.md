@@ -1,16 +1,19 @@
 <p><a href="https://github.com/koderover/zadig-doc" target="_blank" rel="noopener noreferrer"><img height="50" src="https://docs.koderover.com/zadig/img/zadig.png" alt="Zadig logo"></a></p>
 
-<h3 align="left">Developer-oriented Continuous Delivery Product</h3>
+<h3 align="left">Developer-oriented,  self-service, cloud-native DevOps platform</h3>
 
 <span align="left">
 
 [![Codacy Badge](https://api.codacy.com/project/badge/Grade/2276bb4cce9348ceb8ddeeea5803ed57)](https://app.codacy.com/gh/koderover/zadig?utm_source=github.com&utm_medium=referral&utm_content=koderover/zadig&utm_campaign=Badge_Grade_Settings)
-[![Zadig CI](https://os.koderover.com/api/collie/api/badge?pipelineName=zadig-ci/zadig-ci&source=github&repoFullName=koderover/zadig&branch=main&eventType=push)](https://os.koderover.com/v1/projects/detail/zadig-ci/pipelines/freestyle/home/zadig-ci/608824fef341de000137317d?rightbar=step)
 [![LICENSE](https://img.shields.io/github/license/koderover/zadig.svg)](https://github.com/koderover/zadig/blob/main/LICENSE)
 [![Language](https://img.shields.io/badge/Language-Go-blue.svg)](https://golang.org/)
 ⁣[![Go Report Card](https://goreportcard.com/badge/github.com/koderover/zadig)](https://goreportcard.com/report/github.com/koderover/zadig)
 ![GitHub release (latest SemVer including pre-releases)](https://img.shields.io/github/v/release/koderover/zadig?include_prereleases)
 [!["Join us on Slack"](https://img.shields.io/badge/join-us%20on%20slack-gray.svg?longCache=true&logo=slack&colorB=brightgreen)](https://join.slack.com/t/zadig-workspace/shared_invite/zt-qedvct1t-mQUf2eyTRkoVCc_RWKKgxw)
+
+[![Official Website](<https://img.shields.io/badge/-Visit%20the%20Official%20Website%20%E2%86%92-rgb(24,24,24)?style=for-the-badge>)](https://www.koderover.com/?utm_source=github&utm_medium=zadig_readme)
+[![Playground](<https://img.shields.io/badge/-Try%20It%20Online%20%E2%86%92-rgb(255,41,104)?style=for-the-badge>)](https://www.koderover.com/trial/?utm_source=github&utm_medium=zadig_readme)
+
 
 </span>
 
@@ -34,9 +37,10 @@
 
 ## What is Zadig
 
-Zadig is an open-source, distributed, cloud-native CD (Continuous Delivery) product designed for developers. Zadig not only provides high-availability CI/CD capabilities, but also provides cloud-native operating environments, supports developers' local debugging, parallel build and deployment of microservices, integration testing, etc. .
+Zadig is a self-service, cloud-native DevOps platform based on Kubernetes developed by KodeRover. Zadig is available in Basic and Professional editions, and offers flexible and scalable workflow support, multiple release policy orchestration, and one-click security auditing. The platform also supports customized enterprise XOps agile performance dashboards, deep integration with multiple enterprise platforms, and rapid batch access through project templating to achieve one-click governance of thousands of services.
 
-Zadig is non-invasive, it does not exclude any of your existing development process. Instead it can easily integrate with Github/Gitlab, Jenkins and many other cloud vendors in a seamingless way. We strive for the 10x optimal developer experience with the lowest maintenance cost possible.
+Its main goal is to help enterprises realize the digital transformation of production and research, enable engineers to become innovation engines, and provide support for the unlimited value links of the digital economy.
+
 
 > Our vision is: Developer + Zadig = Business success
 
@@ -69,6 +73,26 @@ The Highlighted Features:
   </details>
 
 <details>
+  <summary><b>Powerful Template Library</b></summary>
+  Shared K8s YAML templates, Helm Chart templates, build templates, etc., across projects to achieve unified configuration management. Based on a set of templates, hundreds of microservices can be created, and with minimal configuration by development engineers, self-service usage is enabled, significantly reducing the burden of operations and maintenance management.
+  </details>
+
+<details>
+  <summary><b>Secure and Reliable Release Management</b></summary>
+  Customized workflows that integrate engineer, process, and internal and external system compliance approvals, supporting flexible orchestration of deployment strategies such as blue-green deployment, canary release, phased gray release, and Istio release. Presenting the state of the production environment from a multi-cluster, multi-project perspective, it achieves transparency and reliability in the release process.
+  </details>
+
+<details>
+ <summary><b>Stable and Efficient Customer Delivery</b></summary>
+  Simplify the implementation process for vendors to customer versions, customer private clouds, public clouds, and offline environments, as well as product license management. The supplier management plane collaborates with the customer console to complete the implementation, update, and maintenance process for customer environments, enhancing the quality of external services provided by the enterprise.
+ </details>
+
+<details>
+  <summary><b>Objective and Accurate Performance Insights</b></summary>
+  Comprehensive understanding of the system's operational status, including data overviews on clusters, projects, environments, workflows, and key process pass rates. It provides objective performance metrics data for various aspects like builds, tests, and deployments at the project level, enabling precise analysis of development efficiency bottlenecks and promoting steady improvement.
+  </details>
+
+<details>
   <summary><b>Convenient Development CLI/IDE Plugin</b></summary>
   Zadig also provides a convenient toolkit with development commandline interface which allows compiling, building and deploying the changes to dev environment with one command. It enables collaborated debugging and testing with minimum manual toil, reduces cognitive load and allows teams to focus more on business.
   </details>
@@ -78,13 +102,13 @@ The Highlighted Features:
 
 ### How to use?
 
-Please follow [Quick Start](https://docs.koderover.com/zadig/quick-start/try-out-install/)
+Please follow [Quick Start](https://docs.koderover.com/zadig/quick-start/introduction/)
 
 ### Bootcamps
 
 With many hands-on tips, case studies and demos of different application types, Zadig [bootcamp](https://github.com/koderover/zadig-bootcamp) gives developers easy to follow best practices in a cloud native CI/CD solution
 
-Just follow [Tutorials](https://www.koderover.com/tutorials) to try it step by step.
+Just follow [Tutorials](https://koderover.com/tutorials) to try it step by step.
 
 ### How to make contribution?
 
@@ -92,7 +116,7 @@ Please check out [our contributing guideline](CONTRIBUTING.md).
 
 ## Getting help
 
-- More about Zadig, see [here](https://docs.koderover.com/zadig)
+- More about Zadig, see [here](https://docs.koderover.com?type=zadig)
 - Submit bugs or feature requests following [contributing instructions](CONTRIBUTING.md#contribution-option-1---reporting-an-issue)
 - Email：contact@koderover.com
 - [Slack channel](https://join.slack.com/t/zadig-workspace/shared_invite/zt-qedvct1t-mQUf2eyTRkoVCc_RWKKgxw)

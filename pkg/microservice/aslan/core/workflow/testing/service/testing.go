@@ -26,24 +26,26 @@ import (
 	"strings"
 	"time"
 
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/nsq"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/webhook"
-	commonutil "github.com/koderover/zadig/pkg/microservice/aslan/core/common/util"
-	workflowservice "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	"github.com/koderover/zadig/pkg/types"
-	"github.com/koderover/zadig/pkg/types/step"
-	"github.com/koderover/zadig/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/msg_queue"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/webhook"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	workflowservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/types/step"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 func CreateTesting(username string, testing *commonmodels.Testing, log *zap.SugaredLogger) error {
@@ -82,10 +84,10 @@ func HandleCronjob(testing *commonmodels.Testing, log *zap.SugaredLogger) error 
 		payload := commonservice.CronjobPayload{
 			Name:        testing.Name,
 			ProductName: testing.ProductName,
-			JobType:     config.TestingCronjob,
+			JobType:     setting.TestingCronjob,
 		}
 		if testSchedule.Enabled {
-			deleteList, err := workflowservice.UpdateCronjob(testing.Name, config.TestingCronjob, testing.ProductName, testSchedule, log)
+			deleteList, err := workflowservice.UpdateCronjob(testing.Name, setting.TestingCronjob, testing.ProductName, testSchedule, log)
 			if err != nil {
 				log.Errorf("Failed to update cronjob, the error is: %v", err)
 				return e.ErrUpsertCronjob.AddDesc(err.Error())
@@ -97,9 +99,12 @@ func HandleCronjob(testing *commonmodels.Testing, log *zap.SugaredLogger) error 
 			payload.Action = setting.TypeDisableCronjob
 		}
 		pl, _ := json.Marshal(payload)
-		err := nsq.Publish(setting.TopicCronjob, pl)
+		err := commonrepo.NewMsgQueueCommonColl().Create(&msg_queue.MsgQueueCommon{
+			Payload:   string(pl),
+			QueueType: setting.TopicCronjob,
+		})
 		if err != nil {
-			log.Errorf("Failed to publish to nsq topic: %s, the error is: %v", setting.TopicCronjob, err)
+			log.Errorf("Failed to publish cron to MsgQueueCommon, the error is: %v", err)
 			return e.ErrUpsertCronjob.AddDesc(err.Error())
 		}
 	}
@@ -154,10 +159,12 @@ type TestingOpt struct {
 	Repos       []*types.Repository        `bson:"repos"                  json:"repos"`
 	KeyVals     []*commonmodels.KeyVal     `bson:"key_vals"               json:"key_vals"`
 	ClusterID   string                     `bson:"cluster_id"             json:"cluster_id"`
+	Verbs       []string                   `bson:"-"                      json:"verbs,omitempty"`
 }
 
 func ListTestingOpt(productNames []string, testType string, log *zap.SugaredLogger) ([]*TestingOpt, error) {
 	allTestings := make([]*commonmodels.Testing, 0)
+	// TODO: remove the test type cases, there are only function test type right now. (v2.1.0)
 	if testType == "" {
 		testings, err := commonrepo.NewTestingColl().List(&commonrepo.ListTestOption{TestType: testType})
 		if err != nil {
@@ -186,8 +193,11 @@ func ListTestingOpt(productNames []string, testType string, log *zap.SugaredLogg
 					avgDuration := float64(testTaskStat.TotalDuration) / float64(totalNum)
 					testing.AvgDuration = decimal(avgDuration)
 				}
-
-				testing.Workflows, _ = ListAllWorkflows(testing.Name, log)
+				// TODO: Remove the code below. After the removal of the product workflow, there will no longer be references in the testing modules.
+				//testing.Workflows, _ = ListAllWorkflows(testing.Name, log)
+			}
+			if testing.PreTest.ConcurrencyLimit == 0 {
+				testing.PreTest.ConcurrencyLimit = -1
 			}
 			allTestings = append(allTestings, testing)
 		}
@@ -217,7 +227,53 @@ func ListTestingOpt(productNames []string, testType string, log *zap.SugaredLogg
 }
 
 func GetTestTask(testName string) (*commonmodels.TestTaskStat, error) {
-	return commonrepo.NewTestTaskStatColl().FindTestTaskStat(&commonrepo.TestTaskStatOption{Name: testName})
+	testCustomWorkflowName := fmt.Sprintf(setting.TestWorkflowNamingConvention, testName)
+	testTasks, err := commonrepo.NewJobInfoColl().GetTestJobsByWorkflow(testCustomWorkflowName)
+	if err != nil {
+		log.Errorf("failed to get test task from mongodb, error: %s", err)
+		return nil, err
+	}
+
+	resp := &commonmodels.TestTaskStat{
+		Name: testName,
+	}
+
+	if len(testTasks) == 0 {
+		return resp, nil
+	}
+
+	var success, failure int
+	var duration int64
+	for _, testTask := range testTasks {
+		if testTask.Status == "passed" {
+			success++
+		} else {
+			failure++
+		}
+
+		duration += testTask.Duration
+	}
+
+	resp.TotalDuration = duration
+	resp.TotalFailure = failure
+	resp.TotalSuccess = success
+
+	// get latest test result to determine how many cases are there
+	testResults, err := commonrepo.NewCustomWorkflowTestReportColl().ListByWorkflow(testCustomWorkflowName, testName, testTasks[0].TaskID)
+	if err != nil {
+		log.Errorf("failed to get test report info for test: %s, error: %s", err)
+		resp.TestCaseNum = 0
+		// this error can be ignored.
+		return resp, nil
+	}
+
+	for _, testResult := range testResults {
+		if testResult.ZadigTestName == testName {
+			resp.TestCaseNum = testResult.TestCaseNum
+		}
+	}
+
+	return resp, nil
 }
 
 func decimal(value float64) float64 {
@@ -243,7 +299,7 @@ func GetTesting(name, productName string, log *zap.SugaredLogger) (*commonmodels
 
 	// 数据兼容： 4.1.2版本之前的定时器数据已经包含在workflow的schedule字段中，而4.1.3及以后的定时器数据需要在cronjob表中获取
 	if resp.Schedules == nil {
-		schedules, err := ListCronjob(resp.Name, config.TestingCronjob)
+		schedules, err := ListCronjob(resp.Name, setting.TestingCronjob)
 		if err != nil {
 			return nil, err
 		}
@@ -269,6 +325,31 @@ func GetTesting(name, productName string, log *zap.SugaredLogger) (*commonmodels
 			Items:   scheduleList,
 		}
 		resp.Schedules = &schedule
+	}
+
+	if resp.PreTest != nil && resp.PreTest.StrategyID == "" {
+		clusterID := resp.PreTest.ClusterID
+		if clusterID == "" {
+			clusterID = setting.LocalClusterID
+		}
+		cluster, err := commonrepo.NewK8SClusterColl().FindByID(clusterID)
+		if err != nil {
+			if err != mongo.ErrNoDocuments {
+				return nil, fmt.Errorf("failed to find cluster %s, error: %v", resp.PreTest.ClusterID, err)
+			}
+		} else if cluster.AdvancedConfig != nil {
+			strategies := cluster.AdvancedConfig.ScheduleStrategy
+			for _, strategy := range strategies {
+				if strategy.Default {
+					resp.PreTest.StrategyID = strategy.StrategyID
+					break
+				}
+			}
+		}
+	}
+
+	if resp.PreTest.ConcurrencyLimit == 0 {
+		resp.PreTest.ConcurrencyLimit = -1
 	}
 
 	workflowservice.EnsureTestingResp(resp)
@@ -315,7 +396,7 @@ func GetHTMLTestReport(pipelineName, pipelineType, taskIDStr, testName string, l
 		return "", e.ErrGetTestReport.AddErr(err)
 	}
 
-	store, err := s3.NewS3StorageFromEncryptedURI(task.StorageURI)
+	store, err := s3.UnmarshalNewS3StorageFromEncrypted(task.StorageURI)
 	if err != nil {
 		log.Errorf("parse storageURI failed, err: %s", err)
 		return "", e.ErrGetTestReport.AddErr(err)
@@ -383,6 +464,33 @@ func GetWorkflowV4HTMLTestReport(workflowName, jobName string, taskID int64, log
 	if jobTask == nil {
 		return "", fmt.Errorf("cannot find job task, workflow name: %s, task id: %d, job name: %s", workflowName, taskID, jobName)
 	}
+
+	return downloadHtmlReportFromJobTask(jobTask, workflowName, taskID, log)
+}
+
+func GetTestTaskHTMLTestReport(testName string, taskID int64, log *zap.SugaredLogger) (string, error) {
+	workflowName := fmt.Sprintf(setting.TestWorkflowNamingConvention, testName)
+	workflowTask, err := mongodb.NewworkflowTaskv4Coll().Find(workflowName, taskID)
+	if err != nil {
+		return "", fmt.Errorf("cannot find workflow task, workflow name: %s, task id: %d", workflowName, taskID)
+	}
+	var jobTask *commonmodels.JobTask
+	for _, stage := range workflowTask.Stages {
+		for _, job := range stage.Jobs {
+			if job.JobType == string(config.JobZadigTesting) {
+				jobTask = job
+				break
+			}
+		}
+	}
+	if jobTask == nil {
+		return "", fmt.Errorf("cannot find job task for test task, workflow name: %s, task id: %d", workflowName, taskID)
+	}
+
+	return downloadHtmlReportFromJobTask(jobTask, workflowName, taskID, log)
+}
+
+func downloadHtmlReportFromJobTask(jobTask *commonmodels.JobTask, workflowName string, taskID int64, log *zap.SugaredLogger) (string, error) {
 	jobSpec := &commonmodels.JobTaskFreestyleSpec{}
 	if err := commonmodels.IToi(jobTask.Spec, jobSpec); err != nil {
 		return "", fmt.Errorf("unmashal job spec error: %v", err)
@@ -394,12 +502,12 @@ func GetWorkflowV4HTMLTestReport(workflowName, jobName string, taskID int64, log
 			continue
 		}
 		if step.StepType != config.StepArchive {
-			return "", fmt.Errorf("step: %s was not a junit report step", step.Name)
+			return "", fmt.Errorf("step: %s was not a html report step", step.Name)
 		}
 		stepTask = step
 	}
 	if stepTask == nil {
-		return "", fmt.Errorf("cannot find step task, workflow name: %s, task id: %d, job name: %s", workflowName, taskID, jobName)
+		return "", fmt.Errorf("cannot find step task for test task, workflow name: %s, task id: %d", workflowName, taskID)
 	}
 	stepSpec := &step.StepArchiveSpec{}
 	if err := commonmodels.IToi(stepTask.Spec, stepSpec); err != nil {

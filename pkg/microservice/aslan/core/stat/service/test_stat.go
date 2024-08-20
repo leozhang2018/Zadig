@@ -24,25 +24,23 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/jinzhu/now"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	taskmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/task"
-	commonmongodb "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	templaterepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/base"
-	s3service "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/stat/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/stat/repository/mongodb"
-	"github.com/koderover/zadig/pkg/setting"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	"github.com/koderover/zadig/pkg/types/step"
-	"github.com/koderover/zadig/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonmongodb "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	templaterepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/base"
+	s3service "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/stat/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/stat/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/types/step"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 func InitTestStat(log *zap.SugaredLogger) error {
@@ -93,7 +91,6 @@ func GetTestStatByProdutName(productName string, startTimestamp int64, log *zap.
 		taskDateKeys = append(taskDateKeys, taskDateMapKey)
 	}
 	sort.Strings(taskDateKeys)
-	defaultS3Storage, _ := s3service.FindDefaultS3()
 	for _, taskDate := range taskDateKeys {
 		var (
 			totalSuccess     = 0
@@ -107,51 +104,6 @@ func GetTestStatByProdutName(productName string, startTimestamp int64, log *zap.
 		//循环task任务获取需要的数据
 		for _, taskPreview := range taskDateMap[taskDate] {
 			switch taskP := taskPreview.(type) {
-			case *taskmodels.Task:
-				stages := taskP.Stages
-				for _, subStage := range stages {
-					taskType := subStage.TaskType
-					switch taskType {
-					case config.TaskTestingV2:
-						// 获取构建时长
-						for _, subTask := range subStage.SubTasks {
-							testInfo, err := base.ToTestingTask(subTask)
-							if err != nil {
-								log.Errorf("TestStat ToTestingTask err:%v", err)
-								continue
-							}
-							if testInfo.TaskStatus == config.StatusPassed {
-								totalSuccess++
-							} else if testInfo.TaskStatus == config.StatusFailed {
-								totalFailure++
-							} else if testInfo.TaskStatus == config.StatusTimeout {
-								totalTimeout++
-							} else {
-								continue
-							}
-
-							totalDuration += testInfo.EndTime - testInfo.StartTime
-							totalTestCount++
-
-							if testInfo.JobCtx.TestType != setting.PerformanceTest {
-								testJobName := strings.Replace(strings.ToLower(fmt.Sprintf("%s-%s-%d-%s-%s",
-									config.WorkflowType, taskP.PipelineName, taskP.TaskID, config.TaskTestingV2, testInfo.TestModuleName)), "_", "-", -1)
-								objectKey := defaultS3Storage.GetObjectPath(fmt.Sprintf("%s/%d/%s/%s", taskP.PipelineName, taskP.TaskID, "test", testJobName))
-								testReport, err := getTestReportFromDefaultS3(objectKey)
-								if err != nil {
-									log.Error(err)
-								} else {
-									if testReport != nil && testReport.FunctionTestSuite != nil {
-										totalTestCase += testReport.FunctionTestSuite.Tests
-									}
-								}
-
-							}
-						}
-					case config.TaskDeploy:
-						totalDeployCount++
-					}
-				}
 			case *commonmodels.WorkflowTask:
 				stages := taskP.Stages
 				for _, stage := range stages {
@@ -524,7 +476,7 @@ func GetTestTrendMeasure(startDate, endDate int64, productNames []string, log *z
 	for testStatDateMapKey := range testStatMap {
 		testStatDateKeys = append(testStatDateKeys, testStatDateMapKey)
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(testStatDateKeys)))
+	sort.Sort(sort.StringSlice(testStatDateKeys))
 
 	totalSuccess = 0
 	totalFailure = 0

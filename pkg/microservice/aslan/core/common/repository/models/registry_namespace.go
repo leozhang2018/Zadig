@@ -18,10 +18,15 @@ package models
 
 import (
 	"errors"
+	"fmt"
+	"net/url"
+	"strings"
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/shared/client/plutusvendor"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 type RegistryNamespace struct {
@@ -30,6 +35,7 @@ type RegistryNamespace struct {
 	RegType     string             `bson:"reg_type"                    json:"reg_type"`
 	RegProvider string             `bson:"reg_provider"                json:"reg_provider"`
 	IsDefault   bool               `bson:"is_default"                  json:"is_default"`
+	Projects    []string           `bson:"projects"                    json:"projects"`
 	// Namespace is NOT a required field, this could be empty when the registry is AWS ECR or so.
 	// use with CAUTION !!!!
 	Namespace  string `bson:"namespace,omitempty"         json:"namespace,omitempty"`
@@ -53,7 +59,6 @@ type RegistryAdvancedSetting struct {
 }
 
 func (ns *RegistryNamespace) Validate() error {
-
 	if ns.RegAddr == "" {
 		return errors.New("empty reg_addr")
 	}
@@ -67,6 +72,35 @@ func (ns *RegistryNamespace) Validate() error {
 		return errors.New("empty namespace")
 	}
 
+	return nil
+}
+
+func (ns *RegistryNamespace) GetRegistryAddress() (string, error) {
+	u, err := url.Parse(ns.RegAddr)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse registry address, error: %s", err)
+	}
+	if len(u.Scheme) > 0 {
+		return strings.TrimPrefix(ns.RegAddr, fmt.Sprintf("%s://", u.Scheme)), nil
+	}
+	return ns.RegAddr, nil
+}
+
+func (args *RegistryNamespace) LicenseValidate() error {
+	licenseStatus, err := plutusvendor.New().CheckZadigXLicenseStatus()
+	if err != nil {
+		return fmt.Errorf("failed to validate zadig license status, error: %s", err)
+	}
+	if args.RegProvider == config.RegistryProviderACREnterprise ||
+		args.RegProvider == config.RegistryProviderTCREnterprise ||
+		args.RegProvider == config.RegistryProviderECR ||
+		args.RegProvider == config.RegistryProviderJFrog {
+		if !((licenseStatus.Type == plutusvendor.ZadigSystemTypeProfessional ||
+			licenseStatus.Type == plutusvendor.ZadigSystemTypeEnterprise) &&
+			licenseStatus.Status == plutusvendor.ZadigXLicenseStatusNormal) {
+			return e.ErrLicenseInvalid.AddDesc("")
+		}
+	}
 	return nil
 }
 

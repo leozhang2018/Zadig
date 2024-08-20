@@ -28,14 +28,14 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
-	"github.com/koderover/zadig/pkg/setting"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	"github.com/koderover/zadig/pkg/types/step"
-	"github.com/koderover/zadig/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/s3"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/types/step"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 func GetLocalTestSuite(pipelineName, serviceName, testType string, taskID int64, testName string, typeString config.PipelineType, log *zap.SugaredLogger) (*commonmodels.TestReport, error) {
@@ -216,6 +216,9 @@ func GetWorkflowV4LocalTestSuite(workflowName, jobName string, taskID int64, log
 			return testReport, fmt.Errorf("failed to create s3 client for download, error: %+v", err)
 		}
 		if err = client.Download(s3Storage.Bucket, objectKey, filename); err != nil {
+			if strings.Contains(err.Error(), "NoSuchKey") {
+				return testReport, fmt.Errorf("getLocalTestSuite s3 Download err: %v", err)
+			}
 			log.Errorf("GetLocalTestSuite s3 Download err:%v", err)
 			return testReport, fmt.Errorf("getLocalTestSuite s3 Download err: %v", err)
 		}

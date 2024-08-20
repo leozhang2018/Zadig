@@ -22,10 +22,10 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/tool/jira"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/tool/jira"
 )
 
 type JiraJobCtl struct {
@@ -57,7 +57,7 @@ func (c *JiraJobCtl) Run(ctx context.Context) {
 	c.job.Status = config.StatusRunning
 	c.ack()
 
-	info, err := mongodb.NewProjectManagementColl().GetJira()
+	info, err := mongodb.NewProjectManagementColl().GetJiraByID(c.jobTaskSpec.JiraID)
 	if err != nil {
 		logError(c.job, err.Error(), c.logger)
 		return
@@ -66,10 +66,8 @@ func (c *JiraJobCtl) Run(ctx context.Context) {
 		logError(c.job, "issues not found in job spec", c.logger)
 		return
 	}
-	client := jira.NewJiraClient(info.JiraUser, info.JiraToken, info.JiraHost)
+	client := jira.NewJiraClientWithAuthType(info.JiraHost, info.JiraUser, info.JiraToken, info.JiraPersonalAccessToken, info.JiraAuthType)
 	for _, issue := range c.jobTaskSpec.Issues {
-		issue.Link = fmt.Sprintf("%s/browse/%s", info.JiraHost, issue.Key)
-
 		list, err := client.Issue.GetTransitions(issue.Key)
 		if err != nil {
 			logError(c.job, fmt.Sprintf("GetTransitions issue %s error: %v", issue.Key, err), c.logger)
@@ -98,4 +96,18 @@ func (c *JiraJobCtl) Run(ctx context.Context) {
 	}
 	c.job.Status = config.StatusPassed
 	return
+}
+
+func (c *JiraJobCtl) SaveInfo(ctx context.Context) error {
+	return mongodb.NewJobInfoColl().Create(context.TODO(), &commonmodels.JobInfo{
+		Type:                c.job.JobType,
+		WorkflowName:        c.workflowCtx.WorkflowName,
+		WorkflowDisplayName: c.workflowCtx.WorkflowDisplayName,
+		TaskID:              c.workflowCtx.TaskID,
+		ProductName:         c.workflowCtx.ProjectName,
+		StartTime:           c.job.StartTime,
+		EndTime:             c.job.EndTime,
+		Duration:            c.job.EndTime - c.job.StartTime,
+		Status:              string(c.job.Status),
+	})
 }

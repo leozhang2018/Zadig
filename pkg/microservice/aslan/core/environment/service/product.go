@@ -24,19 +24,21 @@ import (
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	templatemodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/template"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	templaterepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/collaboration"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/kube"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types"
-	"github.com/koderover/zadig/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	templatemodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	templaterepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/collaboration"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/kube"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/repository"
+	commontypes "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/types"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 var DefaultCleanWhiteList = []string{"spockadmin"}
@@ -46,7 +48,9 @@ func CleanProductCronJob(requestID string, log *zap.SugaredLogger) {
 	log.Info("[CleanProductCronJob] started ...")
 	defer log.Info("[CleanProductCronJob] end")
 
-	products, err := commonrepo.NewProductColl().List(&commonrepo.ProductListOptions{})
+	products, err := commonrepo.NewProductColl().List(&commonrepo.ProductListOptions{
+		Production: util.GetBoolPointer(false),
+	})
 	if err != nil {
 		log.Errorf("[Product.List] error: %v", err)
 		return
@@ -87,7 +91,7 @@ func CleanProductCronJob(requestID string, log *zap.SugaredLogger) {
 	}
 }
 
-func GetInitProduct(productTmplName string, envType types.EnvType, isBaseEnv bool, baseEnvName string, log *zap.SugaredLogger) (*commonmodels.Product, error) {
+func GetInitProduct(productTmplName string, envType types.EnvType, isBaseEnv bool, baseEnvName string, production bool, log *zap.SugaredLogger) (*commonmodels.Product, error) {
 	ret := &commonmodels.Product{}
 
 	prodTmpl, err := templaterepo.NewProductColl().Find(productTmplName)
@@ -96,10 +100,8 @@ func GetInitProduct(productTmplName string, envType types.EnvType, isBaseEnv boo
 		log.Error(errMsg)
 		return nil, e.ErrGetProduct.AddDesc(errMsg)
 	}
-	if prodTmpl.ProductFeature == nil || prodTmpl.ProductFeature.DeployType == setting.K8SDeployType {
-		err = commonservice.FillProductTemplateVars([]*templatemodels.Product{prodTmpl}, log)
-	} else if prodTmpl.ProductFeature.DeployType == setting.HelmDeployType {
-		err = commonservice.FillProductTemplateValuesYamls(prodTmpl, log)
+	if prodTmpl.IsHelmProduct() {
+		err = commonservice.FillProductTemplateValuesYamls(prodTmpl, production, log)
 	}
 	if err != nil {
 		errMsg := fmt.Sprintf("[ProductTmpl.FillProductTemplate] %s error: %v", productTmplName, err)
@@ -107,20 +109,22 @@ func GetInitProduct(productTmplName string, envType types.EnvType, isBaseEnv boo
 		return nil, e.ErrGetProduct.AddDesc(errMsg)
 	}
 
-	//返回中的ProductName即产品模板的名称
 	ret.ProductName = prodTmpl.ProductName
 	ret.Revision = prodTmpl.Revision
 	ret.Services = [][]*commonmodels.ProductService{}
 	ret.UpdateBy = prodTmpl.UpdateBy
 	ret.CreateTime = prodTmpl.CreateTime
 	ret.Render = &commonmodels.RenderInfo{Name: "", Description: ""}
-	//ret.Vars = prodTmpl.Vars
 	ret.ServiceRenders = prodTmpl.ChartInfos
-	if prodTmpl.ProductFeature != nil && prodTmpl.ProductFeature.BasicFacility == setting.BasicFacilityCVM {
+	if prodTmpl.IsCVMProduct() {
 		ret.Source = setting.PMDeployType
 	}
 
 	svcGroupNames := prodTmpl.Services
+	if production {
+		svcGroupNames = prodTmpl.ProductionServices
+	}
+
 	if envType == types.ShareEnv && !isBaseEnv {
 		// At this point the request is from the environment share.
 		svcGroupNames, err = GetEnvServiceList(context.TODO(), productTmplName, baseEnvName)
@@ -149,28 +153,22 @@ func GetInitProduct(productTmplName string, envType types.EnvType, isBaseEnv boo
 		}
 	}
 
-	allServiceInfoMap := prodTmpl.AllServiceInfoMap()
 	for _, names := range svcGroupNames {
 		servicesResp := make([]*commonmodels.ProductService, 0)
 
 		for _, serviceName := range names {
 
-			// TODO fixme: for case `envType == types.ShareEnv`, should use the service data in product service
-			if _, ok := allServiceInfoMap[serviceName]; !ok {
-				continue
-			}
-
 			opt := &commonrepo.ServiceFindOption{
 				ServiceName:   serviceName,
-				ProductName:   allServiceInfoMap[serviceName].Owner,
+				ProductName:   productTmplName,
 				ExcludeStatus: setting.ProductStatusDeleting,
 			}
 
-			serviceTmpl, err := commonrepo.NewServiceColl().Find(opt)
+			serviceTmpl, err := repository.QueryTemplateService(opt, production)
 			if err != nil {
-				errMsg := fmt.Sprintf("Can not find service with option %+v, error: %v", opt, err)
+				errMsg := fmt.Sprintf("Can not find service with option when creating init projects %+v, error: %v", opt, err)
 				log.Error(errMsg)
-				return nil, e.ErrGetProduct.AddDesc(errMsg)
+				continue
 			}
 
 			serviceResp := &commonmodels.ProductService{
@@ -190,6 +188,7 @@ func GetInitProduct(productTmplName string, envType types.EnvType, isBaseEnv boo
 					}
 					serviceResp.Containers = append(serviceResp.Containers, container)
 					serviceResp.VariableYaml = serviceTmpl.VariableYaml
+					serviceResp.VariableKVs = commontypes.ServiceToRenderVariableKVs(serviceTmpl.ServiceVariableKVs)
 				}
 			}
 			servicesResp = append(servicesResp, serviceResp)
@@ -208,47 +207,75 @@ func GetProduct(username, envName, productName string, log *zap.SugaredLogger) (
 		return nil, e.ErrGetEnv
 	}
 
-	//if prod.Source != setting.SourceFromHelm && prod.Source != setting.SourceFromExternal {
-	//	err = FillProductVars([]*commonmodels.Product{prod}, log)
-	//	if err != nil {
-	//		return nil, err
-	//	}
-	//}
-
 	if len(prod.RegistryID) == 0 {
-		reg, _, err := commonservice.FindDefaultRegistry(false, log)
+		reg, err := commonservice.FindDefaultRegistry(false, log)
 		if err != nil {
 			log.Errorf("[User:%s][EnvName:%s][Product:%s] FindDefaultRegistry error: %s", username, envName, productName, err)
 			return nil, err
 		}
 		prod.RegistryID = reg.ID.Hex()
 	}
-	resp := buildProductResp(prod.EnvName, prod, log)
-	return resp, nil
+
+	return buildProductResp(prod.EnvName, prod, log)
 }
 
-func buildProductResp(envName string, prod *commonmodels.Product, log *zap.SugaredLogger) *ProductResp {
+func buildProductResp(envName string, prod *commonmodels.Product, log *zap.SugaredLogger) (*ProductResp, error) {
 	prodResp := &ProductResp{
-		ID:          prod.ID.Hex(),
-		ProductName: prod.ProductName,
-		Namespace:   prod.Namespace,
-		Services:    [][]string{},
-		Status:      setting.PodUnstable,
-		EnvName:     prod.EnvName,
-		UpdateTime:  prod.UpdateTime,
-		UpdateBy:    prod.UpdateBy,
-		Render:      prod.Render,
-		Error:       prod.Error,
-		//Vars:            prod.Vars[:],
-		IsPublic:        prod.IsPublic,
-		IsExisted:       prod.IsExisted,
-		ClusterID:       prod.ClusterID,
-		RecycleDay:      prod.RecycleDay,
-		Source:          prod.Source,
-		RegisterID:      prod.RegistryID,
-		ShareEnvEnable:  prod.ShareEnv.Enable,
-		ShareEnvIsBase:  prod.ShareEnv.IsBase,
-		ShareEnvBaseEnv: prod.ShareEnv.BaseEnv,
+		ID:                    prod.ID.Hex(),
+		ProductName:           prod.ProductName,
+		Namespace:             prod.Namespace,
+		Status:                setting.PodUnstable,
+		EnvName:               prod.EnvName,
+		UpdateTime:            prod.UpdateTime,
+		UpdateBy:              prod.UpdateBy,
+		Render:                prod.Render,
+		Error:                 prod.Error,
+		IsPublic:              prod.IsPublic,
+		IsExisted:             prod.IsExisted,
+		ClusterID:             prod.ClusterID,
+		RecycleDay:            prod.RecycleDay,
+		Source:                prod.Source,
+		RegisterID:            prod.RegistryID,
+		ShareEnvEnable:        prod.ShareEnv.Enable,
+		ShareEnvIsBase:        prod.ShareEnv.IsBase,
+		ShareEnvBaseEnv:       prod.ShareEnv.BaseEnv,
+		IstioGrayscaleEnable:  prod.IstioGrayscale.Enable,
+		IstioGrayscaleIsBase:  prod.IstioGrayscale.IsBase,
+		IstioGrayscaleBaseEnv: prod.IstioGrayscale.BaseEnv,
+		YamlData:              prod.YamlData,
+	}
+
+	serviceMap := prod.GetServiceMap()
+	listOpt := &commonrepo.SvcRevisionListOption{
+		ProductName:      prod.ProductName,
+		ServiceRevisions: make([]*commonrepo.ServiceRevision, 0),
+	}
+	for _, productSvc := range serviceMap {
+		listOpt.ServiceRevisions = append(listOpt.ServiceRevisions, &commonrepo.ServiceRevision{
+			ServiceName: productSvc.ServiceName,
+			Revision:    productSvc.Revision,
+		})
+	}
+
+	templateServices, err := repository.ListServicesWithSRevision(listOpt, prod.Production)
+	if err != nil {
+		errMsg := fmt.Errorf("[EnvName:%s][Product:%s] ListServicesWithSRevision error: %s", envName, prod.ProductName, err)
+		log.Error(errMsg)
+		return nil, errMsg
+	}
+	templSvcMap := make(map[string]*commonmodels.Service)
+	for _, svc := range templateServices {
+		templSvcMap[svc.ServiceName] = svc
+	}
+
+	for _, svcGroup := range prod.Services {
+		for _, svc := range svcGroup {
+			if svc.FromZadig() {
+				if templSvc, ok := templSvcMap[svc.ServiceName]; ok {
+					svc.ReleaseName = util.GeneReleaseName(templSvc.GetReleaseNaming(), svc.ProductName, prod.Namespace, prod.EnvName, svc.ServiceName)
+				}
+			}
+		}
 	}
 
 	if prod.ClusterID != "" {
@@ -256,13 +283,13 @@ func buildProductResp(envName string, prod *commonmodels.Product, log *zap.Sugar
 		if err != nil {
 			prodResp.Status = setting.ClusterNotFound
 			prodResp.Error = "未找到该环境绑定的集群"
-			return prodResp
+			return prodResp, nil
 		}
 		cluster, err := clusterService.GetCluster(prod.ClusterID, log)
 		if err != nil {
 			prodResp.Status = setting.ClusterNotFound
 			prodResp.Error = "未找到该环境绑定的集群"
-			return prodResp
+			return prodResp, nil
 		}
 		prodResp.IsProd = cluster.Production
 		prodResp.ClusterName = cluster.Name
@@ -271,76 +298,63 @@ func buildProductResp(envName string, prod *commonmodels.Product, log *zap.Sugar
 		if !prodResp.IsLocal && !clusterService.ClusterConnected(prod.ClusterID) && cluster.Type != setting.KubeConfigClusterType {
 			prodResp.Status = setting.ClusterDisconnected
 			prodResp.Error = "集群未连接"
-			return prodResp
+			return prodResp, nil
 		}
 	} else {
 		prodResp.IsLocal = true
 	}
 
 	if prod.Source != setting.SourceFromExternal {
-		prodResp.Services = prod.GetGroupServiceNames()
+		prodResp.Services = prod.Services
+		prodResp.RelatedEnvs, err = FindNsUseEnvs(prod, log)
+		if err != nil {
+			return nil, err
+		}
 	}
 
 	if prod.Status == setting.ProductStatusCreating {
 		prodResp.Status = setting.PodCreating
-		return prodResp
+		return prodResp, nil
 	}
 	if prod.Status == setting.ProductStatusUpdating {
 		prodResp.Status = setting.PodUpdating
-		return prodResp
+		return prodResp, nil
 	}
 	if prod.Status == setting.ProductStatusDeleting {
 		prodResp.Status = setting.PodDeleting
-		return prodResp
+		return prodResp, nil
+	}
+	if prod.Status == setting.ProductStatusSleeping {
+		prodResp.Status = setting.ProductStatusSleeping
+		return prodResp, nil
 	}
 	if prod.Status == setting.ProductStatusUnknown {
 		prodResp.Status = setting.ClusterUnknown
-		return prodResp
+		return prodResp, nil
 	}
 
-	var (
-		servicesResp = make([]*commonservice.ServiceResp, 0)
-		errObj       error
-	)
+	var errObj error
+	prodResp.Error = ""
 
 	switch prod.Source {
-	case setting.SourceFromExternal, setting.SourceFromHelm:
-		_, servicesResp, errObj = commonservice.ListWorkloadsInEnv(envName, prod.ProductName, "", 0, 0, log)
-		if len(servicesResp) == 0 && errObj == nil {
-			prodResp.Status = prod.Status
-			prodResp.Error = prod.Error
-			return prodResp
-		}
+	case setting.SourceFromHelm:
+		prodResp.Status, errObj = CalculateNonK8sProductStatus(prod, log)
 	default:
-		servicesResp, _, errObj = ListGroups("", envName, prod.ProductName, -1, -1, log)
+		prodResp.Status, errObj = CalculateK8sProductStatus(prod, log)
 	}
 
 	if errObj != nil {
 		prodResp.Error = errObj.Error()
-	} else {
-		allRunning := true
-		for _, serviceResp := range servicesResp {
-			// Service是物理机部署时，无需判断状态
-			if serviceResp.Type == setting.K8SDeployType && serviceResp.Status != setting.PodRunning && serviceResp.Status != setting.PodSucceeded {
-				allRunning = false
-				break
-			}
-		}
-
-		//TODO is it reasonable to ignore error when all pods are running？
-		if allRunning {
-			prodResp.Status = setting.PodRunning
-			prodResp.Error = ""
-		}
 	}
-
-	return prodResp
+	return prodResp, nil
 }
 
 func CleanProducts() {
 	logger := log.SugaredLogger()
 
-	products, err := commonrepo.NewProductColl().List(&commonrepo.ProductListOptions{})
+	products, err := commonrepo.NewProductColl().List(&commonrepo.ProductListOptions{
+		Production: util.GetBoolPointer(false),
+	})
 	if err != nil {
 		logger.Errorf("ListProducts error: %v\n", err)
 		return

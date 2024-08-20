@@ -23,12 +23,12 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/scmnotify"
-	testingservice "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/testing/service"
-	"github.com/koderover/zadig/pkg/tool/gitee"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/scmnotify"
+	testingservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/testing/service"
+	"github.com/koderover/zadig/v2/pkg/tool/gitee"
 )
 
 type giteePushEventMatcherForTesting struct {
@@ -230,7 +230,7 @@ func TriggerTestByGiteeEvent(event interface{}, baseURI, requestID string, log *
 					mErr = multierror.Append(mErr, err)
 				} else if matches {
 					log.Infof("event match hook %v of %s", item.MainRepo, testing.Name)
-					var mergeRequestID, commitID, ref string
+					var mergeRequestID, commitID, ref, eventType string
 					prID := 0
 					autoCancelOpt := &AutoCancelOpt{
 						TaskType: config.TestType,
@@ -239,20 +239,24 @@ func TriggerTestByGiteeEvent(event interface{}, baseURI, requestID string, log *
 					}
 					switch ev := event.(type) {
 					case *gitee.PullRequestEvent:
+						eventType = EventTypePR
 						if ev.PullRequest != nil && ev.PullRequest.Number != 0 && ev.PullRequest.Head != nil && ev.PullRequest.Head.Sha != "" {
 							mergeRequestID = strconv.Itoa(ev.PullRequest.Number)
 							commitID = ev.PullRequest.Head.Sha
 							autoCancelOpt.MergeRequestID = mergeRequestID
 							autoCancelOpt.CommitID = commitID
-							autoCancelOpt.Type = AutoCancelPR
+							autoCancelOpt.Type = EventTypePR
 							prID = ev.PullRequest.Number
 						}
 					case *gitee.PushEvent:
+						eventType = EventTypePush
 						ref = ev.Ref
 						commitID = ev.After
 						autoCancelOpt.Ref = ref
 						autoCancelOpt.CommitID = commitID
-						autoCancelOpt.Type = AutoCancelPush
+						autoCancelOpt.Type = EventTypePush
+					case *gitee.TagPushEvent:
+						eventType = EventTypeTag
 					}
 
 					if autoCancelOpt.Type != "" {
@@ -281,6 +285,7 @@ func TriggerTestByGiteeEvent(event interface{}, baseURI, requestID string, log *
 
 					args := matcher.UpdateTaskArgs(item.TestArgs, requestID)
 					args.Ref = ref
+					args.EventType = eventType
 					args.MergeRequestID = mergeRequestID
 					args.CommitID = commitID
 					args.Source = item.MainRepo.Source
@@ -289,7 +294,7 @@ func TriggerTestByGiteeEvent(event interface{}, baseURI, requestID string, log *
 					args.RepoName = item.MainRepo.RepoName
 
 					// 3. create task with args
-					if resp, err := testingservice.CreateTestTask(args, log); err != nil {
+					if resp, err := testingservice.CreateTestTaskV2(args, "webhook", "", "", log); err != nil {
 						log.Errorf("failed to create testing task when receive event %v due to %s ", event, err)
 						mErr = multierror.Append(mErr, err)
 					} else {

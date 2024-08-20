@@ -23,23 +23,25 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.uber.org/zap"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	templatemodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/template"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	templaterepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/util"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	templatemodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	templaterepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	commontypes "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/types"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 type YamlProductItem struct {
-	OldName       string                           `json:"old_name"`
-	NewName       string                           `json:"new_name"`
-	BaseName      string                           `json:"base_name"`
-	DefaultValues string                           `json:"default_values"`
-	Services      []*commonservice.K8sSvcRenderArg `json:"services"`
-	//Vars          []*templatemodels.RenderKV       `json:"vars"`
+	OldName         string                           `json:"old_name"`
+	NewName         string                           `json:"new_name"`
+	BaseName        string                           `json:"base_name"`
+	DefaultValues   string                           `json:"default_values"`
+	GlobalVariables []*commontypes.GlobalVariableKV  `json:"global_variables"`
+	Services        []*commonservice.K8sSvcRenderArg `json:"services"`
 }
 
 type CopyYamlProductArg struct {
@@ -68,8 +70,9 @@ func BulkCopyHelmProduct(projectName, user, requestID string, arg CopyHelmProduc
 		envs = append(envs, item.OldName)
 	}
 	products, err := commonrepo.NewProductColl().List(&commonrepo.ProductListOptions{
-		Name:   projectName,
-		InEnvs: envs,
+		Name:       projectName,
+		InEnvs:     envs,
+		Production: util.GetBoolPointer(false),
 	})
 	if err != nil {
 		return err
@@ -120,20 +123,12 @@ func BulkCopyYamlProduct(projectName, user, requestID string, arg CopyYamlProduc
 		envs = append(envs, item.OldName)
 	}
 	products, err := commonrepo.NewProductColl().List(&commonrepo.ProductListOptions{
-		Name:   projectName,
-		InEnvs: envs,
+		Name:       projectName,
+		InEnvs:     envs,
+		Production: util.GetBoolPointer(false),
 	})
 	if err != nil {
 		return err
-	}
-
-	renderSetMap := make(map[string]*commonmodels.RenderSet)
-	for _, product := range products {
-		renderset, err := commonrepo.NewRenderSetColl().Find(&commonrepo.RenderSetFindOption{Name: product.Render.Name, Revision: product.Render.Revision, IsDefault: false})
-		if err != nil {
-			return fmt.Errorf("failed to find renderset of base product %s/%s, err: %s", product.ProductName, product.EnvName)
-		}
-		renderSetMap[renderset.EnvName] = renderset
 	}
 
 	productMap := make(map[string]*commonmodels.Product)
@@ -152,35 +147,28 @@ func BulkCopyYamlProduct(projectName, user, requestID string, arg CopyYamlProduc
 			newProduct.Namespace = projectName + "-env-" + newProduct.EnvName
 			util.Clear(&newProduct.ID)
 			newProduct.BaseName = item.BaseName
+			newProduct.GlobalVariables = item.GlobalVariables
+			newProduct.DefaultValues = item.DefaultValues
 
-			baseRenderset := renderSetMap[item.OldName]
-
-			// we need create render set info here
-			newRenderset := *baseRenderset
-			newRenderset.Name = newProduct.Namespace
-			newRenderset.Revision = 0
-			newRenderset.EnvName = newProduct.EnvName
-			newRenderset.DefaultValues = item.DefaultValues
-			svcVariableYamlMap := make(map[string]string)
+			svcVariableKVMap := make(map[string][]*commontypes.RenderVariableKV)
 			for _, sv := range item.Services {
-				svcVariableYamlMap[sv.ServiceName] = sv.VariableYaml
+				svcVariableKVMap[sv.ServiceName] = sv.VariableKVs
 			}
-			for _, sv := range newRenderset.ServiceVariables {
-				if variableYaml, ok := svcVariableYamlMap[sv.ServiceName]; ok {
-					sv.OverrideYaml = &templatemodels.CustomYaml{YamlContent: variableYaml}
+
+			for _, svc := range newProduct.GetServiceMap() {
+				if variableKVs, ok := svcVariableKVMap[svc.ServiceName]; ok {
+					yamlContent, err := commontypes.RenderVariableKVToYaml(variableKVs)
+					if err != nil {
+						return fmt.Errorf("failed to convert variable kvs to yaml, err: %w", err)
+					}
+					svc.GetServiceRender().OverrideYaml = &templatemodels.CustomYaml{
+						YamlContent:       yamlContent,
+						RenderVariableKVs: variableKVs,
+					}
 				}
 			}
 
-			err = commonservice.ForceCreateReaderSet(&newRenderset, log)
-			if err != nil {
-				return err
-			}
-
-			newProduct.Render.Name = newProduct.Namespace
-			newProduct.Render.Revision = newRenderset.Revision
-			newProduct.Render.ProductTmpl = newProduct.ProductName
-
-			err = CreateProduct(user, requestID, &newProduct, log)
+			err = CreateProduct(user, requestID, &ProductCreateArg{&newProduct, nil}, log)
 			if err != nil {
 				return err
 			}
@@ -232,6 +220,7 @@ func CopyYamlProduct(user, requestID, projectName string, args []*CreateSinglePr
 	return errList.ErrorOrNil()
 }
 
+// CopyHelmProduct copy product from source product, only works in test product
 func CopyHelmProduct(productName, userName, requestID string, args []*CreateSingleProductArg, log *zap.SugaredLogger) error {
 	errList := new(multierror.Error)
 	templateProduct, err := templaterepo.NewProductColl().Find(productName)
@@ -243,7 +232,7 @@ func CopyHelmProduct(productName, userName, requestID string, args []*CreateSing
 	}
 
 	// fill all chart infos from product renderset
-	err = commonservice.FillProductTemplateValuesYamls(templateProduct, log)
+	err = commonservice.FillProductTemplateValuesYamls(templateProduct, false, log)
 	if err != nil {
 		return e.ErrCreateEnv.AddDesc(err.Error())
 	}
@@ -251,13 +240,13 @@ func CopyHelmProduct(productName, userName, requestID string, args []*CreateSing
 	for _, arg := range args {
 		baseProduct, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
 			Name:    productName,
-			EnvName: arg.BaseName,
+			EnvName: arg.BaseEnvName,
 		})
 		if err != nil {
 			errList = multierror.Append(errList, fmt.Errorf("failed to query base product info name :%s,envname:%s", productName, arg.BaseName))
 			continue
 		}
-		templateSvcs, err := commonservice.GetProductUsedTemplateSvcs(baseProduct)
+		templateSvcs, err := commonutil.GetProductUsedTemplateSvcs(baseProduct)
 		templateServiceMap := make(map[string]*commonmodels.Service)
 		for _, svc := range templateSvcs {
 			templateServiceMap[svc.ServiceName] = svc
@@ -284,7 +273,6 @@ func CopyHelmProduct(productName, userName, requestID string, args []*CreateSing
 }
 
 func copySingleHelmProduct(templateProduct *templatemodels.Product, productInfo *commonmodels.Product, requestID, userName string, arg *CreateSingleProductArg, serviceTmplMap map[string]*commonmodels.Service, log *zap.SugaredLogger) error {
-	sourceRendersetName := productInfo.Namespace
 	productInfo.ID = primitive.NilObjectID
 	productInfo.Revision = 1
 	productInfo.EnvName = arg.EnvName
@@ -295,16 +283,8 @@ func copySingleHelmProduct(templateProduct *templatemodels.Product, productInfo 
 	productInfo.EnvConfigs = arg.EnvConfigs
 
 	// merge chart infos, use chart info in product to override charts in template_project
-	sourceRenderSet, _, err := commonrepo.NewRenderSetColl().FindRenderSet(&commonrepo.RenderSetFindOption{
-		Name:        sourceRendersetName,
-		EnvName:     arg.BaseName,
-		ProductTmpl: arg.ProductName,
-	})
-	if err != nil {
-		return fmt.Errorf("failed to find source renderset: %s, err: %s", productInfo.Namespace, err)
-	}
 	sourceChartMap := make(map[string]*templatemodels.ServiceRender)
-	for _, singleChart := range sourceRenderSet.ChartInfos {
+	for _, singleChart := range productInfo.GetAllSvcRenders() {
 		sourceChartMap[singleChart.ServiceName] = singleChart
 	}
 	templateCharts := templateProduct.ChartInfos
@@ -316,32 +296,11 @@ func copySingleHelmProduct(templateProduct *templatemodels.Product, productInfo 
 			templateProduct.ChartInfos = append(templateProduct.ChartInfos, chart)
 		}
 	}
-
 	// fill services and chart infos of product
-	err = prepareHelmProductCreation(templateProduct, productInfo, arg, serviceTmplMap, log)
+	err := prepareHelmProductCreation(templateProduct, productInfo, arg, serviceTmplMap, log)
 	if err != nil {
 		return err
 	}
 
-	// clear render info
-	productInfo.Render = nil
-
-	// insert renderset info into db
-	if len(productInfo.ServiceRenders) > 0 {
-		err := commonservice.CreateK8sHelmRenderSet(&commonmodels.RenderSet{
-			Name:          commonservice.GetProductEnvNamespace(arg.EnvName, arg.ProductName, arg.Namespace),
-			EnvName:       arg.EnvName,
-			ProductTmpl:   arg.ProductName,
-			UpdateBy:      userName,
-			IsDefault:     false,
-			DefaultValues: arg.DefaultValues,
-			YamlData:      geneYamlData(arg.ValuesData),
-			ChartInfos:    productInfo.ServiceRenders,
-		}, log)
-		if err != nil {
-			log.Errorf("rennderset create fail when copy creating helm product, productName: %s,envname:%s,err:%s", arg.ProductName, arg.EnvName, err)
-			return e.ErrCreateEnv.AddDesc(fmt.Sprintf("failed to save chart values, productName: %s,envname:%s,err:%s", arg.ProductName, arg.EnvName, err))
-		}
-	}
-	return CreateProduct(userName, requestID, productInfo, log)
+	return CreateProduct(userName, requestID, &ProductCreateArg{productInfo, nil}, log)
 }

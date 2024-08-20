@@ -25,32 +25,35 @@ import (
 
 	helmclient "github.com/mittwald/go-helm-client"
 	"github.com/pkg/errors"
-	"helm.sh/helm/v3/pkg/releaseutil"
-	appsv1 "k8s.io/api/apps/v1"
-	"k8s.io/apimachinery/pkg/labels"
-
-	configbase "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/taskplugin/s3"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	helmtool "github.com/koderover/zadig/pkg/tool/helmclient"
-	"github.com/koderover/zadig/pkg/tool/httpclient"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/kube/label"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	fsutil "github.com/koderover/zadig/pkg/util/fs"
-
 	"go.uber.org/zap"
 	yaml "gopkg.in/yaml.v3"
+	"helm.sh/helm/v3/pkg/releaseutil"
+	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
+	batchv1beta1 "k8s.io/api/batch/v1beta1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	krkubeclient "github.com/koderover/zadig/pkg/tool/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
+	configbase "github.com/koderover/zadig/v2/pkg/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/taskplugin/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	helmtool "github.com/koderover/zadig/v2/pkg/tool/helmclient"
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
+	krkubeclient "github.com/koderover/zadig/v2/pkg/tool/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/label"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	fsutil "github.com/koderover/zadig/v2/pkg/util/fs"
 )
 
 // InitializeReleaseImagePlugin ...
@@ -80,6 +83,7 @@ type ReleaseImagePlugin struct {
 	Log           *zap.SugaredLogger
 	httpClient    *httpclient.Client
 	StorageURI    string
+	Timeout       <-chan time.Time
 }
 
 func (p *ReleaseImagePlugin) SetAckFunc(func()) {
@@ -218,7 +222,7 @@ func (p *ReleaseImagePlugin) Run(ctx context.Context, pipelineTask *task.Task, p
 	}
 	p.Log.Infof("succeed to create cm for image job %s", p.JobName)
 
-	job, err := buildJob(p.Type(), pipelineTask.ConfigPayload.Release.PredatorImage, p.JobName, serviceName, "", pipelineTask.ConfigPayload.Build.KubeNamespace, setting.MinRequest, setting.MinRequestSpec, pipelineCtx, pipelineTask, []*task.RegistryNamespace{})
+	job, err := buildJob(p.Type(), pipelineTask.ConfigPayload.Release.PredatorImage, p.JobName, serviceName, "", "", pipelineTask.ConfigPayload.Build.KubeNamespace, setting.MinRequest, setting.MinRequestSpec, pipelineCtx, pipelineTask, []*task.RegistryNamespace{})
 	if err != nil {
 		msg := fmt.Sprintf("create release image job context error: %v", err)
 		p.Log.Error(msg)
@@ -248,6 +252,7 @@ func (p *ReleaseImagePlugin) Run(ctx context.Context, pipelineTask *task.Task, p
 		p.Task.Error = msg
 		return
 	}
+	p.Timeout = time.After(time.Duration(p.TaskTimeout()) * time.Second)
 	p.Log.Infof("succeed to create image job %s", p.JobName)
 }
 
@@ -265,7 +270,7 @@ func (p *ReleaseImagePlugin) Wait(ctx context.Context) {
 			p.SetStatus(config.StatusPassed)
 		}
 	}()
-	status, err = waitJobEnd(ctx, p.TaskTimeout(), p.KubeNamespace, p.JobName, p.kubeClient, p.clientset, p.restConfig, p.Log)
+	status, err = waitJobEnd(ctx, p.TaskTimeout(), p.Timeout, p.KubeNamespace, p.JobName, p.kubeClient, p.clientset, p.restConfig, p.Log)
 	distributeEndtime := time.Now().Unix()
 	for _, distribute := range p.Task.DistributeInfo {
 		distribute.DistributeEndTime = distributeEndtime
@@ -300,6 +305,21 @@ DistributeLoop:
 				distribute.DeployEndTime = time.Now().Unix()
 				continue
 			}
+			p.clientset, err = kubeclient.GetClientset(p.HubServerAddr, distribute.DeployClusterID)
+			if err != nil {
+				err = errors.WithMessage(err, "can't init k8s clientset")
+				distribute.DeployStatus = string(config.StatusFailed)
+				distribute.DeployEndTime = time.Now().Unix()
+				continue
+			}
+		}
+
+		versionInfo, err := p.clientset.Discovery().ServerVersion()
+		if err != nil {
+			err = errors.WithMessage(err, "can't get k8s version")
+			distribute.DeployStatus = string(config.StatusFailed)
+			distribute.DeployEndTime = time.Now().Unix()
+			continue
 		}
 		// k8s deploy type service goes here
 		if distribute.DeployServiceType != setting.HelmDeployType {
@@ -311,20 +331,23 @@ DistributeLoop:
 			)
 			serviceInfo, err = p.getService(ctx, distribute.DeployServiceName, distribute.DeployServiceType, p.Task.ProductName, 0)
 			if err != nil {
-				// Maybe it is a share service, the entity is not under the project
-				serviceInfo, err = p.getService(ctx, distribute.DeployServiceName, distribute.DeployServiceType, "", 0)
-				if err != nil {
-					err = errors.WithMessage(err, "failed to get service info")
-					distribute.DeployStatus = string(config.StatusFailed)
-					distribute.DeployEndTime = time.Now().Unix()
-					continue
-				}
+				err = errors.WithMessage(err, "failed to get service info")
+				distribute.DeployStatus = string(config.StatusFailed)
+				distribute.DeployEndTime = time.Now().Unix()
 			}
 			if serviceInfo.WorkloadType == "" {
 
 				var deployments []*appsv1.Deployment
 				var statefulSets []*appsv1.StatefulSet
-				deployments, statefulSets, err = fetchRelatedWorkloads(ctx, distribute.DeployEnv, distribute.DeployNamespace, p.Task.ProductName, distribute.DeployServiceName, p.kubeClient, p.httpClient, p.Log)
+				var cronJobs []*batchv1.CronJob
+				var cronJobBetas []*batchv1beta1.CronJob
+				versionInfo, errGetVersion := p.clientset.Discovery().ServerVersion()
+				if errGetVersion != nil {
+					err = fmt.Errorf("failed to get kubernetes version: %v", errGetVersion)
+					return
+				}
+				deployments, statefulSets, cronJobs, cronJobBetas, err = fetchRelatedWorkloads(ctx, distribute.DeployEnv, distribute.DeployNamespace, p.Task.ProductName,
+					distribute.DeployServiceName, p.kubeClient, versionInfo, p.httpClient, p.Log)
 				if err != nil {
 					return
 				}
@@ -384,6 +407,46 @@ DistributeLoop:
 							}
 							replaced = true
 							break StatefulSetLoop
+						}
+					}
+				}
+			CronLoop:
+				for _, sts := range cronJobs {
+					for _, container := range sts.Spec.JobTemplate.Spec.Template.Spec.Containers {
+						if container.Name == distribute.DeployContainerName {
+							err = updater.UpdateCronJobImage(sts.Namespace, sts.Name, distribute.DeployContainerName, distribute.Image, p.kubeClient, kubeclient.VersionLessThan121(versionInfo))
+							if err != nil {
+								err = errors.WithMessagef(
+									err,
+									"failed to update container image in %s/cornJob/%s/%s",
+									distribute.DeployNamespace, sts.Name, container.Name)
+								distribute.DeployEndTime = time.Now().Unix()
+								distribute.DeployStatus = string(config.StatusFailed)
+								p.SetStatus(config.StatusFailed)
+								continue DistributeLoop
+							}
+							replaced = true
+							break CronLoop
+						}
+					}
+				}
+			CronBetaLoop:
+				for _, sts := range cronJobBetas {
+					for _, container := range sts.Spec.JobTemplate.Spec.Template.Spec.Containers {
+						if container.Name == distribute.DeployContainerName {
+							err = updater.UpdateCronJobImage(sts.Namespace, sts.Name, distribute.DeployContainerName, distribute.Image, p.kubeClient, kubeclient.VersionLessThan121(versionInfo))
+							if err != nil {
+								err = errors.WithMessagef(
+									err,
+									"failed to update container image in %s/cornJobBeta/%s/%s",
+									distribute.DeployNamespace, sts.Name, container.Name)
+								distribute.DeployEndTime = time.Now().Unix()
+								distribute.DeployStatus = string(config.StatusFailed)
+								p.SetStatus(config.StatusFailed)
+								continue DistributeLoop
+							}
+							replaced = true
+							break CronBetaLoop
 						}
 					}
 				}
@@ -447,7 +510,55 @@ DistributeLoop:
 							break
 						}
 					}
+				case setting.CronJob:
+					cronJob, cronJobBeta, found, errFoundCron := getter.GetCronJob(distribute.DeployNamespace, distribute.DeployServiceName, p.kubeClient, kubeclient.VersionLessThan121(versionInfo))
+					if !found {
+						err = fmt.Errorf("cronJob %s not found", distribute.DeployServiceName)
+					}
+					if errFoundCron != nil {
+						err = errors.WithMessage(err, "failed to get cronJob")
+						distribute.DeployStatus = string(config.StatusFailed)
+						distribute.DeployEndTime = time.Now().Unix()
+						continue
+					}
+					if cronJob != nil {
+						for _, container := range cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers {
+							if container.Name == distribute.DeployContainerName {
+								err = updater.UpdateCronJobImage(cronJob.Namespace, cronJob.Name, distribute.DeployContainerName, distribute.Image, p.kubeClient, kubeclient.VersionLessThan121(versionInfo))
+								if err != nil {
+									err = errors.WithMessagef(
+										err,
+										"failed to update container image in %s/cornJob/%s/%s",
+										distribute.DeployNamespace, cronJob.Name, container.Name)
+									distribute.DeployEndTime = time.Now().Unix()
+									distribute.DeployStatus = string(config.StatusFailed)
+									continue DistributeLoop
+								}
+								replaced = true
+								break
+							}
+						}
+					}
+					if cronJobBeta != nil {
+						for _, container := range cronJobBeta.Spec.JobTemplate.Spec.Template.Spec.Containers {
+							if container.Name == distribute.DeployContainerName {
+								err = updater.UpdateCronJobImage(cronJobBeta.Namespace, cronJobBeta.Name, distribute.DeployContainerName, distribute.Image, p.kubeClient, kubeclient.VersionLessThan121(versionInfo))
+								if err != nil {
+									err = errors.WithMessagef(
+										err,
+										"failed to update container image in %s/cornJobBeta/%s/%s",
+										distribute.DeployNamespace, cronJobBeta.Name, container.Name)
+									distribute.DeployEndTime = time.Now().Unix()
+									distribute.DeployStatus = string(config.StatusFailed)
+									continue DistributeLoop
+								}
+								replaced = true
+								break
+							}
+						}
+					}
 				}
+
 			}
 			if !replaced {
 				err = errors.Errorf(
@@ -463,14 +574,12 @@ DistributeLoop:
 			// helm deployment type logic goes here
 			var (
 				productInfo              *types.Product
-				renderChart              *types.RenderChart
-				replacedValuesYaml       string
 				mergedValuesYaml         string
 				replacedMergedValuesYaml string
 				servicePath              string
+				serviceRender            *template.ServiceRender
 				chartPath                string
 				replaceValuesMap         map[string]interface{}
-				renderInfo               *types.RenderSet
 				helmClient               helmclient.Client
 			)
 
@@ -495,20 +604,12 @@ DistributeLoop:
 				continue DistributeLoop
 			}
 
-			renderInfo, err = p.getRenderSet(ctx, productInfo.Render.Name, productInfo.Render.Revision)
-			if err != nil {
-				err = errors.WithMessagef(
-					err,
-					"failed to get getRenderSet %s/%d",
-					productInfo.Render.Name, productInfo.Render.Revision)
-				return
-			}
-
 			serviceRevisionInProduct := int64(0)
-			var targetContainer *types.Container
+			var targetContainer *commonmodels.Container
 			for _, service := range productInfo.GetServiceMap() {
 				if service.ServiceName == distribute.DeployServiceName {
 					serviceRevisionInProduct = service.Revision
+					serviceRender = service.Render
 					for _, container := range service.Containers {
 						if container.Name == distribute.DeployContainerName {
 							targetContainer = container
@@ -517,6 +618,9 @@ DistributeLoop:
 					}
 					break
 				}
+			}
+			if serviceRender == nil {
+				serviceRender = &template.ServiceRender{ServiceName: distribute.DeployServiceName}
 			}
 
 			if targetContainer == nil {
@@ -528,23 +632,6 @@ DistributeLoop:
 
 			if targetContainer.ImagePath == nil {
 				err = errors.Errorf("failed to get image path of  %s from service %s", distribute.DeployContainerName, distribute.DeployServiceName)
-				distribute.DeployStatus = string(config.StatusFailed)
-				distribute.DeployEndTime = time.Now().Unix()
-				continue DistributeLoop
-			}
-
-			for _, chartInfo := range renderInfo.ChartInfos {
-				if chartInfo.ServiceName == distribute.DeployServiceName {
-					renderChart = chartInfo
-					break
-				}
-			}
-
-			if renderChart == nil {
-				err = errors.Errorf("failed to update container image in %s/%s，chart not found",
-					distribute.DeployNamespace,
-					distribute.DeployServiceName,
-				)
 				distribute.DeployStatus = string(config.StatusFailed)
 				distribute.DeployEndTime = time.Now().Unix()
 				continue DistributeLoop
@@ -583,12 +670,12 @@ DistributeLoop:
 				continue DistributeLoop
 			}
 
-			serviceValuesYaml := renderChart.ValuesYaml
-
 			// prepare image replace info
-			validMatchData := getValidMatchData(targetContainer.ImagePath)
+			validMatchData := commonutil.GetValidMatchData(targetContainer.ImagePath)
 
-			replaceValuesMap, err = assignImageData(distribute.Image, validMatchData)
+			imageKVS := make([]*helmtool.KV, 0)
+
+			replaceValuesMap, err = commonutil.AssignImageData(distribute.Image, validMatchData)
 			if err != nil {
 				err = errors.WithMessagef(
 					err,
@@ -600,67 +687,29 @@ DistributeLoop:
 				distribute.DeployEndTime = time.Now().Unix()
 				continue DistributeLoop
 			}
+			p.Log.Infof("assing image data for image: %s, assign data: %v", targetContainer.Image, replaceValuesMap)
 
-			// replace image into service's values.yaml
-			replacedValuesYaml, err = replaceImage(serviceValuesYaml, replaceValuesMap)
-			if err != nil {
-				err = errors.WithMessagef(
-					err,
-					"failed to replace image uri %s/%s",
-					distribute.DeployNamespace,
-					distribute.DeployServiceName,
-				)
-				distribute.DeployStatus = string(config.StatusFailed)
-				distribute.DeployEndTime = time.Now().Unix()
-				continue DistributeLoop
-			}
-			if replacedValuesYaml == "" {
-				err = errors.Errorf("failed to set new image uri into service's values.yaml %s/%s",
-					distribute.DeployNamespace,
-					distribute.DeployServiceName,
-				)
-				distribute.DeployStatus = string(config.StatusFailed)
-				distribute.DeployEndTime = time.Now().Unix()
-				continue DistributeLoop
+			for key, value := range replaceValuesMap {
+				imageKVS = append(imageKVS, &helmtool.KV{
+					Key:   key,
+					Value: value,
+				})
 			}
 
 			// merge override values and kvs into service's yaml
-			mergedValuesYaml, err = helmtool.MergeOverrideValues(serviceValuesYaml, renderInfo.DefaultValues, renderChart.GetOverrideYaml(), renderChart.OverrideValues)
+			mergedValuesYaml, err = helmtool.MergeOverrideValues("", productInfo.DefaultValues, serviceRender.GetOverrideYaml(), serviceRender.OverrideValues, imageKVS)
 			if err != nil {
 				err = errors.WithMessagef(
 					err,
 					"failed to merge override values %s",
-					renderChart.OverrideValues,
+					productInfo.DefaultValues,
 				)
 				distribute.DeployStatus = string(config.StatusFailed)
 				distribute.DeployEndTime = time.Now().Unix()
 				continue DistributeLoop
 			}
-
-			// replace image into final merged values.yaml
-			replacedMergedValuesYaml, err = replaceImage(mergedValuesYaml, replaceValuesMap)
-			if err != nil {
-				err = errors.WithMessagef(
-					err,
-					"failed to replace image uri into helm values %s/%s",
-					distribute.DeployNamespace,
-					distribute.DeployServiceName,
-				)
-				distribute.DeployStatus = string(config.StatusFailed)
-				distribute.DeployEndTime = time.Now().Unix()
-				continue DistributeLoop
-			}
-			if replacedMergedValuesYaml == "" {
-				err = errors.Errorf("failed to set image uri into mreged values.yaml in %s/%s",
-					distribute.DeployNamespace,
-					distribute.DeployServiceName,
-				)
-				distribute.DeployStatus = string(config.StatusFailed)
-				distribute.DeployEndTime = time.Now().Unix()
-				continue DistributeLoop
-			}
-
-			p.Log.Infof("final replaced merged values: \n%s", replacedMergedValuesYaml)
+			p.Log.Infof("final minimum merged values.yaml: \n%s", mergedValuesYaml)
+			replacedMergedValuesYaml = mergedValuesYaml
 
 			helmClient, err = helmtool.NewClientFromNamespace(distribute.DeployClusterID, distribute.DeployNamespace)
 			if err != nil {
@@ -709,7 +758,7 @@ DistributeLoop:
 				ChartName:   chartPath,
 				Namespace:   distribute.DeployNamespace,
 				ReuseValues: true,
-				Version:     renderChart.ChartVersion,
+				Version:     serviceRender.ChartVersion,
 				ValuesYaml:  replacedMergedValuesYaml,
 				SkipCRDs:    false,
 				UpgradeCRDs: true,
@@ -746,30 +795,6 @@ DistributeLoop:
 				continue DistributeLoop
 			}
 
-			//替换环境变量中的chartInfos
-			for _, chartInfo := range renderInfo.ChartInfos {
-				if chartInfo.ServiceName == distribute.DeployServiceName {
-					chartInfo.ValuesYaml = replacedValuesYaml
-					break
-				}
-			}
-
-			// TODO too dangerous to override entire renderset!
-			err = p.updateRenderSet(ctx, &types.RenderSet{
-				Name:          renderInfo.Name,
-				Revision:      renderInfo.Revision,
-				DefaultValues: renderInfo.DefaultValues,
-				ChartInfos:    renderInfo.ChartInfos,
-			})
-			if err != nil {
-				err = errors.WithMessagef(
-					err,
-					"failed to update renderset info %s/%s, renderset %s",
-					distribute.DeployNamespace,
-					distribute.DeployServiceName,
-					renderInfo.Name,
-				)
-			}
 			distribute.DeployStatus = string(config.StatusPassed)
 			distribute.DeployEndTime = time.Now().Unix()
 		}
@@ -887,18 +912,6 @@ func (p *ReleaseImagePlugin) getProductInfo(ctx context.Context, args *EnvArgs) 
 	return prod, nil
 }
 
-func (p *ReleaseImagePlugin) getRenderSet(ctx context.Context, name string, revision int64) (*types.RenderSet, error) {
-	url := fmt.Sprintf("/api/project/renders/render/%s/revision/%d", name, revision)
-
-	rs := &types.RenderSet{}
-	_, err := p.httpClient.Get(url, httpclient.SetResult(rs))
-	if err != nil {
-		return nil, err
-	}
-
-	return rs, nil
-}
-
 func (p *ReleaseImagePlugin) downloadService(productName, serviceName, storageURI string, revision int64) (string, error) {
 	logger := p.Log
 
@@ -907,7 +920,7 @@ func (p *ReleaseImagePlugin) downloadService(productName, serviceName, storageUR
 		fileName = fmt.Sprintf("%s-%d", serviceName, revision)
 	}
 	tarball := fmt.Sprintf("%s.tar.gz", fileName)
-	localBase := configbase.LocalServicePath(productName, serviceName)
+	localBase := configbase.LocalTestServicePath(productName, serviceName)
 	tarFilePath := filepath.Join(localBase, tarball)
 
 	exists, err := fsutil.FileExists(tarFilePath)
@@ -918,7 +931,7 @@ func (p *ReleaseImagePlugin) downloadService(productName, serviceName, storageUR
 		return tarFilePath, nil
 	}
 
-	s3Storage, err := s3.NewS3StorageFromEncryptedURI(storageURI)
+	s3Storage, err := s3.UnmarshalNewS3StorageFromEncrypted(storageURI)
 	if err != nil {
 		return "", err
 	}
@@ -947,12 +960,4 @@ func (p *ReleaseImagePlugin) downloadService(productName, serviceName, storageUR
 	}
 
 	return tarFilePath, nil
-}
-
-func (p *ReleaseImagePlugin) updateRenderSet(ctx context.Context, args *types.RenderSet) error {
-	url := "/api/project/renders"
-
-	_, err := p.httpClient.Put(url, httpclient.SetBody(args))
-
-	return err
 }

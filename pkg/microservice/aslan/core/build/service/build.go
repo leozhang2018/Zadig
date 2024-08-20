@@ -22,36 +22,41 @@ import (
 	"strings"
 	"time"
 
+	goerrors "github.com/pkg/errors"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	commonutil "github.com/koderover/zadig/pkg/microservice/aslan/core/common/util"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type BuildResp struct {
-	ID          string                              `json:"id"`
-	Name        string                              `json:"name"`
-	Targets     []*commonmodels.ServiceModuleTarget `json:"targets"`
-	KeyVals     []*commonmodels.KeyVal              `json:"key_vals"`
-	Repos       []*types.Repository                 `json:"repos"`
-	UpdateTime  int64                               `json:"update_time"`
-	UpdateBy    string                              `json:"update_by"`
-	Pipelines   []string                            `json:"pipelines"`
-	ProductName string                              `json:"productName"`
-	ClusterID   string                              `json:"cluster_id"`
+	ID             string                              `json:"id"`
+	Name           string                              `json:"name"`
+	Targets        []*commonmodels.ServiceModuleTarget `json:"targets"`
+	KeyVals        []*commonmodels.KeyVal              `json:"key_vals"`
+	Repos          []*types.Repository                 `json:"repos"`
+	UpdateTime     int64                               `json:"update_time"`
+	UpdateBy       string                              `json:"update_by"`
+	Pipelines      []string                            `json:"pipelines"`
+	ProductName    string                              `json:"productName"`
+	ClusterID      string                              `json:"cluster_id"`
+	Infrastructure string                              `json:"infrastructure"`
 }
 
 type ServiceModuleAndBuildResp struct {
 	ServiceName   string       `json:"service_name"`
 	ServiceModule string       `json:"service_module"`
+	ImageName     string       `json:"image_name"`
 	ModuleBuilds  []*BuildResp `json:"module_builds"`
 }
 
@@ -65,6 +70,23 @@ func FindBuild(name, productName string, log *zap.SugaredLogger) (*commonmodels.
 	if err != nil {
 		log.Errorf("[Build.Find] %s error: %v", name, err)
 		return nil, e.ErrGetBuildModule.AddErr(err)
+	}
+
+	if resp.TemplateID == "" && resp.Source == setting.ZadigBuild && resp.PreBuild != nil && resp.PreBuild.StrategyID == "" && resp.Infrastructure == setting.JobK8sInfrastructure {
+		cluster, err := commonrepo.NewK8SClusterColl().FindByID(resp.PreBuild.ClusterID)
+		if err != nil {
+			if err != mongo.ErrNoDocuments {
+				return nil, fmt.Errorf("failed to find cluster %s, error: %v", resp.PreBuild.ClusterID, err)
+			}
+		} else if cluster.AdvancedConfig != nil {
+			strategies := cluster.AdvancedConfig.ScheduleStrategy
+			for _, strategy := range strategies {
+				if strategy.Default {
+					resp.PreBuild.StrategyID = strategy.StrategyID
+					break
+				}
+			}
+		}
 	}
 
 	commonservice.EnsureResp(resp)
@@ -96,14 +118,25 @@ func ListBuild(name, targets, productName string, log *zap.SugaredLogger) ([]*Bu
 
 	resp := make([]*BuildResp, 0)
 	for _, build := range currentProductBuilds {
+		if build.TemplateID != "" {
+			buildTemplate, err := commonrepo.NewBuildTemplateColl().Find(&commonrepo.BuildTemplateQueryOption{
+				ID: build.TemplateID,
+			})
+			// if template not found, envs are empty, but do not block user.
+			if err != nil {
+				log.Errorf("build job: %s, template not found", build.Name)
+			}
+			build.Infrastructure = buildTemplate.Infrastructure
+		}
 		b := &BuildResp{
-			ID:          build.ID.Hex(),
-			Name:        build.Name,
-			Targets:     build.Targets,
-			UpdateTime:  build.UpdateTime,
-			UpdateBy:    build.UpdateBy,
-			ProductName: build.ProductName,
-			Pipelines:   []string{},
+			ID:             build.ID.Hex(),
+			Name:           build.Name,
+			Targets:        build.Targets,
+			UpdateTime:     build.UpdateTime,
+			UpdateBy:       build.UpdateBy,
+			ProductName:    build.ProductName,
+			Pipelines:      []string{},
+			Infrastructure: build.Infrastructure,
 		}
 
 		for _, pipe := range pipes {
@@ -120,10 +153,38 @@ func ListBuild(name, targets, productName string, log *zap.SugaredLogger) ([]*Bu
 	return resp, nil
 }
 
-func ListBuildModulesByServiceModule(encryptedKey, productName string, excludeJenkins bool, log *zap.SugaredLogger) ([]*ServiceModuleAndBuildResp, error) {
+// ListBuildModulesByServiceModule returns the service modules and build modules for services
+// services maybe the services with the latest revision or non-production services currently used in particular environment
+func ListBuildModulesByServiceModule(encryptedKey, productName, envName string, excludeJenkins, updateServiceRevision bool, log *zap.SugaredLogger) ([]*ServiceModuleAndBuildResp, error) {
 	services, err := commonrepo.NewServiceColl().ListMaxRevisionsByProduct(productName)
 	if err != nil {
 		return nil, e.ErrListBuildModule.AddErr(err)
+	}
+	svcMap := make(map[string]*commonmodels.Service)
+	for _, svc := range services {
+		svcMap[svc.ServiceName] = svc
+	}
+
+	// if environment name is appointed, should use the services used in environment
+	if len(envName) > 0 {
+		productInfo, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{Name: productName, EnvName: envName})
+		if err != nil {
+			return nil, goerrors.Wrapf(err, "failed to find product: %s/%s", productName, envName)
+		}
+		prodUsedSvs, err := commonutil.GetProductUsedTemplateSvcs(productInfo)
+		if err != nil {
+			return nil, goerrors.Wrapf(err, "failed to get product used template services: %s/%s", productName, envName)
+		}
+		for _, svc := range prodUsedSvs {
+			_, exist := svcMap[svc.ServiceName]
+			if !updateServiceRevision || !exist {
+				svcMap[svc.ServiceName] = svc
+			}
+		}
+		services = make([]*commonmodels.Service, 0, len(svcMap))
+		for _, svc := range svcMap {
+			services = append(services, svc)
+		}
 	}
 
 	serviceModuleAndBuildResp := make([]*ServiceModuleAndBuildResp, 0)
@@ -135,11 +196,12 @@ func ListBuildModulesByServiceModule(encryptedKey, productName string, excludeJe
 				continue
 			}
 			build := &BuildResp{
-				ID:        buildModule.ID.Hex(),
-				Name:      buildModule.Name,
-				KeyVals:   buildModule.PreBuild.Envs,
-				Repos:     buildModule.Repos,
-				ClusterID: buildModule.PreBuild.ClusterID,
+				ID:             buildModule.ID.Hex(),
+				Name:           buildModule.Name,
+				KeyVals:        buildModule.PreBuild.Envs,
+				Repos:          buildModule.Repos,
+				ClusterID:      buildModule.PreBuild.ClusterID,
+				Infrastructure: buildModule.Infrastructure,
 			}
 			serviceModuleAndBuildResp = append(serviceModuleAndBuildResp, &ServiceModuleAndBuildResp{
 				ServiceName:   serviceTmpl.ServiceName,
@@ -152,9 +214,7 @@ func ListBuildModulesByServiceModule(encryptedKey, productName string, excludeJe
 			opt := &commonrepo.BuildListOption{
 				ServiceName: serviceTmpl.ServiceName,
 				Targets:     []string{container.Name},
-			}
-			if serviceTmpl.Visibility != setting.PublicService {
-				opt.ProductName = productName
+				ProductName: productName,
 			}
 
 			buildModules, err := commonrepo.NewBuildColl().List(opt)
@@ -186,22 +246,25 @@ func ListBuildModulesByServiceModule(encryptedKey, productName string, excludeJe
 						}
 					}
 					build.PreBuild.ClusterID = buildTemplate.PreBuild.ClusterID
+					build.Infrastructure = buildTemplate.Infrastructure
 					build.PreBuild.Envs = commonservice.MergeBuildEnvs(templateEnvs, build.PreBuild.Envs)
 				}
 				if err := commonservice.EncryptKeyVals(encryptedKey, build.PreBuild.Envs, log); err != nil {
 					return serviceModuleAndBuildResp, err
 				}
 				resp = append(resp, &BuildResp{
-					ID:        build.ID.Hex(),
-					Name:      build.Name,
-					KeyVals:   build.PreBuild.Envs,
-					Repos:     build.Repos,
-					ClusterID: build.PreBuild.ClusterID,
+					ID:             build.ID.Hex(),
+					Name:           build.Name,
+					KeyVals:        build.PreBuild.Envs,
+					Repos:          build.Repos,
+					ClusterID:      build.PreBuild.ClusterID,
+					Infrastructure: build.Infrastructure,
 				})
 			}
 			serviceModuleAndBuildResp = append(serviceModuleAndBuildResp, &ServiceModuleAndBuildResp{
 				ServiceName:   serviceTmpl.ServiceName,
 				ServiceModule: container.Name,
+				ImageName:     container.ImageName,
 				ModuleBuilds:  resp,
 			})
 		}
@@ -249,6 +312,17 @@ func CreateBuild(username string, build *commonmodels.Build, log *zap.SugaredLog
 		}
 	}
 
+	templateProdct, err := template.NewProductColl().Find(build.ProductName)
+	if err != nil {
+		return e.ErrCreateBuildModule.AddErr(fmt.Errorf("failed to find product %s, err: %s", build.ProductName, err))
+	}
+	if templateProdct.IsCVMProduct() {
+		err = verifyBuildTargets(build.Name, build.ProductName, build.Targets, log)
+		if err != nil {
+			return e.ErrCreateBuildModule.AddErr(err)
+		}
+	}
+
 	if err := commonrepo.NewBuildColl().Create(build); err != nil {
 		log.Errorf("[Build.Upsert] %s error: %v", build.Name, err)
 		return e.ErrCreateBuildModule.AddErr(err)
@@ -273,6 +347,17 @@ func UpdateBuild(username string, build *commonmodels.Build, log *zap.SugaredLog
 	err = correctFields(build)
 	if err != nil {
 		return err
+	}
+
+	templateProdct, err := template.NewProductColl().Find(build.ProductName)
+	if err != nil {
+		return e.ErrCreateBuildModule.AddErr(fmt.Errorf("failed to find product %s, err: %s", build.ProductName, err))
+	}
+	if templateProdct.IsCVMProduct() {
+		err = verifyBuildTargets(build.Name, build.ProductName, build.Targets, log)
+		if err != nil {
+			return e.ErrCreateBuildModule.AddErr(err)
+		}
 	}
 
 	if err = updateCvmService(build, existed); err != nil {
@@ -327,8 +412,7 @@ func updateCvmService(currentBuild, oldBuild *commonmodels.Build) error {
 			continue
 		}
 
-		serviceTemplate := fmt.Sprintf(setting.ServiceTemplateCounterName, resp.ServiceName, resp.ProductName)
-		rev, err := commonrepo.NewCounterColl().GetNextSeq(serviceTemplate)
+		rev, err := commonutil.GenerateServiceNextRevision(false, resp.ServiceName, resp.ProductName)
 		if err != nil {
 			return err
 		}
@@ -466,8 +550,7 @@ func handleServiceTargets(name, productName string, targets []*commonmodels.Serv
 	}
 
 	for _, args := range services {
-		serviceTemplate := fmt.Sprintf(setting.ServiceTemplateCounterName, args.ServiceName, args.ProductName)
-		rev, err := commonrepo.NewCounterColl().GetNextSeq(serviceTemplate)
+		rev, err := commonutil.GenerateServiceNextRevision(false, args.ServiceName, args.ProductName)
 		if err != nil {
 			continue
 		}
@@ -484,8 +567,7 @@ func handleServiceTargets(name, productName string, targets []*commonmodels.Serv
 	}
 
 	for _, args := range addServices {
-		serviceTemplate := fmt.Sprintf(setting.ServiceTemplateCounterName, args.ServiceName, args.ProductName)
-		rev, err := commonrepo.NewCounterColl().GetNextSeq(serviceTemplate)
+		rev, err := commonutil.GenerateServiceNextRevision(false, args.ServiceName, args.ProductName)
 		if err != nil {
 			continue
 		}
@@ -552,6 +634,28 @@ func correctFields(build *commonmodels.Build) error {
 			modifyAuthType(repo)
 		}
 	}
+
+	if build.TemplateID == "" {
+		if build.PreBuild == nil {
+			return fmt.Errorf("build prebuild is nil")
+		} else {
+			if build.PreBuild.ClusterID == "" {
+				return fmt.Errorf("build prebuild clusterid is empty")
+			}
+			if build.PreBuild.StrategyID == "" {
+				buildTemplate, err := commonrepo.NewBuildTemplateColl().Find(&commonrepo.BuildTemplateQueryOption{
+					ID: build.TemplateID,
+				})
+				if err != nil {
+					return fmt.Errorf("failed to find build template with id: %s, err: %s", build.TemplateID, err)
+				}
+				if buildTemplate.PreBuild != nil {
+					build.PreBuild.StrategyID = buildTemplate.PreBuild.StrategyID
+				}
+			}
+		}
+	}
+
 	return nil
 }
 

@@ -19,21 +19,21 @@ package models
 import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
 )
 
 type WorkflowQueue struct {
-	ID                  primitive.ObjectID `bson:"_id,omitempty"                              json:"id,omitempty"`
-	TaskID              int64              `bson:"task_id"                                    json:"task_id"`
-	ProjectName         string             `bson:"project_name"                               json:"project_name"`
-	WorkflowName        string             `bson:"workflow_name"                              json:"workflow_name"`
-	WorkflowDisplayName string             `bson:"workflow_display_name"                      json:"workflow_display_name"`
-	Status              config.Status      `bson:"status"                                     json:"status,omitempty"`
-	Stages              []*StageTask       `bson:"stages"                                     json:"stages"`
-	TaskCreator         string             `bson:"task_creator"                               json:"task_creator,omitempty"`
-	TaskRevoker         string             `bson:"task_revoker,omitempty"                     json:"task_revoker,omitempty"`
-	CreateTime          int64              `bson:"create_time"                                json:"create_time,omitempty"`
-	MultiRun            bool               `bson:"multi_run"                                  json:"multi_run"`
+	ID                  primitive.ObjectID            `bson:"_id,omitempty"                              json:"id,omitempty"`
+	TaskID              int64                         `bson:"task_id"                                    json:"task_id"`
+	ProjectName         string                        `bson:"project_name"                               json:"project_name"`
+	WorkflowName        string                        `bson:"workflow_name"                              json:"workflow_name"`
+	WorkflowDisplayName string                        `bson:"workflow_display_name"                      json:"workflow_display_name"`
+	Status              config.Status                 `bson:"status"                                     json:"status,omitempty"`
+	Stages              []*StageTask                  `bson:"stages"                                     json:"stages"`
+	TaskCreator         string                        `bson:"task_creator"                               json:"task_creator,omitempty"`
+	TaskRevoker         string                        `bson:"task_revoker,omitempty"                     json:"task_revoker,omitempty"`
+	CreateTime          int64                         `bson:"create_time"                                json:"create_time,omitempty"`
+	Type                config.CustomWorkflowTaskType `bson:"type"                                       json:"type,omitempty"`
 }
 
 func (WorkflowQueue) TableName() string {

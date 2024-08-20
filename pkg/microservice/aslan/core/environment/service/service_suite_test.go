@@ -19,11 +19,11 @@ package service
 import (
 	"testing"
 
-	. "github.com/onsi/ginkgo"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
 	// init test env first
-	_ "github.com/koderover/zadig/pkg/util/testing"
+	_ "github.com/koderover/zadig/v2/pkg/util/testing"
 )
 
 func TestRoutes(t *testing.T) {

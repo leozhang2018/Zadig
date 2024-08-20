@@ -24,18 +24,17 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/collaboration"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/gerrit"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/nsq"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/webhook"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/msg_queue"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/collaboration"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/gerrit"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/webhook"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func DeleteWorkflows(productName, requestID string, log *zap.SugaredLogger) error {
@@ -111,7 +110,7 @@ func DeleteWorkflow(workflowName, requestID string, isDeletingProductTmpl bool, 
 	//删除所属的所有定时任务
 	err = mongodb.NewCronjobColl().Delete(&mongodb.CronjobDeleteOption{
 		ParentName: workflowName,
-		ParentType: config.WorkflowCronjob,
+		ParentType: setting.WorkflowCronjob,
 	})
 	if err != nil {
 		log.Errorf("Failed to delete cronjob for workflow %s, error: %s", workflow.Name, err)
@@ -127,7 +126,7 @@ func DeleteWorkflow(workflowName, requestID string, isDeletingProductTmpl bool, 
 		log.Errorf("PipelineTaskV2.DeleteByPipelineName error: %v", err)
 	}
 
-	if deliveryVersions, err := mongodb.NewDeliveryVersionColl().Find(&mongodb.DeliveryVersionArgs{WorkflowName: workflowName}); err == nil {
+	if deliveryVersions, _, err := mongodb.NewDeliveryVersionColl().Find(&mongodb.DeliveryVersionArgs{WorkflowName: workflowName}); err == nil {
 		for _, deliveryVersion := range deliveryVersions {
 			if err := mongodb.NewDeliveryVersionColl().Delete(deliveryVersion.ID.Hex()); err != nil {
 				log.Errorf("DeleteWorkflow.DeliveryVersion.Delete error: %v", err)
@@ -166,13 +165,13 @@ func DisableCronjobForWorkflow(workflow *models.Workflow) error {
 	disableIDList := make([]string, 0)
 	payload := &CronjobPayload{
 		Name:    workflow.Name,
-		JobType: config.WorkflowCronjob,
+		JobType: setting.WorkflowCronjob,
 		Action:  setting.TypeEnableCronjob,
 	}
 	if workflow.ScheduleEnabled {
 		jobList, err := mongodb.NewCronjobColl().List(&mongodb.ListCronjobParam{
 			ParentName: workflow.Name,
-			ParentType: config.WorkflowCronjob,
+			ParentType: setting.WorkflowCronjob,
 		})
 		if err != nil {
 			return err
@@ -185,7 +184,10 @@ func DisableCronjobForWorkflow(workflow *models.Workflow) error {
 	}
 
 	pl, _ := json.Marshal(payload)
-	return nsq.Publish(setting.TopicCronjob, pl)
+	return mongodb.NewMsgQueueCommonColl().Create(&msg_queue.MsgQueueCommon{
+		Payload:   string(pl),
+		QueueType: setting.TopicCronjob,
+	})
 }
 
 func ProcessWebhook(updatedHooks, currentHooks interface{}, name string, logger *zap.SugaredLogger) error {
@@ -216,7 +218,7 @@ func ProcessWebhook(updatedHooks, currentHooks interface{}, name string, logger 
 			}
 
 			switch ch.Type {
-			case setting.SourceFromGithub, setting.SourceFromGitlab, setting.SourceFromCodeHub, setting.SourceFromGitee, setting.SourceFromGiteeEE:
+			case setting.SourceFromGithub, setting.SourceFromGitlab, setting.SourceFromGitee, setting.SourceFromGiteeEE:
 				err = webhook.NewClient().RemoveWebHook(&webhook.TaskOption{
 					ID:          ch.ID,
 					Name:        wh.name,
@@ -231,6 +233,7 @@ func ProcessWebhook(updatedHooks, currentHooks interface{}, name string, logger 
 					EnableProxy: ch.EnableProxy,
 					Ref:         name,
 					From:        ch.Type,
+					IsManual:    wh.IsManual,
 				})
 				if err != nil {
 					logger.Errorf("Failed to remove %s webhook %+v, err: %s", ch.Type, wh, err)
@@ -253,7 +256,7 @@ func ProcessWebhook(updatedHooks, currentHooks interface{}, name string, logger 
 			}
 
 			switch ch.Type {
-			case setting.SourceFromGithub, setting.SourceFromGitlab, setting.SourceFromCodeHub, setting.SourceFromGitee, setting.SourceFromGiteeEE:
+			case setting.SourceFromGithub, setting.SourceFromGitlab, setting.SourceFromGitee, setting.SourceFromGiteeEE:
 				err = webhook.NewClient().AddWebHook(&webhook.TaskOption{
 					ID:        ch.ID,
 					Name:      wh.name,
@@ -267,6 +270,7 @@ func ProcessWebhook(updatedHooks, currentHooks interface{}, name string, logger 
 					SK:        ch.SecretKey,
 					Region:    ch.Region,
 					From:      ch.Type,
+					IsManual:  wh.IsManual,
 				})
 				if err != nil {
 					logger.Errorf("Failed to add %s webhook %+v, err: %s", ch.Type, wh, err)
@@ -286,6 +290,7 @@ func toHookSet(hooks interface{}) HookSet {
 	res := NewHookSet()
 	switch hs := hooks.(type) {
 	case []*models.WorkflowHook:
+		// deprecated, for old custom workflow
 		for _, h := range hs {
 			res.Insert(hookItem{
 				hookUniqueID: hookUniqueID{
@@ -296,9 +301,11 @@ func toHookSet(hooks interface{}) HookSet {
 					source:    h.MainRepo.Source,
 				},
 				codeHostID: h.MainRepo.CodehostID,
+				IsManual:   h.IsManual,
 			})
 		}
 	case []models.GitHook:
+		// for pipline workflow
 		for _, h := range hs {
 			res.Insert(hookItem{
 				hookUniqueID: hookUniqueID{
@@ -308,9 +315,11 @@ func toHookSet(hooks interface{}) HookSet {
 					repo:      h.Repo,
 				},
 				codeHostID: h.CodehostID,
+				IsManual:   h.IsManual,
 			})
 		}
 	case []*webhook.WebHook:
+		// for template service sync
 		for _, h := range hs {
 			res.Insert(hookItem{
 				hookUniqueID: hookUniqueID{
@@ -320,9 +329,11 @@ func toHookSet(hooks interface{}) HookSet {
 					repo:      h.Repo,
 				},
 				codeHostID: h.CodeHostID,
+				IsManual:   h.IsManual,
 			})
 		}
 	case []*models.TestingHook:
+		// for testing
 		for _, h := range hs {
 			res.Insert(hookItem{
 				hookUniqueID: hookUniqueID{
@@ -332,9 +343,11 @@ func toHookSet(hooks interface{}) HookSet {
 					repo:      h.MainRepo.RepoName,
 				},
 				codeHostID: h.MainRepo.CodehostID,
+				IsManual:   h.IsManual,
 			})
 		}
-	case []*types.ScanningHook:
+	case []*models.ScanningHook:
+		// for scanning
 		for _, h := range hs {
 			res.Insert(hookItem{
 				hookUniqueID: hookUniqueID{
@@ -343,9 +356,11 @@ func toHookSet(hooks interface{}) HookSet {
 					repo:  h.RepoName,
 				},
 				codeHostID: h.CodehostID,
+				IsManual:   h.IsManual,
 			})
 		}
 	case []*models.WorkflowV4Hook:
+		// for custom workflow
 		for _, h := range hs {
 			res.Insert(hookItem{
 				hookUniqueID: hookUniqueID{
@@ -356,6 +371,7 @@ func toHookSet(hooks interface{}) HookSet {
 					source:    h.MainRepo.Source,
 				},
 				codeHostID: h.MainRepo.CodehostID,
+				IsManual:   h.IsManual,
 			})
 		}
 	}

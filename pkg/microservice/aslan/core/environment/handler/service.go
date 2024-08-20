@@ -20,50 +20,385 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/gin-gonic/gin"
+	"github.com/koderover/zadig/v2/pkg/types"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/environment/service"
-	"github.com/koderover/zadig/pkg/setting"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	"github.com/gin-gonic/gin"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/environment/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	internalresource "github.com/koderover/zadig/v2/pkg/shared/kube/resource"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
-func GetService(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+// @Summary List services in env
+// @Description List services in env
+// @Tags 	environment
+// @Accept 	json
+// @Produce json
+// @Param 	name 			path 		string 						 	true 	"env name"
+// @Param 	projectName 	query 		string 						 	true 	"project name"
+// @Success 200 			{object} 	commonservice.EnvServices
+// @Router /api/aslan/environment/environments/{name}/services [get]
+func ListSvcsInEnv(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
 	envName := c.Param("name")
-	projectName := c.Query("projectName")
+	projectKey := c.Query("projectName")
+
+	// TODO: Authorization leak
+	// authorization checks
+	permitted := false
+
+	if ctx.Resources.IsSystemAdmin {
+		permitted = true
+	} else if projectedAuthInfo, ok := ctx.Resources.ProjectAuthInfo[projectKey]; ok {
+		if projectedAuthInfo.IsProjectAdmin {
+			permitted = true
+		} else if projectedAuthInfo.Env.View ||
+			projectedAuthInfo.Workflow.Execute {
+			permitted = true
+		} else if collaborationViewEnvPermitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionView); err != nil && collaborationViewEnvPermitted {
+			permitted = true
+		} else {
+			collaborationAuthorizedEdit, err := internalhandler.CheckPermissionGivenByCollaborationMode(ctx.UserID, projectKey, types.ResourceTypeWorkflow, types.WorkflowActionRun)
+			if err == nil && collaborationAuthorizedEdit {
+				permitted = true
+			}
+		}
+	}
+
+	if !permitted {
+		ctx.UnAuthorized = true
+		return
+	}
+
+	ctx.Resp, ctx.Err = commonservice.ListServicesInEnv(envName, projectKey, nil, ctx.Logger)
+}
+
+func GetService(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	envName := c.Param("name")
+	projectKey := c.Query("projectName")
 	serviceName := c.Param("serviceName")
 	workLoadType := c.Query("workLoadType")
+	production := c.Query("production") == "true"
 
-	ctx.Resp, ctx.Err = service.GetService(envName, projectName, serviceName, workLoadType, ctx.Logger)
+	// authorization checks
+	permitted := false
+	if ctx.Resources.IsSystemAdmin {
+		permitted = true
+	} else if projectedAuthInfo, ok := ctx.Resources.ProjectAuthInfo[projectKey]; ok {
+		if projectedAuthInfo.IsProjectAdmin {
+			permitted = true
+		}
+
+		if production {
+			if projectedAuthInfo.ProductionEnv.View ||
+				projectedAuthInfo.ProductionEnv.ManagePods {
+				permitted = true
+			}
+
+			readPermitted, _ := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionView)
+			if readPermitted {
+				permitted = true
+			}
+
+			editPermitted, _ := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionManagePod)
+			if editPermitted {
+				permitted = true
+			}
+
+			err = commonutil.CheckZadigProfessionalLicense()
+			if err != nil {
+				ctx.Err = err
+				return
+			}
+		} else {
+			if projectedAuthInfo.Env.View ||
+				projectedAuthInfo.Env.ManagePods {
+				permitted = true
+			}
+
+			readPermitted, _ := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionView)
+			if readPermitted {
+				permitted = true
+			}
+
+			editPermitted, _ := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionManagePod)
+			if editPermitted {
+				permitted = true
+			}
+		}
+	}
+	if !permitted {
+		ctx.UnAuthorized = true
+		return
+	}
+
+	ctx.Resp, ctx.Err = service.GetService(envName, projectKey, serviceName, production, workLoadType, ctx.Logger)
 }
 
 func RestartService(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	args := &service.SvcOptArgs{
-		EnvName:     c.Param("name"),
-		ProductName: c.Query("projectName"),
-		ServiceName: c.Param("serviceName"),
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
 	}
 
-	internalhandler.InsertDetailedOperationLog(c, ctx.UserName, c.Query("projectName"), setting.OperationSceneEnv,
+	envName := c.Param("name")
+	projectKey := c.Query("projectName")
+	serviceName := c.Param("serviceName")
+	production := c.Query("production") == "true"
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionEnv.ManagePods {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionManagePod)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+
+			if err := commonutil.CheckZadigProfessionalLicense(); err != nil {
+				ctx.Err = err
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Env.ManagePods {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionManagePod)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+		}
+	}
+
+	args := &service.SvcOptArgs{
+		EnvName:     envName,
+		ProductName: projectKey,
+		ServiceName: serviceName,
+	}
+
+	internalhandler.InsertDetailedOperationLog(c, ctx.UserName, projectKey, setting.OperationSceneEnv,
 		"重启", "环境-服务", fmt.Sprintf("环境名称:%s,服务名称:%s", c.Param("name"), c.Param("serviceName")),
 		"", ctx.Logger, args.EnvName)
-	ctx.Err = service.RestartService(args.EnvName, args, ctx.Logger)
+	ctx.Err = service.RestartService(args.EnvName, args, production, ctx.Logger)
 }
 
-func UpdateService(c *gin.Context) {
+type FetchServiceYamlResponse struct {
+	Yaml string `json:"yaml"`
+}
+
+// @Summary Fetch Service Yaml
+// @Description  Fetch Service Yaml
+// @Tags 	environment
+// @Accept 	json
+// @Produce json
+// @Param 	projectName		query		string								true	"project name"
+// @Param 	name			path		string								true	"env name"
+// @Param 	serviceName		path		string								true	"service name"
+// @Success 200 			{object}    FetchServiceYamlResponse
+// @Router /api/aslan/environment/environments/{name}/services/{serviceName}/yaml [get]
+func FetchServiceYaml(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	serviceName := c.Param("serviceName")
+	envName := c.Param("name")
+	projectKey := c.Query("projectName")
+	production := c.Query("production") == "true"
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionEnv.View {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionView)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+
+			err = commonutil.CheckZadigProfessionalLicense()
+			if err != nil {
+				ctx.Err = err
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Env.View {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionView)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+		}
+	}
+
+	resp := new(FetchServiceYamlResponse)
+	resp.Yaml, ctx.Err = service.FetchServiceYaml(projectKey, envName, serviceName, ctx.Logger)
+	ctx.Resp = resp
+}
+
+// @Summary Preview service
+// @Description Preview service
+// @Tags 	environment
+// @Accept 	json
+// @Produce json
+// @Param 	projectName		query		string								true	"project name"
+// @Param 	name			path		string								true	"env name"
+// @Param 	serviceName		path		string								true	"service name"
+// @Param 	body 			body 		service.PreviewServiceArgs 			true 	"body"
+// @Success 200 			{object} 	service.SvcDiffResult
+// @Router /api/aslan/environment/environments/{name}/services/{serviceName}/preview [post]
+func PreviewService(c *gin.Context) {
+	// TODO: add authorization probably
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
+	args := new(service.PreviewServiceArgs)
+	if err := c.BindJSON(args); err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
+		return
+	}
+
+	args.ProductName = c.Query("projectName")
+	args.EnvName = c.Param("name")
+	args.ServiceName = c.Param("serviceName")
+
+	ctx.Resp, ctx.Err = service.PreviewService(args, ctx.Logger)
+}
+
+func BatchPreviewServices(c *gin.Context) {
+	// TODO: add authorization probably
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	args := make([]*service.PreviewServiceArgs, 0)
+	if err := c.BindJSON(&args); err != nil {
+		ctx.Logger.Errorf("faield to bind args, err: %s", err)
+		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
+		return
+	}
+
+	production := c.Query("production") == "true"
+	if production {
+		if err := commonutil.CheckZadigProfessionalLicense(); err != nil {
+			ctx.Err = err
+			return
+		}
+	}
+
+	for _, arg := range args {
+		arg.ProductName = c.Query("projectName")
+		arg.EnvName = c.Param("name")
+	}
+
+	ctx.Resp, ctx.Err = service.BatchPreviewService(args, ctx.Logger)
+}
+
+// @Summary Update service
+// @Description Update service
+// @Tags 	environment
+// @Accept 	json
+// @Produce json
+// @Param 	projectName		query		string								true	"project name"
+// @Param 	name 			path		string								true	"env name"
+// @Param 	serviceName	 	path		string								true	"service name"
+// @Param 	body 			body 		service.SvcRevision 				true 	"body"
+// @Success 200
+// @Router /api/aslan/environment/environments/{name}/services/{serviceName} [put]
+func UpdateService(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
 	envName := c.Param("name")
-	projectName := c.Query("projectName")
-	internalhandler.InsertDetailedOperationLog(c, ctx.UserName, projectName, setting.OperationSceneEnv,
+	projectKey := c.Query("projectName")
+	production := c.Query("production") == "true"
+	internalhandler.InsertDetailedOperationLog(c, ctx.UserName, projectKey, setting.OperationSceneEnv,
 		"更新", "环境-单服务", fmt.Sprintf("环境名称:%s,服务名称:%s", envName, c.Param("serviceName")),
 		"", ctx.Logger, envName)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionEnv.EditConfig {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionEditConfig)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+
+			if err := commonutil.CheckZadigProfessionalLicense(); err != nil {
+				ctx.Err = err
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Env.EditConfig {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionEditConfig)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+		}
+	}
 
 	svcRev := new(service.SvcRevision)
 	if err := c.BindJSON(svcRev); err != nil {
@@ -78,7 +413,7 @@ func UpdateService(c *gin.Context) {
 
 	args := &service.SvcOptArgs{
 		EnvName:           envName,
-		ProductName:       projectName,
+		ProductName:       projectKey,
 		ServiceName:       c.Param("serviceName"),
 		ServiceType:       svcRev.Type,
 		ServiceRev:        svcRev,
@@ -90,20 +425,33 @@ func UpdateService(c *gin.Context) {
 }
 
 func RestartWorkload(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	envName := c.Param("name")
+	projectKey := c.Query("projectName")
+	serviceName := c.Param("serviceName")
+	workloadType := c.Query("type")
+	workloadName := c.Query("name")
+	production := c.Query("production") == "true"
+
 	args := &service.RestartScaleArgs{
-		EnvName:     c.Param("name"),
-		ProductName: c.Query("projectName"),
-		ServiceName: c.Param("serviceName"),
-		Type:        c.Query("type"),
-		Name:        c.Query("name"),
+		EnvName:     envName,
+		ProductName: projectKey,
+		ServiceName: serviceName,
+		Type:        workloadType,
+		Name:        workloadName,
 	}
 
 	internalhandler.InsertDetailedOperationLog(
 		c, ctx.UserName,
-		c.Query("projectName"),
+		projectKey,
 		setting.OperationSceneEnv,
 		"重启",
 		"环境-服务",
@@ -113,25 +461,99 @@ func RestartWorkload(c *gin.Context) {
 		"", ctx.Logger, args.EnvName,
 	)
 
-	ctx.Err = service.RestartScale(args, ctx.Logger)
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionEnv.ManagePods {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionManagePod)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+
+			err = commonutil.CheckZadigProfessionalLicense()
+			if err != nil {
+				ctx.Err = err
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Env.ManagePods {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionManagePod)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+		}
+	}
+
+	ctx.Err = service.RestartScale(args, production, ctx.Logger)
 }
 
 func ScaleNewService(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	args := new(service.ScaleArgs)
 	args.Type = setting.Deployment
 
-	projectName := c.Query("projectName")
+	projectKey := c.Query("projectName")
 	serviceName := c.Param("serviceName")
 	envName := c.Param("name")
 	resourceType := c.Query("type")
 	name := c.Query("name")
+	production := c.Query("production") == "true"
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionEnv.ManagePods {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionManagePod)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+
+			if err := commonutil.CheckZadigProfessionalLicense(); err != nil {
+				ctx.Err = err
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Env.ManagePods {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionManagePod)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+		}
+	}
 
 	internalhandler.InsertDetailedOperationLog(
 		c, ctx.UserName,
-		projectName, setting.OperationSceneEnv,
+		projectKey, setting.OperationSceneEnv,
 		"伸缩",
 		"环境-服务",
 		fmt.Sprintf("环境名称:%s,%s:%s", envName, resourceType, name),
@@ -145,22 +567,144 @@ func ScaleNewService(c *gin.Context) {
 
 	ctx.Err = service.Scale(&service.ScaleArgs{
 		Type:        resourceType,
-		ProductName: projectName,
+		ProductName: projectKey,
 		EnvName:     envName,
 		ServiceName: serviceName,
 		Name:        name,
 		Number:      number,
+		Production:  production,
 	}, ctx.Logger)
 }
 
-func GetServiceContainer(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+type OpenAPIGetServiceResponse struct {
+	ServiceName string                       `json:"service_name"`
+	Scales      []*internalresource.Workload `json:"scales"`
+	Ingress     []*internalresource.Ingress  `json:"ingress"`
+	Services    []*internalresource.Service  `json:"service_endpoints"`
+	CronJobs    []*internalresource.CronJob  `json:"cron_jobs"`
+	Namespace   string                       `json:"namespace"`
+	EnvName     string                       `json:"env_name"`
+	ProductName string                       `json:"product_name"`
+	GroupName   string                       `json:"group_name"`
+	Workloads   []*commonservice.Workload    `json:"-"`
+}
+
+func OpenAPIGetService(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	envName := c.Param("name")
-	projectName := c.Query("projectName")
-	serviceName := c.Param("serviceName")
-	container := c.Param("container")
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
-	ctx.Err = service.GetServiceContainer(envName, projectName, serviceName, container, ctx.Logger)
+	envName := c.Param("name")
+	projectKey := c.Query("projectName")
+	serviceName := c.Param("serviceName")
+	workLoadType := c.Query("workLoadType")
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Env.View {
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionView)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	origResp, err := service.GetService(envName, projectKey, serviceName, false, workLoadType, ctx.Logger)
+	if err != nil {
+		ctx.Err = err
+		return
+	}
+
+	ctx.Resp = OpenAPIGetServiceResponse{
+		ServiceName: origResp.ServiceName,
+		Scales:      origResp.Scales,
+		Ingress:     origResp.Ingress,
+		Services:    origResp.Services,
+		CronJobs:    origResp.CronJobs,
+		Namespace:   origResp.Namespace,
+		EnvName:     origResp.EnvName,
+		ProductName: origResp.ProductName,
+		GroupName:   origResp.GroupName,
+		Workloads:   origResp.Workloads,
+	}
+	return
+}
+
+func OpenAPIGetProductionService(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	envName := c.Param("name")
+	projectKey := c.Query("projectName")
+	serviceName := c.Param("serviceName")
+	workLoadType := c.Query("workLoadType")
+
+	// TODO: Authorization leak
+	// Authorization checks
+	permitted := false
+
+	if ctx.Resources.IsSystemAdmin {
+		permitted = true
+	} else if projectedAuthInfo, ok := ctx.Resources.ProjectAuthInfo[projectKey]; ok {
+		if projectedAuthInfo.IsProjectAdmin {
+			permitted = true
+		}
+
+		if projectedAuthInfo.ProductionEnv.View ||
+			projectedAuthInfo.ProductionEnv.ManagePods {
+			permitted = true
+		}
+
+		readPermitted, _ := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionView)
+		if readPermitted {
+			permitted = true
+		}
+
+		editPermitted, _ := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionManagePod)
+		if editPermitted {
+			permitted = true
+		}
+	}
+
+	if !permitted {
+		ctx.UnAuthorized = true
+		return
+	}
+
+	origResp, err := service.GetService(envName, projectKey, serviceName, true, workLoadType, ctx.Logger)
+	if err != nil {
+		ctx.Err = err
+		return
+	}
+
+	ctx.Resp = OpenAPIGetServiceResponse{
+		ServiceName: origResp.ServiceName,
+		Scales:      origResp.Scales,
+		Ingress:     origResp.Ingress,
+		Services:    origResp.Services,
+		CronJobs:    origResp.CronJobs,
+		Namespace:   origResp.Namespace,
+		EnvName:     origResp.EnvName,
+		ProductName: origResp.ProductName,
+		GroupName:   origResp.GroupName,
+		Workloads:   origResp.Workloads,
+	}
+	return
 }

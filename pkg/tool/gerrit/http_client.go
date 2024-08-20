@@ -19,10 +19,10 @@ package gerrit
 import (
 	"fmt"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/httpclient"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 type HTTPClient struct {
@@ -59,6 +59,9 @@ func (c *HTTPClient) UpsertWebhook(repoName, webhookName string, events []string
 		URL:       fmt.Sprintf("%s?name=%s", config.WebHookURL(), webhookName),
 		MaxTries:  setting.MaxTries,
 		SslVerify: false,
+	}
+	for _, event := range events {
+		gerritWebhook.Events = append(gerritWebhook.Events, string(event))
 	}
 	if _, err := c.Put(webhookURL, httpclient.SetBody(gerritWebhook)); err != nil {
 		return fmt.Errorf("create gerrit webhook err:%v", err)

@@ -22,10 +22,10 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 
-	"github.com/koderover/zadig/pkg/cli/upgradeassistant/internal/repository/models"
-	"github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/tool/log"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/cli/upgradeassistant/internal/repository/models"
+	"github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 func (c *CodehostColl) ChangeType(ID int, sourceType string) error {
@@ -38,8 +38,6 @@ func (c *CodehostColl) ChangeType(ID int, sourceType string) error {
 		sourceType = "github"
 	} else if sourceType == "3" {
 		sourceType = "gerrit"
-	} else if sourceType == "4" {
-		sourceType = "codehub"
 	} else {
 		return nil
 	}
@@ -65,8 +63,6 @@ func (c *CodehostColl) RollbackType(ID int, sourceType string) error {
 		sourceType = "2"
 	} else if sourceType == "gerrit" {
 		sourceType = "3"
-	} else if sourceType == "codehub" {
-		sourceType = "4"
 	} else {
 		return nil
 	}
@@ -96,6 +92,19 @@ func (c *CodehostColl) List() ([]*models.CodeHost, error) {
 	}
 
 	return codeHosts, nil
+}
+
+func (c *CodehostColl) GetByID(id int) (*models.CodeHost, error) {
+	query := bson.M{
+		"id": id,
+	}
+
+	codehost := new(models.CodeHost)
+	if err := c.Collection.FindOne(context.TODO(), query).Decode(codehost); err != nil {
+		return nil, err
+	}
+
+	return codehost, nil
 }
 
 type CodehostColl struct {

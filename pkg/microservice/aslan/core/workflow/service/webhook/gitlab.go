@@ -27,12 +27,12 @@ import (
 	"github.com/xanzy/go-gitlab"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	gitservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/git"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	gitservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/git"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 type EventPush struct {
@@ -116,13 +116,13 @@ func ProcessGitlabHook(payload []byte, req *http.Request, requestID string, log 
 		}
 
 		//产品工作流webhook
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err = TriggerWorkflowByGitlabEvent(pushEvent, baseURI, requestID, log); err != nil {
-				errorList = multierror.Append(errorList, err)
-			}
-		}()
+		//wg.Add(1)
+		//go func() {
+		//	defer wg.Done()
+		//	if err = TriggerWorkflowByGitlabEvent(pushEvent, baseURI, requestID, log); err != nil {
+		//		errorList = multierror.Append(errorList, err)
+		//	}
+		//}()
 
 		//单服务工作流webhook
 		wg.Add(1)
@@ -161,13 +161,13 @@ func ProcessGitlabHook(payload []byte, req *http.Request, requestID string, log 
 
 	if mergeEvent != nil {
 		//多服务工作流webhook
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err = TriggerWorkflowByGitlabEvent(mergeEvent, baseURI, requestID, log); err != nil {
-				errorList = multierror.Append(errorList, err)
-			}
-		}()
+		//wg.Add(1)
+		//go func() {
+		//	defer wg.Done()
+		//	if err = TriggerWorkflowByGitlabEvent(mergeEvent, baseURI, requestID, log); err != nil {
+		//		errorList = multierror.Append(errorList, err)
+		//	}
+		//}()
 
 		//单服务工作流webhook
 		wg.Add(1)
@@ -205,14 +205,14 @@ func ProcessGitlabHook(payload []byte, req *http.Request, requestID string, log 
 	}
 
 	if tagEvent != nil {
-		// workflow webhook
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err = TriggerWorkflowByGitlabEvent(tagEvent, baseURI, requestID, log); err != nil {
-				errorList = multierror.Append(errorList, err)
-			}
-		}()
+		//// workflow webhook
+		//wg.Add(1)
+		//go func() {
+		//	defer wg.Done()
+		//	if err = TriggerWorkflowByGitlabEvent(tagEvent, baseURI, requestID, log); err != nil {
+		//		errorList = multierror.Append(errorList, err)
+		//	}
+		//}()
 
 		//test webhook
 		wg.Add(1)
@@ -308,53 +308,70 @@ type RepositoryInfo struct {
 func updateServiceTemplateByPushEvent(diffs []string, pathWithNamespace string, log *zap.SugaredLogger) error {
 	log.Infof("EVENT: GITLAB WEBHOOK UPDATING SERVICE TEMPLATE")
 
-	serviceTmpls, err := GetGitlabServiceTemplates()
+	svcTmplsMap := map[bool][]*commonmodels.Service{}
+	serviceTmpls, err := GetGitlabTestingServiceTemplates()
 	if err != nil {
-		log.Errorf("Failed to get gitlab service templates, error: %v", err)
+		log.Errorf("Failed to get gitlab testing service templates, error: %v", err)
 		return err
 	}
+	svcTmplsMap[false] = serviceTmpls
+	productionServiceTmpls, err := GetGitlabProductionServiceTemplates()
+	if err != nil {
+		log.Errorf("Failed to get gitlab production service templates, error: %v", err)
+		return err
+	}
+	svcTmplsMap[true] = productionServiceTmpls
 
 	errs := &multierror.Error{}
-
-	for _, service := range serviceTmpls {
-		if service.GetRepoNamespace()+"/"+service.RepoName != pathWithNamespace {
-			continue
-		}
-
-		path, err := getServiceSrcPath(service)
-		if err != nil {
-			errs = multierror.Append(errs, err)
-		}
-		// 判断PushEvent的Diffs中是否包含该服务模板的src_path
-		affected := false
-		for _, diff := range diffs {
-			if subElem(path, diff) {
-				affected = true
-				break
+	for production, serviceTmpls := range svcTmplsMap {
+		for _, service := range serviceTmpls {
+			if service.GetRepoNamespace()+"/"+service.RepoName != pathWithNamespace {
+				continue
 			}
-		}
-		if affected {
-			log.Infof("Started to sync service template %s from gitlab %s", service.ServiceName, service.SrcPath)
-			//TODO: 异步处理
-			service.CreateBy = "system"
-			err := SyncServiceTemplateFromGitlab(service, log)
+
+			path, err := getServiceSrcPath(service)
 			if err != nil {
-				log.Errorf("SyncServiceTemplateFromGitlab failed, error: %v", err)
 				errs = multierror.Append(errs, err)
 			}
-		} else {
-			log.Infof("Service template %s from gitlab %s is not affected, no sync", service.ServiceName, service.SrcPath)
+			// 判断PushEvent的Diffs中是否包含该服务模板的src_path
+			affected := false
+			for _, diff := range diffs {
+				if subElem(path, diff) {
+					affected = true
+					break
+				}
+			}
+			if affected {
+				log.Infof("Started to sync service template %s from gitlab %s", service.ServiceName, service.SrcPath)
+				//TODO: 异步处理
+				service.CreateBy = "system"
+				service.Production = production
+				err := SyncServiceTemplateFromGitlab(service, log)
+				if err != nil {
+					log.Errorf("SyncServiceTemplateFromGitlab failed, error: %v", err)
+					errs = multierror.Append(errs, err)
+				}
+			} else {
+				log.Infof("Service template %s from gitlab %s is not affected, no sync", service.ServiceName, service.SrcPath)
+			}
 		}
-
 	}
+
 	return errs.ErrorOrNil()
 }
 
-func GetGitlabServiceTemplates() ([]*commonmodels.Service, error) {
+func GetGitlabTestingServiceTemplates() ([]*commonmodels.Service, error) {
 	opt := &commonrepo.ServiceListOption{
 		Source: setting.SourceFromGitlab,
 	}
 	return commonrepo.NewServiceColl().ListMaxRevisions(opt)
+}
+
+func GetGitlabProductionServiceTemplates() ([]*commonmodels.Service, error) {
+	opt := &commonrepo.ServiceListOption{
+		Source: setting.SourceFromGitlab,
+	}
+	return commonrepo.NewProductionServiceColl().ListMaxRevisions(opt)
 }
 
 // SyncServiceTemplateFromGitlab Force to sync Service Template to latest commit and content,
@@ -384,7 +401,7 @@ func SyncServiceTemplateFromGitlab(service *commonmodels.Service, log *zap.Sugar
 	}
 	// 在Ensure过程中会检查source，如果source为gitlab，则同步gitlab内容到service中
 	if err := fillServiceTmpl(setting.WebhookTaskCreator, service, log); err != nil {
-		log.Errorf("ensureServiceTmpl error: %+v", err)
+		log.Errorf("fillServiceTmpl error: %+v", err)
 		return e.ErrValidateTemplate.AddDesc(err.Error())
 	}
 	log.Infof("End of sync service template %s from gitlab path %s", service.ServiceName, service.SrcPath)

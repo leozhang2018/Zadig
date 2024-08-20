@@ -28,12 +28,11 @@ import (
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/cron/core/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/cron/core/service"
 )
 
 type EvnListOption struct {
-	BasicFacility string
-	DeployType    []string
+	DeployType []string
 }
 
 func (c *Client) ListEnvs(log *zap.SugaredLogger, option *EvnListOption) ([]*service.ProductRevision, error) {
@@ -42,7 +41,7 @@ func (c *Client) ListEnvs(log *zap.SugaredLogger, option *EvnListOption) ([]*ser
 		resp = make([]*service.ProductRevision, 0)
 	)
 
-	url := fmt.Sprintf("%s/environment/revision/products?basicFacility=%s&deployType=%s", c.APIBase, option.BasicFacility, strings.Join(option.DeployType, ","))
+	url := fmt.Sprintf("%s/environment/revision/productsnaps?deployType=%s", c.APIBase, strings.Join(option.DeployType, ","))
 	request, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		log.Errorf("ListEnvs new http request error: %v", err)
@@ -110,37 +109,12 @@ func (c *Client) GetEnvService(productName, envName string, log *zap.SugaredLogg
 		if err == nil {
 			if err = json.Unmarshal(body, &envObj); err == nil {
 				return envObj, nil
+			} else {
+				log.Errorf("GetService response body unmarshal error: %v", err)
 			}
 		}
 	}
 	return envObj, errors.WithMessage(err, "failed to get service")
-}
-
-func (c *Client) GetRenderset(name string, revision int64, log *zap.SugaredLogger) (*service.ProductRenderset, error) {
-	var (
-		err          error
-		rendersetObj = new(service.ProductRenderset)
-	)
-	url := fmt.Sprintf("%s/project/renders/render/%s/revision/%d", c.APIBase, name, revision)
-	request, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		log.Errorf("GetService new http request error: %v", err)
-		return nil, err
-	}
-
-	var ret *http.Response
-	if ret, err = c.Conn.Do(request); err == nil {
-		defer func() { _ = ret.Body.Close() }()
-		var body []byte
-		body, err = ioutil.ReadAll(ret.Body)
-		if err == nil {
-			if err = json.Unmarshal(body, &rendersetObj); err == nil {
-				return rendersetObj, nil
-			}
-		}
-	}
-
-	return rendersetObj, errors.WithMessage(err, "failed to get renderset")
 }
 
 func (c *Client) GetService(serviceName, productName, serviceType string, revision int64, log *zap.SugaredLogger) (*service.Service, error) {
@@ -189,8 +163,10 @@ func (c *Client) UpdateService(args *service.ServiceTmplObject, log *zap.Sugared
 		defer func() { _ = ret.Body.Close() }()
 		_, err := ioutil.ReadAll(ret.Body)
 		if err != nil {
-			return errors.WithMessage(err, "failed to get service")
+			return errors.WithMessage(err, "failed to update service")
 		}
+	} else {
+		return errors.WithMessage(err, "failed to update service")
 	}
 
 	return nil

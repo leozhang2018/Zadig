@@ -30,30 +30,32 @@ import (
 	gotempl "text/template"
 	"time"
 
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/repository"
+
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	configbase "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/task"
-	taskmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/task"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	templaterepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/base"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/jira"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/scmnotify"
-	templ "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/template"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types"
-	"github.com/koderover/zadig/pkg/util"
+	configbase "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/task"
+	taskmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/task"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	templaterepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/base"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/jira"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/scmnotify"
+	templ "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/template"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 const (
@@ -162,9 +164,9 @@ func getProjectTargets(productName string) []string {
 		log.Errorf("[%s] ProductTmpl.Find error: %v", productName, err)
 		return targets
 	}
-	services, err := commonrepo.NewServiceColl().ListMaxRevisionsForServices(productTmpl.AllServiceInfos(), "")
+	services, err := commonrepo.NewServiceColl().ListMaxRevisionsForServices(productTmpl.AllTestServiceInfos(), "")
 	if err != nil {
-		log.Errorf("ServiceTmpl.ListMaxRevisions error: %v", err)
+		log.Errorf("ServiceTmpl.ListMaxRevisionsByProject error: %v", err)
 		return targets
 	}
 
@@ -202,7 +204,7 @@ func findModuleByContainer(productName, serviceModuleTarget string, buildStageMo
 			log.Errorf("failed to find project,err:%s", err)
 			return nil, nil
 		}
-		services, err := commonrepo.NewServiceColl().ListMaxRevisionsForServices(productTmpl.AllServiceInfos(), "")
+		services, err := commonrepo.NewServiceColl().ListMaxRevisionsForServices(productTmpl.AllTestServiceInfos(), "")
 		if err != nil {
 			log.Errorf("failed to list services,err:%s", err)
 			return nil, nil
@@ -244,9 +246,7 @@ func findBuildNameByContainerName(containerName string, serviceTmpl *commonmodel
 	opt := &commonrepo.BuildListOption{
 		ServiceName: serviceTmpl.ServiceName,
 		Targets:     []string{containerName},
-	}
-	if serviceTmpl.Visibility != setting.PublicService {
-		opt.ProductName = serviceTmpl.ProductName
+		ProductName: serviceTmpl.ProductName,
 	}
 
 	buildModules, err := commonrepo.NewBuildColl().List(opt)
@@ -263,15 +263,6 @@ func findModuleByTargetAndVersion(allModules []*commonmodels.Build, serviceModul
 		return nil, nil
 	}
 
-	opt := &commonrepo.ServiceFindOption{
-		ServiceName:   containerArr[1],
-		ProductName:   containerArr[0],
-		ExcludeStatus: setting.ProductStatusDeleting,
-	}
-	serviceObj, _ := commonrepo.NewServiceColl().Find(opt)
-	if serviceObj != nil && serviceObj.Visibility == setting.PublicService {
-		containerArr[0] = serviceObj.ProductName
-	}
 	for _, mo := range allModules {
 		for _, target := range mo.Targets {
 			targetStr := fmt.Sprintf("%s%s%s%s%s", target.ProductName, SplitSymbol, target.ServiceName, SplitSymbol, target.ServiceModule)
@@ -596,7 +587,7 @@ func CreateWorkflowTask(args *commonmodels.WorkflowTaskArgs, taskCreator string,
 	// get global configPayload
 	configPayload := commonservice.GetConfigPayload(args.CodehostID)
 	if len(env.RegistryID) == 0 {
-		reg, _, err := commonservice.FindDefaultRegistry(false, log)
+		reg, err := commonservice.FindDefaultRegistry(false, log)
 		if err != nil {
 			log.Errorf("get default registry error: %v", err)
 			return nil, e.ErrGetCounter.AddDesc(err.Error())
@@ -659,7 +650,7 @@ func CreateWorkflowTask(args *commonmodels.WorkflowTaskArgs, taskCreator string,
 				if deployEnv.Type == setting.PMDeployType {
 					continue
 				}
-				deployTask, err := deployEnvToSubTasks(deployEnv, env, project.Timeout)
+				deployTask, err := deployEnvToSubTasks(deployEnv, env, project.Timeout*60)
 				if err != nil {
 					log.Errorf("deploy env to subtask error: %v", err)
 					return nil, e.ErrCreateTask.AddErr(err)
@@ -731,7 +722,7 @@ func CreateWorkflowTask(args *commonmodels.WorkflowTaskArgs, taskCreator string,
 				return nil, e.ErrCreateTask.AddErr(err)
 			}
 			if _, err := commonservice.GetServiceTemplate(
-				target.Name, setting.PMDeployType, args.ProductTmplName, setting.ProductStatusDeleting, 0, log,
+				target.Name, setting.PMDeployType, args.ProductTmplName, setting.ProductStatusDeleting, 0, false, log,
 			); err != nil {
 				subTasks = append(subTasks, securityTask)
 			}
@@ -822,6 +813,7 @@ func CreateWorkflowTask(args *commonmodels.WorkflowTaskArgs, taskCreator string,
 		MergeRequestID: args.MergeRequestID,
 		CommitID:       args.CommitID,
 		Ref:            args.Ref,
+		EventType:      args.EventType,
 	}
 	task := &taskmodels.Task{
 		TaskID:              nextTaskID,
@@ -1076,7 +1068,7 @@ func createReleaseImageTask(workflow *commonmodels.Workflow, args *commonmodels.
 	if err != nil {
 		log.Errorf("failed to build registry map, err: %s", err)
 		// use default registry
-		reg, _, err := commonservice.FindDefaultRegistry(true, log)
+		reg, err := commonservice.FindDefaultRegistry(true, log)
 		if err != nil {
 			log.Errorf("can't find default candidate registry, err: %s", err)
 			return nil, e.ErrFindRegistry.AddDesc(err.Error())
@@ -1312,7 +1304,7 @@ func getDefaultAndDestS3StoreURL(workflow *commonmodels.Workflow, log *zap.Sugar
 			S3Storage: distributeS3Store,
 		}
 
-		destURL, err = defaultS3.GetEncryptedURL()
+		destURL, err = defaultS3.GetEncrypted()
 		if err != nil {
 			return
 		}
@@ -1324,7 +1316,7 @@ func getDefaultAndDestS3StoreURL(workflow *commonmodels.Workflow, log *zap.Sugar
 		return
 	}
 
-	defaultURL, err = defaultS3.GetEncryptedURL()
+	defaultURL, err = defaultS3.GetEncrypted()
 	if err != nil {
 		err = e.ErrS3Storage.AddErr(err)
 		return
@@ -1379,11 +1371,11 @@ func deployEnvToSubTasks(env commonmodels.DeployEnv, prodEnv *commonmodels.Produ
 		if pSvc, ok := prodEnv.GetServiceMap()[deployTask.ServiceName]; ok {
 			deployTask.ServiceRevision = pSvc.Revision
 		}
-		revisionSvc, err := commonrepo.NewServiceColl().Find(&commonrepo.ServiceFindOption{
+		revisionSvc, err := repository.QueryTemplateService(&commonrepo.ServiceFindOption{
 			ServiceName: deployTask.ServiceName,
 			Revision:    deployTask.ServiceRevision,
 			ProductName: prodEnv.ProductName,
-		})
+		}, prodEnv.Production)
 		if err != nil {
 			return nil, fmt.Errorf("failed to find service: %s with revision: %d, err: %s", deployTask.ServiceName, deployTask.ServiceRevision, err)
 		}
@@ -1637,7 +1629,7 @@ func testArgsToSubtask(args *commonmodels.WorkflowTaskArgs, pt *taskmodels.Task,
 			TaskType: config.TaskTestingV2,
 			Enabled:  true,
 			TestName: "test",
-			Timeout:  testModule.Timeout,
+			Timeout:  testModule.Timeout * 60,
 		}
 		testTask.TestModuleName = testModule.Name
 		testTask.JobCtx.TestType = testModule.TestType
@@ -1675,6 +1667,7 @@ func testArgsToSubtask(args *commonmodels.WorkflowTaskArgs, pt *taskmodels.Task,
 			testTask.JobCtx.EnableProxy = testModule.PreTest.EnableProxy
 			testTask.Namespace = testModule.PreTest.Namespace
 			testTask.ClusterID = testModule.PreTest.ClusterID
+			testTask.StrategyID = testModule.PreTest.StrategyID
 
 			envs := testModule.PreTest.Envs[:]
 
@@ -1709,6 +1702,30 @@ func testArgsToSubtask(args *commonmodels.WorkflowTaskArgs, pt *taskmodels.Task,
 			testTask.ResReq = testModule.PreTest.ResReq
 			testTask.ResReqSpec = testModule.PreTest.ResReqSpec
 		}
+
+		if testModule.PostTest != nil {
+			if testModule.PostTest.ObjectStorageUpload != nil {
+				testTask.JobCtx.UploadEnabled = testModule.PostTest.ObjectStorageUpload.Enabled
+				if testModule.PostTest.ObjectStorageUpload.Enabled {
+					storageInfo, err := commonrepo.NewS3StorageColl().Find(testModule.PostTest.ObjectStorageUpload.ObjectStorageID)
+					if err != nil {
+						log.Errorf("Failed to get basic storage info for uploading, the error is %s", err)
+						return nil, err
+					}
+					testTask.JobCtx.UploadStorageInfo = &types.ObjectStorageInfo{
+						Endpoint: storageInfo.Endpoint,
+						AK:       storageInfo.Ak,
+						SK:       storageInfo.Sk,
+						Bucket:   storageInfo.Bucket,
+						Insecure: storageInfo.Insecure,
+						Provider: storageInfo.Provider,
+						Region:   storageInfo.Region,
+					}
+					testTask.JobCtx.UploadInfo = testModule.PostTest.ObjectStorageUpload.UploadDetail
+				}
+			}
+		}
+
 		// 设置 build 安装脚本
 		testTask.InstallCtx, err = BuildInstallCtx(testTask.InstallItems)
 		if err != nil {
@@ -1808,7 +1825,7 @@ func CreateArtifactWorkflowTask(args *commonmodels.WorkflowTaskArgs, taskCreator
 			if env != nil {
 				// 生成部署的subtask
 				for _, deployEnv := range artifact.Deploy {
-					deployTask, err := deployEnvToSubTasks(deployEnv, env, productTempl.Timeout)
+					deployTask, err := deployEnvToSubTasks(deployEnv, env, productTempl.Timeout*60)
 					if err != nil {
 						log.Errorf("deploy env to subtask error: %v", err)
 						return nil, err
@@ -1887,7 +1904,7 @@ func CreateArtifactWorkflowTask(args *commonmodels.WorkflowTaskArgs, taskCreator
 				return nil, err
 			}
 			if _, err := commonservice.GetServiceTemplate(
-				artifact.Name, setting.PMDeployType, args.ProductTmplName, setting.ProductStatusDeleting, 0, log,
+				artifact.Name, setting.PMDeployType, args.ProductTmplName, setting.ProductStatusDeleting, 0, false, log,
 			); err != nil {
 				subTasks = append(subTasks, securityTask)
 			}
@@ -2067,7 +2084,7 @@ func BuildModuleToSubTasks(args *commonmodels.BuildModuleArgs, log *zap.SugaredL
 
 	if args.Env != nil {
 		serviceTmpl, _ = commonservice.GetServiceTemplate(
-			args.Target, setting.PMDeployType, args.ProductName, setting.ProductStatusDeleting, 0, log,
+			args.Target, setting.PMDeployType, args.ProductName, setting.ProductStatusDeleting, 0, false, log,
 		)
 	}
 
@@ -2097,11 +2114,12 @@ func BuildModuleToSubTasks(args *commonmodels.BuildModuleArgs, log *zap.SugaredL
 		ImageFrom:           module.PreBuild.ImageFrom,
 		ResReq:              module.PreBuild.ResReq,
 		ResReqSpec:          module.PreBuild.ResReqSpec,
-		Timeout:             module.Timeout,
+		Timeout:             module.Timeout * 60,
 		Registries:          registries,
 		ProductName:         args.ProductName,
 		Namespace:           module.PreBuild.Namespace,
 		ClusterID:           module.PreBuild.ClusterID,
+		StrategyID:          module.PreBuild.StrategyID,
 		UseHostDockerDaemon: module.PreBuild.UseHostDockerDaemon,
 	}
 
@@ -2302,6 +2320,7 @@ func BuildModuleToSubTasks(args *commonmodels.BuildModuleArgs, log *zap.SugaredL
 				Bucket:   storageInfo.Bucket,
 				Insecure: storageInfo.Insecure,
 				Provider: storageInfo.Provider,
+				Region:   storageInfo.Region,
 			}
 			build.JobCtx.UploadInfo = module.PostBuild.ObjectStorageUpload.UploadDetail
 		}
@@ -2450,14 +2469,14 @@ func ensurePipelineTask(taskOpt *taskmodels.TaskOpt, log *zap.SugaredLogger) err
 				// 注意: 其他任务从 pt.TaskArgs.Deploy.Image 获取, 必须要有编译任务
 				var reg *commonmodels.RegistryNamespace
 				if len(exitedProd.RegistryID) > 0 {
-					reg, _, err = commonservice.FindRegistryById(exitedProd.RegistryID, true, log)
+					reg, err = commonservice.FindRegistryById(exitedProd.RegistryID, true, log)
 					if err != nil {
 						log.Errorf("service.EnsureRegistrySecret: failed to find registry: %s error msg:%s",
 							exitedProd.RegistryID, err)
 						return e.ErrFindRegistry.AddDesc(err.Error())
 					}
 				} else {
-					reg, _, err = commonservice.FindDefaultRegistry(true, log)
+					reg, err = commonservice.FindDefaultRegistry(true, log)
 					if err != nil {
 						log.Errorf("can't find default candidate registry: %s", err)
 						return e.ErrFindRegistry.AddDesc(err.Error())
@@ -2559,14 +2578,14 @@ func ensurePipelineTask(taskOpt *taskmodels.TaskOpt, log *zap.SugaredLogger) err
 
 						var reg *commonmodels.RegistryNamespace
 						if len(exitedProd.RegistryID) > 0 {
-							reg, _, err = commonservice.FindRegistryById(exitedProd.RegistryID, true, log)
+							reg, err = commonservice.FindRegistryById(exitedProd.RegistryID, true, log)
 							if err != nil {
 								log.Errorf("service.EnsureRegistrySecret: failed to find registry: %s error msg:%s",
 									exitedProd.RegistryID, err)
 								return e.ErrFindRegistry.AddDesc(err.Error())
 							}
 						} else {
-							reg, _, err = commonservice.FindDefaultRegistry(true, log)
+							reg, err = commonservice.FindDefaultRegistry(true, log)
 							if err != nil {
 								log.Errorf("can't find default candidate registry: %s", err)
 								return e.ErrFindRegistry.AddDesc(err.Error())
@@ -2745,17 +2764,6 @@ func ensurePipelineTask(taskOpt *taskmodels.TaskOpt, log *zap.SugaredLogger) err
 					containerName = strings.TrimSuffix(containerName, "_"+t.ServiceName)
 				}
 
-				// Task creator can be webhook trigger or cronjob trigger or validated user
-				// Validated user includes both that user is granted write permission or user is the owner of this product
-				if taskOpt.Task.TaskCreator == setting.WebhookTaskCreator ||
-					taskOpt.Task.TaskCreator == setting.CronTaskCreator ||
-					IsProductAuthed(taskOpt.Task.TaskCreator, t.Namespace, taskOpt.Task.ProductName, config.ProductWritePermission, log) {
-					log.Infof("Validating permission passed. product:%s, owner:%s, task executed by: %s", taskOpt.Task.ProductName, t.Namespace, taskOpt.Task.TaskCreator)
-				} else {
-					log.Errorf("permission denied. product:%s, owner:%s, task executed by: %s", taskOpt.Task.ProductName, t.Namespace, taskOpt.Task.TaskCreator)
-					return errors.New(e.ProductAccessDeniedErrMsg)
-				}
-
 				taskOpt.Task.SubTasks[i], err = t.ToSubTask()
 				if err != nil {
 					return err
@@ -2794,7 +2802,7 @@ func ensurePipelineTask(taskOpt *taskmodels.TaskOpt, log *zap.SugaredLogger) err
 						S3Storage: storage,
 					}
 
-					task.DestStorageURL, err = defaultS3.GetEncryptedURL()
+					task.DestStorageURL, err = defaultS3.GetEncrypted()
 					if err != nil {
 						return err
 					}
@@ -3036,13 +3044,13 @@ func getBuildModule(buildName, serviceName, serviceModule, productName string) (
 		return nil, err
 	}
 	// The service may be a shared service
-	if len(modules) == 0 {
-		opt.ProductName = ""
-		modules, err = commonrepo.NewBuildColl().List(opt)
-		if err != nil {
-			return nil, err
-		}
-	}
+	//if len(modules) == 0 {
+	//	opt.ProductName = ""
+	//	modules, err = commonrepo.NewBuildColl().List(opt)
+	//	if err != nil {
+	//		return nil, err
+	//	}
+	//}
 	if len(modules) == 0 {
 		return nil, fmt.Errorf("no build module found for %s/%s/%s", productName, serviceName, serviceModule)
 	}

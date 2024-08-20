@@ -26,16 +26,16 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/kube/wrapper"
-	krkubeclient "github.com/koderover/zadig/pkg/tool/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/kube/label"
-	"github.com/koderover/zadig/pkg/tool/kube/podexec"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/kube/wrapper"
+	krkubeclient "github.com/koderover/zadig/v2/pkg/tool/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/label"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/podexec"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
 )
 
 // InitializeArtifactPackagePlugin to ini
@@ -176,7 +176,7 @@ func (p *ArtifactPackageTaskPlugin) Run(ctx context.Context, pipelineTask *task.
 	}
 	p.Log.Infof("succeed to create cm for artifact package job %s", p.JobName)
 
-	job, err := buildJob(p.Type(), pipelineTask.ConfigPayload.Release.PackagerImage, p.JobName, serviceName, "", pipelineTask.ConfigPayload.Build.KubeNamespace, setting.MinRequest, setting.LowRequestSpec, pipelineCtx, pipelineTask, []*task.RegistryNamespace{})
+	job, err := buildJob(p.Type(), pipelineTask.ConfigPayload.Release.PackagerImage, p.JobName, serviceName, "", "", pipelineTask.ConfigPayload.Build.KubeNamespace, setting.MinRequest, setting.LowRequestSpec, pipelineCtx, pipelineTask, []*task.RegistryNamespace{})
 	if err != nil {
 		msg := fmt.Sprintf("create release artifact package job context error: %v", err)
 		p.Log.Error(msg)

@@ -19,11 +19,10 @@ package fs_test
 import (
 	"fmt"
 
-	. "github.com/onsi/ginkgo"
-	. "github.com/onsi/ginkgo/extensions/table"
+	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 
-	"github.com/koderover/zadig/pkg/util/fs"
+	"github.com/koderover/zadig/v2/pkg/util/fs"
 )
 
 type testParams struct {

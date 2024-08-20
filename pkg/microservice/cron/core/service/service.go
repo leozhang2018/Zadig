@@ -19,36 +19,23 @@ package service
 import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
-	templatemodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/template"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/types"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	templatemodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type SvcRevision struct {
-	ServiceName     string       `json:"service_name"`
-	Type            string       `json:"type"`
-	CurrentRevision int64        `json:"current_revision"`
-	NextRevision    int64        `json:"next_revision"`
-	Updatable       bool         `json:"updatable"`
-	Deleted         bool         `json:"deleted"`
-	New             bool         `json:"new"`
-	Containers      []*Container `json:"containers,omitempty"`
+	ServiceName     string `json:"service_name"`
+	Type            string `json:"type"`
+	CurrentRevision int64  `json:"current_revision"`
 }
 
 type ProductRevision struct {
-	ID          string `json:"id,omitempty"`
-	EnvName     string `json:"env_name"`
-	ProductName string `json:"product_name"`
-	// 表示该产品更新前版本
-	CurrentRevision int64 `json:"current_revision"`
-	// 表示该产品更新后版本
-	NextRevision int64 `json:"next_revision"`
-	// ture: 表示该产品的服务发生变化, 需要更新
-	// false: 表示该产品的服务未发生变化, 无需更新
-	Updatable bool `json:"updatable"`
-	// 可以自动更新产品, 展示用户更新前和更新后的服务组以及服务详细对比
+	ID               string         `json:"id,omitempty"`
+	EnvName          string         `json:"env_name"`
+	ProductName      string         `json:"product_name"`
 	ServiceRevisions []*SvcRevision `json:"services"`
-	IsPublic         bool           `json:"isPublic"`
 }
 
 type EnvResource struct {
@@ -66,22 +53,25 @@ type EnvResource struct {
 }
 
 type ProductResp struct {
-	ID          string      `json:"id"`
-	ProductName string      `json:"product_name"`
-	Namespace   string      `json:"namespace"`
-	Status      string      `json:"status"`
-	Error       string      `json:"error"`
-	EnvName     string      `json:"env_name"`
-	UpdateBy    string      `json:"update_by"`
-	UpdateTime  int64       `json:"update_time"`
-	Services    [][]string  `json:"services"`
-	Render      *RenderInfo `json:"render"`
-	Vars        []*RenderKV `json:"vars"`
-	IsPublic    bool        `json:"isPublic"`
-	ClusterID   string      `json:"cluster_id,omitempty"`
-	RecycleDay  int         `json:"recycle_day"`
-	IsProd      bool        `json:"is_prod"`
-	Source      string      `json:"source"`
+	ID          string                           `json:"id"`
+	ProductName string                           `json:"product_name"`
+	Namespace   string                           `json:"namespace"`
+	Status      string                           `json:"status"`
+	Error       string                           `json:"error"`
+	EnvName     string                           `json:"env_name"`
+	UpdateBy    string                           `json:"update_by"`
+	UpdateTime  int64                            `json:"update_time"`
+	Services    [][]*commonmodels.ProductService `json:"services"`
+	Render      *RenderInfo                      `json:"render"`
+	Vars        []*RenderKV                      `json:"vars"`
+	IsPublic    bool                             `json:"isPublic"`
+	ClusterID   string                           `json:"cluster_id,omitempty"`
+	RecycleDay  int                              `json:"recycle_day"`
+	IsProd      bool                             `json:"is_prod"`
+	Source      string                           `json:"source"`
+
+	YamlData *templatemodels.CustomYaml `bson:"yaml_data,omitempty"            json:"yaml_data,omitempty"`
+	// GlobalValues for k8s projects
 }
 
 type ProductRenderset struct {
@@ -121,12 +111,16 @@ type PmHealthCheck struct {
 }
 
 type PrivateKeyHosts struct {
-	ID           primitive.ObjectID   `json:"id,omitempty"`
-	IP           string               `json:"ip"`
-	Port         int64                `json:"port"`
-	Status       setting.PMHostStatus `json:"status"`
-	Probe        *types.Probe         `json:"probe"`
-	UpdateStatus bool                 `json:"update_status"`
+	ID               primitive.ObjectID    `json:"id,omitempty"`
+	IP               string                `json:"ip"`
+	Port             int64                 `json:"port"`
+	Status           setting.PMHostStatus  `json:"status"`
+	Error            string                `json:"error"`
+	Probe            *types.Probe          `json:"probe"`
+	UpdateStatus     bool                  `json:"update_status"`
+	ScheduleWorkflow bool                  `json:"schedule_workflow"`
+	Agent            *commonmodels.VMAgent `json:"agent,omitempty"`
+	Type             string                `json:"type"`
 }
 
 type EnvStatus struct {

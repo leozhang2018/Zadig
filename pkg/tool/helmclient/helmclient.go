@@ -40,6 +40,7 @@ import (
 	"helm.sh/helm/v3/pkg/cli"
 	"helm.sh/helm/v3/pkg/downloader"
 	"helm.sh/helm/v3/pkg/plugin"
+	"helm.sh/helm/v3/pkg/registry"
 	"helm.sh/helm/v3/pkg/release"
 	"helm.sh/helm/v3/pkg/releaseutil"
 	"helm.sh/helm/v3/pkg/repo"
@@ -54,11 +55,12 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
-	"github.com/koderover/zadig/pkg/tool/log"
-	yamlutil "github.com/koderover/zadig/pkg/util/yaml"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/util"
+	yamlutil "github.com/koderover/zadig/v2/pkg/util/yaml"
 )
 
 const (
@@ -70,8 +72,8 @@ var generalSettings *cli.EnvSettings
 
 // enable support of oci registry
 func init() {
-	os.Setenv("HELM_EXPERIMENTAL_OCI", "1")
-	os.Setenv("HELM_PLUGINS", HelmPluginsDirectory)
+	_ = os.Setenv("HELM_EXPERIMENTAL_OCI", "1")
+	_ = os.Setenv("HELM_PLUGINS", HelmPluginsDirectory)
 	repoInfo = &repo.File{}
 	generalSettings = cli.New()
 	generalSettings.PluginsDirectory = HelmPluginsDirectory
@@ -142,7 +144,7 @@ func NewClientFromNamespace(clusterID, namespace string) (*HelmClient, error) {
 }
 
 // NewClientFromRestConf returns a new Helm client constructed with the provided REST config options
-// used to list/uninstall helm release
+// only used to list/uninstall helm release because kubeClient is nil
 func NewClientFromRestConf(restConfig *rest.Config, ns string) (*HelmClient, error) {
 	hcClient, err := hc.NewClientFromRestConf(&hc.RestConfClientOptions{
 		Options: &hc.Options{
@@ -173,15 +175,35 @@ type KV struct {
 // MergeOverrideValues merge override yaml and override kvs
 // defaultValues overrideYaml used for -f option
 // overrideValues used for --set option
-func MergeOverrideValues(valuesYaml, defaultValues, overrideYaml, overrideValues string) (string, error) {
+func MergeOverrideValues(valuesYaml, defaultValues, overrideYaml, overrideValues string, imageKvs []*KV) (string, error) {
 
 	// merge files for helm -f option
-	// precedence from low to high: valuesYaml defaultValues overrideYaml
-	valuesMap, err := yamlutil.MergeAndUnmarshal([][]byte{[]byte(valuesYaml), []byte(defaultValues), []byte(overrideYaml)})
+	// precedence from low to high: images valuesYaml defaultValues overrideYaml
+
+	var imageRelatedValues []byte
+	if len(imageKvs) > 0 {
+		imageValuesMap := make(map[string]interface{})
+		imageKvStr := make([]string, 0)
+		// image related values
+		for _, imageKv := range imageKvs {
+			imageKvStr = append(imageKvStr, fmt.Sprintf("%s=%v", imageKv.Key, imageKv.Value))
+		}
+		err := strvals.ParseInto(strings.Join(imageKvStr, ","), imageValuesMap)
+		if err != nil {
+			return "", err
+		}
+		imageRelatedValues, err = yaml.Marshal(imageValuesMap)
+		if err != nil {
+			return "", err
+		}
+	}
+
+	valuesMap, err := yamlutil.MergeAndUnmarshal([][]byte{imageRelatedValues, []byte(valuesYaml), []byte(defaultValues), []byte(overrideYaml)})
 	if err != nil {
 		return "", err
 	}
 
+	kvStr := make([]string, 0)
 	// merge kv values for helm --set option
 	if overrideValues != "" {
 		kvList := make([]*KV, 0)
@@ -189,11 +211,19 @@ func MergeOverrideValues(valuesYaml, defaultValues, overrideYaml, overrideValues
 		if err != nil {
 			return "", err
 		}
-		kvStr := make([]string, 0)
 		for _, kv := range kvList {
 			kvStr = append(kvStr, fmt.Sprintf("%s=%v", kv.Key, kv.Value))
 		}
-		// override values for --set option
+	}
+
+	//// image related values
+	//for _, imageKv := range imageKvs {
+	//	kvStr = append(kvStr, fmt.Sprintf("%s=%v", imageKv.Key, imageKv.Value))
+	//}
+	//
+
+	// override values for --set option
+	if len(kvStr) > 0 {
 		err = strvals.ParseInto(strings.Join(kvStr, ","), valuesMap)
 		if err != nil {
 			return "", err
@@ -562,8 +592,8 @@ func (hClient *HelmClient) UpdateChartRepo(repoEntry *repo.Entry) (string, error
 	}
 	if repoUrl.Scheme == "acr" {
 		// export envionment-variables for ali acr chart repo
-		os.Setenv("HELM_REPO_USERNAME", repoEntry.Username)
-		os.Setenv("HELM_REPO_PASSWORD", repoEntry.Password)
+		_ = os.Setenv("HELM_REPO_USERNAME", repoEntry.Username)
+		_ = os.Setenv("HELM_REPO_PASSWORD", repoEntry.Password)
 	}
 
 	// update repo info
@@ -587,6 +617,13 @@ func (hClient *HelmClient) UpdateChartRepo(repoEntry *repo.Entry) (string, error
 func (hClient *HelmClient) FetchIndexYaml(repoEntry *repo.Entry) (*repo.IndexFile, error) {
 	hClient.lock.Lock()
 	defer hClient.lock.Unlock()
+
+	if registry.IsOCI(repoEntry.URL) {
+		return &repo.IndexFile{
+			Entries: make(map[string]repo.ChartVersions),
+		}, nil
+	}
+
 	indexFilePath, err := hClient.UpdateChartRepo(repoEntry)
 	if err != nil {
 		return nil, err
@@ -600,14 +637,56 @@ func (hClient *HelmClient) FetchIndexYaml(repoEntry *repo.Entry) (*repo.IndexFil
 // since pulling from OCI Registry is still considered as an EXPERIMENTAL feature
 // we DO NOT support pulling charts by pulling OCI Artifacts from OCI Registry
 // NOTE consider using os.execCommand('helm pull') to reduce code complexity of offering compatibility since third-party plugins CANNOT be used as SDK
+// if unTar is true, no need to mkdir for destDir
+// if unTar is no, your need to mkdir for destDir yourself
 func (hClient *HelmClient) DownloadChart(repoEntry *repo.Entry, chartRef string, chartVersion string, destDir string, unTar bool) error {
 	hClient.lock.Lock()
 	defer hClient.lock.Unlock()
+
+	// download chart from ocr registry
+	if registry.IsOCI(repoEntry.URL) {
+		log.Infof("start download chart from oci registry, chartRef: %s", chartRef)
+		chartNameStr := strings.Split(chartRef, "/")
+		if len(chartNameStr) < 2 {
+			return fmt.Errorf("chart name is not valid")
+		}
+		chartRef = fmt.Sprintf("%s/%s", repoEntry.URL, chartNameStr[len(chartNameStr)-1])
+		return hClient.downloadOCIChart(repoEntry, chartRef, chartVersion, destDir, unTar)
+	}
+
 	_, err := hClient.UpdateChartRepo(repoEntry)
 	if err != nil {
-		return nil
+		return err
 	}
 	pull := action.NewPullWithOpts(action.WithConfig(&action.Configuration{}))
+	pull.Password = repoEntry.Username
+	pull.Username = repoEntry.Password
+	pull.Version = chartVersion
+	pull.Settings = generalSettings
+	pull.DestDir = destDir
+	pull.UntarDir = destDir
+	pull.Untar = unTar
+	_, err = pull.Run(chartRef)
+	return err
+}
+
+func (hClient *HelmClient) downloadOCIChart(repoEntry *repo.Entry, chartRef string, chartVersion string, destDir string, unTar bool) error {
+	pullConfig := &action.Configuration{}
+	var err error
+	pullConfig.RegistryClient, err = registry.NewClient(
+		registry.ClientOptEnableCache(true),
+		registry.ClientOptDebug(true),
+		registry.ClientOptWriter(os.Stdout),
+	)
+	if err != nil {
+		return err
+	}
+	hostUrl := strings.TrimPrefix(repoEntry.URL, fmt.Sprintf("%s://", registry.OCIScheme))
+	err = pullConfig.RegistryClient.Login(hostUrl, registry.LoginOptBasicAuth(repoEntry.Username, repoEntry.Password))
+	if err != nil {
+		return err
+	}
+	pull := action.NewPullWithOpts(action.WithConfig(pullConfig))
 	pull.Password = repoEntry.Username
 	pull.Username = repoEntry.Password
 	pull.Version = chartVersion
@@ -659,6 +738,27 @@ func (hClient *HelmClient) pushChartMuseum(repoEntry *repo.Entry, chartPath stri
 	return nil
 }
 
+func (hClient *HelmClient) pushOCIRegistry(repoEntry *repo.Entry, chartPath string) error {
+	pushConfig := &action.Configuration{}
+	var err error
+	pushConfig.RegistryClient, err = registry.NewClient(
+		registry.ClientOptEnableCache(true),
+		registry.ClientOptDebug(true),
+		registry.ClientOptWriter(os.Stdout),
+	)
+
+	hostUrl := strings.TrimPrefix(repoEntry.URL, fmt.Sprintf("%s://", registry.OCIScheme))
+	err = pushConfig.RegistryClient.Login(hostUrl, registry.LoginOptBasicAuth(repoEntry.Username, repoEntry.Password))
+	if err != nil {
+		return err
+	}
+
+	push := action.NewPushWithOpts(action.WithPushConfig(pushConfig))
+	push.Settings = generalSettings
+	_, err = push.Run(chartPath, repoEntry.URL)
+	return err
+}
+
 func getChartmuseumError(b []byte, code int) error {
 	var er struct {
 		Error string `json:"error"`
@@ -685,24 +785,51 @@ func handlePushResponse(resp *http.Response) error {
 func (hClient *HelmClient) PushChart(repoEntry *repo.Entry, chartPath string) error {
 	hClient.lock.Lock()
 	defer hClient.lock.Unlock()
-	_, err := hClient.UpdateChartRepo(repoEntry)
-	if err != nil {
-		return nil
-	}
 	repoUrl, err := url.Parse(repoEntry.URL)
 	if err != nil {
 		return fmt.Errorf("failed to parse repo url: %s, err: %w", repoEntry.URL, err)
 	}
 	if repoUrl.Scheme == "acr" {
 		return hClient.pushAcrChart(repoEntry, chartPath)
+	} else if repoUrl.Scheme == registry.OCIScheme {
+		return hClient.pushOCIRegistry(repoEntry, chartPath)
 	} else {
+		_, err := hClient.UpdateChartRepo(repoEntry)
+		if err != nil {
+			return err
+		}
 		return hClient.pushChartMuseum(repoEntry, chartPath)
 	}
 }
 
+func (hClient *HelmClient) GetChartValues(repoEntry *repo.Entry, projectName, releaseName, chartRepo, chartName, chartVersion string, isProduction bool) (string, error) {
+	chartRef := fmt.Sprintf("%s/%s", chartRepo, chartName)
+	localPath := config.LocalServicePathWithRevision(projectName, releaseName, chartVersion, isProduction)
+	// remove local file to untar
+	_ = os.RemoveAll(localPath)
+
+	err := hClient.DownloadChart(repoEntry, chartRef, chartVersion, localPath, true)
+	if err != nil {
+		return "", fmt.Errorf("failed to download chart, chartName: %s, chartRepo: %+v, err: %s", chartName, repoEntry.Name, err)
+	}
+
+	fsTree := os.DirFS(localPath)
+	valuesYAML, err := util.ReadValuesYAML(fsTree, chartName, log.SugaredLogger())
+	if err != nil {
+		return "", err
+	}
+
+	return string(valuesYAML), nil
+}
+
 // NOTE: When using this method, pay attention to whether restConfig is present in the original client.
 func (hClient *HelmClient) Clone() (*HelmClient, error) {
-	return NewClientFromRestConf(hClient.RestConfig, hClient.Namespace)
+	ret, err := NewClientFromRestConf(hClient.RestConfig, hClient.Namespace)
+	if err != nil {
+		return nil, err
+	}
+	ret.kubeClient = hClient.kubeClient
+	return ret, nil
 }
 
 // mergeInstallOptions merges values of the provided chart to helm install options used by the client.

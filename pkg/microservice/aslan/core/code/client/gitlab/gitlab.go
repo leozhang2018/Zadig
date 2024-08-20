@@ -21,10 +21,10 @@ import (
 
 	gogitlab "github.com/xanzy/go-gitlab"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/code/client"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/git/gitlab"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/client"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/git/gitlab"
 )
 
 type Config struct {
@@ -49,9 +49,10 @@ func (c *Config) Open(id int, logger *zap.SugaredLogger) (client.CodeHostClient,
 
 func (c *Client) ListBranches(opt client.ListOpt) ([]*client.Branch, error) {
 	bList, err := c.Client.ListBranches(opt.Namespace, opt.ProjectName, opt.Key, &gitlab.ListOptions{
-		Page:        opt.Page,
-		PerPage:     opt.PerPage,
-		NoPaginated: true,
+		Page:          opt.Page,
+		PerPage:       opt.PerPage,
+		NoPaginated:   true,
+		MatchBranches: opt.MatchBranches,
 	})
 	if err != nil {
 		return nil, err
@@ -87,7 +88,7 @@ func (c *Client) ListTags(opt client.ListOpt) ([]*client.Tag, error) {
 }
 
 func (c *Client) ListPrs(opt client.ListOpt) ([]*client.PullRequest, error) {
-	prs, err := c.Client.ListOpenedProjectMergeRequests(opt.Namespace, opt.ProjectName, opt.TargeBr, opt.Key, &gitlab.ListOptions{
+	prs, err := c.Client.ListOpenedProjectMergeRequests(opt.Namespace, opt.ProjectName, opt.TargetBranch, opt.Key, &gitlab.ListOptions{
 		Page:        opt.Page,
 		PerPage:     opt.PerPage,
 		NoPaginated: true,
@@ -160,6 +161,27 @@ func (c *Client) ListProjects(opt client.ListOpt) ([]*client.Project, error) {
 			Namespace:     o.Namespace.FullPath,
 			Description:   o.Description,
 			DefaultBranch: o.DefaultBranch,
+		})
+	}
+	return res, nil
+}
+
+func (c *Client) ListCommits(opt client.ListOpt) ([]*client.Commit, error) {
+	commits, err := c.Client.ListCommits(opt.Namespace, opt.ProjectName, opt.TargetBranch, &gitlab.ListOptions{
+		Page:        opt.Page,
+		PerPage:     opt.PerPage,
+		NoPaginated: true,
+	})
+	if err != nil {
+		return nil, e.ErrCodehostListCommits.AddDesc(err.Error())
+	}
+	var res []*client.Commit
+	for _, c := range commits {
+		res = append(res, &client.Commit{
+			ID:        c.ID,
+			Message:   c.Message,
+			CreatedAt: c.CreatedAt.Unix(),
+			Author:    c.AuthorName,
 		})
 	}
 	return res, nil

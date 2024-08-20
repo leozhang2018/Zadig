@@ -25,15 +25,17 @@ import (
 	"istio.io/client-go/pkg/apis/networking/v1alpha3"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	v1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	crClient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/setting"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
 )
 
 const (
@@ -98,7 +100,7 @@ func (c *IstioReleaseJobCtl) Run(ctx context.Context) {
 
 	cli, err := kubeclient.GetKubeClientSet(config.HubServerAddress(), c.jobTaskSpec.ClusterID)
 	if err != nil {
-		logError(c.job, fmt.Sprintf("failed to prepare istio client to do the resource update"), c.logger)
+		logError(c.job, "failed to prepare istio client to do the resource update", c.logger)
 		return
 	}
 	// initialize istio client
@@ -167,8 +169,19 @@ func (c *IstioReleaseJobCtl) Run(ctx context.Context) {
 		newDeployment.Annotations[WorkloadCreator] = "zadig-istio-release"
 
 		// edit the label of the new deployment so we could find it
+		if newDeployment.Labels == nil {
+			newDeployment.Labels = make(map[string]string)
+		}
 		newDeployment.Labels[ZadigIstioIdentifierLabel] = ZadigIstioLabelDuplicate
+
+		if newDeployment.Spec.Selector.MatchLabels == nil {
+			newDeployment.Spec.Selector.MatchLabels = make(map[string]string)
+		}
 		newDeployment.Spec.Selector.MatchLabels[ZadigIstioIdentifierLabel] = ZadigIstioLabelDuplicate
+
+		if newDeployment.Spec.Template.Labels == nil {
+			newDeployment.Spec.Template.Labels = make(map[string]string)
+		}
 		newDeployment.Spec.Template.Labels[ZadigIstioIdentifierLabel] = ZadigIstioLabelDuplicate
 		// edit the image of the new deployment
 		containerList := make([]corev1.Container, 0)
@@ -230,22 +243,45 @@ func (c *IstioReleaseJobCtl) Run(ctx context.Context) {
 		})
 
 		newDestinationRuleName := fmt.Sprintf(ServiceDestinationRuleTemplate, c.jobTaskSpec.Targets.WorkloadName)
-		targetDestinationRule := &v1alpha3.DestinationRule{
-			ObjectMeta: v1.ObjectMeta{
-				Name: newDestinationRuleName,
-			},
-			Spec: networkingv1alpha3.DestinationRule{
+
+		c.ack()
+		destinationRule, err := istioClient.DestinationRules(c.jobTaskSpec.Namespace).Get(context.TODO(), newDestinationRuleName, v1.GetOptions{})
+		if err == nil {
+			// Found destination rule, update it
+			c.Infof("Has found Destination Rule `%s` in ns `%s` and just update it.", newDestinationRuleName, c.jobTaskSpec.Namespace)
+
+			destinationRule.Spec = networkingv1alpha3.DestinationRule{
 				Host:    c.jobTaskSpec.Targets.Host,
 				Subsets: subsetList,
-			},
-		}
+			}
+			_, err = istioClient.DestinationRules(c.jobTaskSpec.Namespace).Update(context.TODO(), destinationRule, v1.UpdateOptions{})
+			if err != nil {
+				c.Errorf("failed to create new destination rule: %s, error: %s", newDestinationRuleName, err)
+				return
+			}
+		} else {
+			if !apierrors.IsNotFound(err) {
+				c.Errorf("failed to get Destination Rule `%s` in ns `%s`, err: %v", newDestinationRuleName, c.jobTaskSpec.Namespace, err)
+				return
+			}
 
-		c.Infof("Creating new Destination Rule: %s", newDestinationRuleName)
-		c.ack()
-		_, err = istioClient.DestinationRules(c.jobTaskSpec.Namespace).Create(context.TODO(), targetDestinationRule, v1.CreateOptions{})
-		if err != nil {
-			c.Errorf("failed to create new destination rule: %s, error: %s", newDestinationRuleName, err)
-			return
+			c.Infof("Creating new Destination Rule: %s", newDestinationRuleName)
+
+			targetDestinationRule := &v1alpha3.DestinationRule{
+				ObjectMeta: v1.ObjectMeta{
+					Name: newDestinationRuleName,
+				},
+				Spec: networkingv1alpha3.DestinationRule{
+					Host:    c.jobTaskSpec.Targets.Host,
+					Subsets: subsetList,
+				},
+			}
+			// Not found destination rule, create it
+			_, err = istioClient.DestinationRules(c.jobTaskSpec.Namespace).Create(context.TODO(), targetDestinationRule, v1.CreateOptions{})
+			if err != nil {
+				c.Errorf("failed to create new destination rule: %s, error: %s", newDestinationRuleName, err)
+				return
+			}
 		}
 
 		// if a virtual service is provided, we simply get it and take its host information
@@ -289,6 +325,10 @@ func (c *IstioReleaseJobCtl) Run(ctx context.Context) {
 				c.Errorf("failed to parse route information in virtual service, error: %s", err)
 				return
 			}
+
+			if vs.Annotations == nil {
+				vs.Annotations = make(map[string]string)
+			}
 			vs.Annotations[ZadigIstioVirtualServiceLastAppliedRoutes] = string(routeByte)
 
 			vs.Spec.Http[0].Route = newHTTPRoutingRules
@@ -301,6 +341,7 @@ func (c *IstioReleaseJobCtl) Run(ctx context.Context) {
 			}
 		} else {
 			vsName := fmt.Sprintf(VirtualServiceNameTemplate, c.jobTaskSpec.Targets.WorkloadName)
+
 			// prepare the route destination
 			newHTTPRoutingRules := make([]*networkingv1alpha3.HTTPRouteDestination, 0)
 			newHTTPRoutingRules = append(newHTTPRoutingRules, &networkingv1alpha3.HTTPRouteDestination{
@@ -325,24 +366,50 @@ func (c *IstioReleaseJobCtl) Run(ctx context.Context) {
 				Route: newHTTPRoutingRules,
 			})
 
-			// create zadig's own virtual service
-			zadigVirtualService := &v1alpha3.VirtualService{
-				ObjectMeta: v1.ObjectMeta{
-					Name: vsName,
-				},
-				Spec: networkingv1alpha3.VirtualService{
+			vs, err := istioClient.VirtualServices(c.jobTaskSpec.Namespace).Get(context.TODO(), vsName, v1.GetOptions{})
+			if err != nil {
+				if !apierrors.IsNotFound(err) {
+					c.Errorf("failed to find virtual service of name: %s, error is: %s", vsName, err)
+					return
+				}
+
+				// if the virtual service does not exist, we create a new one
+
+				c.Infof("Creating virtual service: %s", vsName)
+				c.ack()
+
+				// create zadig's own virtual service
+				zadigVirtualService := &v1alpha3.VirtualService{
+					ObjectMeta: v1.ObjectMeta{
+						Name: vsName,
+					},
+					Spec: networkingv1alpha3.VirtualService{
+						Hosts: []string{c.jobTaskSpec.Targets.Host},
+						Http:  httpRoutes,
+					},
+				}
+
+				_, err := istioClient.VirtualServices(c.jobTaskSpec.Namespace).Create(context.TODO(), zadigVirtualService, v1.CreateOptions{})
+				if err != nil {
+					c.Errorf("failed to create virtual service: %s, err: %v", vsName, err)
+					return
+				}
+			} else {
+				// if the virtual service exists, we simply update it
+				c.Infof("Updating virtual service: %s", vsName)
+				c.ack()
+
+				// create zadig's own virtual service
+				vs.Spec = networkingv1alpha3.VirtualService{
 					Hosts: []string{c.jobTaskSpec.Targets.Host},
 					Http:  httpRoutes,
-				},
-			}
+				}
 
-			c.Infof("Creating virtual service: %s")
-			c.ack()
-
-			_, err := istioClient.VirtualServices(c.jobTaskSpec.Namespace).Create(context.TODO(), zadigVirtualService, v1.CreateOptions{})
-			if err != nil {
-				c.Errorf("failed to create virtual service: %s, err: %", vsName, err)
-				return
+				_, err := istioClient.VirtualServices(c.jobTaskSpec.Namespace).Update(context.TODO(), vs, v1.UpdateOptions{})
+				if err != nil {
+					c.Errorf("failed to update virtual service: %s, err: %v", vsName, err)
+					return
+				}
 			}
 		}
 	} else {
@@ -518,4 +585,18 @@ func (c *IstioReleaseJobCtl) timeout() int64 {
 		c.jobTaskSpec.Timeout = c.jobTaskSpec.Timeout * 60
 	}
 	return c.jobTaskSpec.Timeout
+}
+
+func (c *IstioReleaseJobCtl) SaveInfo(ctx context.Context) error {
+	return mongodb.NewJobInfoColl().Create(context.TODO(), &commonmodels.JobInfo{
+		Type:                c.job.JobType,
+		WorkflowName:        c.workflowCtx.WorkflowName,
+		WorkflowDisplayName: c.workflowCtx.WorkflowDisplayName,
+		TaskID:              c.workflowCtx.TaskID,
+		ProductName:         c.workflowCtx.ProjectName,
+		StartTime:           c.job.StartTime,
+		EndTime:             c.job.EndTime,
+		Duration:            c.job.EndTime - c.job.StartTime,
+		Status:              string(c.job.Status),
+	})
 }

@@ -23,33 +23,155 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	svcservice "github.com/koderover/zadig/pkg/microservice/aslan/core/service/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	svcservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/service/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func ListHelmServices(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
-	ctx.Resp, ctx.Err = svcservice.ListHelmServices(c.Param("productName"), ctx.Logger)
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Param("productName")
+	production := c.Query("production") == "true"
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionService.View {
+				ctx.UnAuthorized = true
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Service.View {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	if production {
+		err = commonutil.CheckZadigProfessionalLicense()
+		if err != nil {
+			ctx.Err = err
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = svcservice.ListHelmServices(projectKey, production, ctx.Logger)
 }
 
 func GetHelmServiceModule(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Param("productName")
+	production := c.Query("production") == "true"
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionService.View {
+				ctx.UnAuthorized = true
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Service.View {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	if production {
+		err = commonutil.CheckZadigProfessionalLicense()
+		if err != nil {
+			ctx.Err = err
+			return
+		}
+	}
+
 	revision, err := strconv.ParseInt(c.DefaultQuery("revision", "0"), 10, 64)
 	if err != nil {
 		ctx.Err = e.ErrInvalidParam.AddDesc("invalid revision number")
 		return
 	}
-	ctx.Resp, ctx.Err = svcservice.GetHelmServiceModule(c.Param("serviceName"), c.Param("productName"), revision, ctx.Logger)
+	ctx.Resp, ctx.Err = svcservice.GetHelmServiceModule(c.Param("serviceName"), projectKey, revision, production, ctx.Logger)
 }
 
 func GetFilePath(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Param("productName")
+	production := c.Query("production") == "true"
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionService.View {
+				ctx.UnAuthorized = true
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Service.View {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	if production {
+		err = commonutil.CheckZadigProfessionalLicense()
+		if err != nil {
+			ctx.Err = err
+			return
+		}
+	}
+
 	revision := int64(0)
-	var err error
 	if len(c.Query("revision")) > 0 {
 		revision, err = strconv.ParseInt(c.Query("revision"), 10, 64)
 	}
@@ -57,43 +179,131 @@ func GetFilePath(c *gin.Context) {
 		ctx.Err = e.ErrInvalidParam.AddDesc("invalid revision number")
 		return
 	}
-	ctx.Resp, ctx.Err = svcservice.GetFilePath(c.Param("serviceName"), c.Param("productName"), revision, c.Query("dir"), ctx.Logger)
+	ctx.Resp, ctx.Err = svcservice.GetFilePath(c.Param("serviceName"), projectKey, revision, c.Query("dir"), production, ctx.Logger)
 }
 
 func GetFileContent(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Param("productName")
+	production := c.Query("production") == "true"
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionService.View {
+				ctx.UnAuthorized = true
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Service.View {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	if production {
+		err = commonutil.CheckZadigProfessionalLicense()
+		if err != nil {
+			ctx.Err = err
+			return
+		}
+	}
+
 	param := new(svcservice.GetFileContentParam)
-	err := c.ShouldBindQuery(param)
+	err = c.ShouldBindQuery(param)
 	if err != nil {
 		ctx.Err = e.ErrInvalidParam.AddErr(err)
 		return
 	}
 
-	ctx.Resp, ctx.Err = svcservice.GetFileContent(c.Param("serviceName"), c.Param("productName"), param, ctx.Logger)
+	ctx.Resp, ctx.Err = svcservice.GetFileContent(c.Param("serviceName"), projectKey, param, production, ctx.Logger)
 }
 
 func UpdateFileContent(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	production := c.Query("production") == "true"
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionService.Edit {
+				ctx.UnAuthorized = true
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Service.Edit {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	if production {
+		err = commonutil.CheckZadigProfessionalLicense()
+		if err != nil {
+			ctx.Err = err
+			return
+		}
+	}
+
 	param := new(svcservice.HelmChartEditInfo)
-	err := c.ShouldBind(param)
+	err = c.ShouldBind(param)
 	if err != nil {
 		ctx.Err = e.ErrInvalidParam.AddErr(err)
 		return
 	}
 
-	ctx.Err = svcservice.EditFileContent(c.Param("serviceName"), c.Query("projectName"), ctx.UserName, ctx.RequestID, param, ctx.Logger)
+	param.Production = production
+	ctx.Err = svcservice.EditFileContent(c.Param("serviceName"), projectKey, ctx.UserName, ctx.RequestID, param, ctx.Logger)
 }
 
 func CreateOrUpdateHelmService(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	projectName := c.Query("projectName")
-	if projectName == "" {
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	if projectKey == "" {
 		ctx.Err = e.ErrInvalidParam.AddDesc("projectName can't be nil")
 		return
 	}
@@ -105,18 +315,60 @@ func CreateOrUpdateHelmService(c *gin.Context) {
 	}
 	args.CreatedBy, args.RequestID = ctx.UserName, ctx.RequestID
 
-	bs, _ := json.Marshal(args)
-	internalhandler.InsertOperationLog(c, ctx.UserName, projectName, "新增", "项目管理-服务", fmt.Sprintf("服务名称:%s", args.Name), string(bs), ctx.Logger)
+	production := c.Query("production") == "true"
+	detail := "项目管理-服务"
+	if production {
+		detail = "项目管理-生产服务"
+	}
 
-	ctx.Resp, ctx.Err = svcservice.CreateOrUpdateHelmService(projectName, args, false, ctx.Logger)
+	bs, _ := json.Marshal(args)
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "新增", detail, fmt.Sprintf("服务名称:%s", args.Name), string(bs), ctx.Logger)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionService.Create {
+				ctx.UnAuthorized = true
+				return
+			}
+
+			err = commonutil.CheckZadigProfessionalLicense()
+			if err != nil {
+				ctx.Err = err
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Service.Create {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	args.Production = production
+	ctx.Resp, ctx.Err = svcservice.CreateOrUpdateHelmService(projectKey, args, false, ctx.Logger)
 }
 
 func UpdateHelmService(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	projectName := c.Query("projectName")
-	if projectName == "" {
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	if projectKey == "" {
 		ctx.Err = e.ErrInvalidParam.AddDesc("projectName can't be nil")
 		return
 	}
@@ -128,18 +380,60 @@ func UpdateHelmService(c *gin.Context) {
 	}
 	args.CreatedBy, args.RequestID = ctx.UserName, ctx.RequestID
 
-	bs, _ := json.Marshal(args)
-	internalhandler.InsertOperationLog(c, ctx.UserName, projectName, "更新", "项目管理-服务", fmt.Sprintf("服务名称:%s", args.Name), string(bs), ctx.Logger)
+	production := c.Query("production") == "true"
+	detail := "项目管理-服务"
+	if production {
+		detail = "项目管理-生产服务"
+	}
 
-	ctx.Resp, ctx.Err = svcservice.CreateOrUpdateHelmService(projectName, args, true, ctx.Logger)
+	bs, _ := json.Marshal(args)
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "更新", detail, fmt.Sprintf("服务名称:%s", args.Name), string(bs), ctx.Logger)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionService.Edit {
+				ctx.UnAuthorized = true
+				return
+			}
+
+			err = commonutil.CheckZadigProfessionalLicense()
+			if err != nil {
+				ctx.Err = err
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Service.Edit {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	args.Production = production
+	ctx.Resp, ctx.Err = svcservice.CreateOrUpdateHelmService(projectKey, args, true, ctx.Logger)
 }
 
 func CreateOrUpdateBulkHelmServices(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	projectName := c.Query("projectName")
-	if projectName == "" {
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	if projectKey == "" {
 		ctx.Err = e.ErrInvalidParam.AddDesc("projectName can't be nil")
 		return
 	}
@@ -151,8 +445,43 @@ func CreateOrUpdateBulkHelmServices(c *gin.Context) {
 	}
 	args.CreatedBy, args.RequestID = ctx.UserName, ctx.RequestID
 
-	bs, _ := json.Marshal(args)
-	internalhandler.InsertOperationLog(c, ctx.UserName, c.Query("projectName"), "新增", "项目管理-服务", "", string(bs), ctx.Logger)
+	production := c.Query("production") == "true"
+	detail := "项目管理-服务"
+	if production {
+		detail = "项目管理-生产服务"
+	}
 
-	ctx.Resp, ctx.Err = svcservice.CreateOrUpdateBulkHelmService(projectName, args, false, ctx.Logger)
+	bs, _ := json.Marshal(args)
+	internalhandler.InsertOperationLog(c, ctx.UserName, c.Query("projectName"), "新增", detail, "", string(bs), ctx.Logger)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionService.Create {
+				ctx.UnAuthorized = true
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Service.Create {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	if production {
+		err = commonutil.CheckZadigProfessionalLicense()
+		if err != nil {
+			ctx.Err = err
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = svcservice.CreateOrUpdateBulkHelmService(projectKey, args, false, ctx.Logger)
 }

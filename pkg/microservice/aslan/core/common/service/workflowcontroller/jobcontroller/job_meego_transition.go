@@ -19,10 +19,10 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/tool/meego"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/tool/meego"
 	crClient "sigs.k8s.io/controller-runtime/pkg/client"
 )
 
@@ -55,7 +55,7 @@ func (c *MeegoTransitionJobCtl) Clean(ctx context.Context) {
 
 func (c *MeegoTransitionJobCtl) Run(ctx context.Context) {
 	// since this runs in aslan, we will connect directly to the database to retrieve meego integration info
-	meegoInfo, err := commonrepo.NewProjectManagementColl().GetMeego()
+	meegoInfo, err := commonrepo.NewProjectManagementColl().GetMeegoByID(c.jobTaskSpec.MeegoID)
 	if err != nil {
 		logError(c.job, err.Error(), c.logger)
 		c.job.Status = config.StatusFailed
@@ -79,4 +79,18 @@ func (c *MeegoTransitionJobCtl) Run(ctx context.Context) {
 		task.Status = string(config.StatusPassed)
 	}
 	c.job.Status = config.StatusPassed
+}
+
+func (c *MeegoTransitionJobCtl) SaveInfo(ctx context.Context) error {
+	return commonrepo.NewJobInfoColl().Create(context.TODO(), &commonmodels.JobInfo{
+		Type:                c.job.JobType,
+		WorkflowName:        c.workflowCtx.WorkflowName,
+		WorkflowDisplayName: c.workflowCtx.WorkflowDisplayName,
+		TaskID:              c.workflowCtx.TaskID,
+		ProductName:         c.workflowCtx.ProjectName,
+		StartTime:           c.job.StartTime,
+		EndTime:             c.job.EndTime,
+		Duration:            c.job.EndTime - c.job.StartTime,
+		Status:              string(c.job.Status),
+	})
 }

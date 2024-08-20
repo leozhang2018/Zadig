@@ -19,10 +19,10 @@ package task
 import (
 	"fmt"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type Build struct {
@@ -62,7 +62,7 @@ type Build struct {
 	EnvHostNames map[string][]string `bson:"env_host_names,omitempty"        json:"env_host_names,omitempty"`
 	ArtifactInfo *ArtifactInfo       `bson:"artifact_info,omitempty"         json:"artifact_info,omitempty"`
 	ClusterID    string              `bson:"cluster_id,omitempty"            json:"cluster_id,omitempty"`
-
+	StrategyID   string              `bson:"strategy_id,omitempty"           json:"strategy_id,omitempty"`
 	// New since V1.10.0.
 	Cache        types.Cache        `bson:"cache"                           json:"cache"`
 	CacheEnable  bool               `bson:"cache_enable"                    json:"cache_enable"`

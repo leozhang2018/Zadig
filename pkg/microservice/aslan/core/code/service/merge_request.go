@@ -19,13 +19,13 @@ package service
 import (
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/code/client"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/code/client/open"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/client"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/client/open"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
 )
 
-func CodeHostListPRs(codeHostID int, projectName, namespace, targetBr string, key string, page, perPage int, log *zap.SugaredLogger) ([]*client.PullRequest, error) {
+func CodeHostListPRs(codeHostID int, projectName, namespace, targetBranch string, key string, page, perPage int, log *zap.SugaredLogger) ([]*client.PullRequest, error) {
 	ch, err := systemconfig.New().GetCodeHost(codeHostID)
 	if err != nil {
 		log.Errorf("get code host info err:%s", err)
@@ -40,12 +40,12 @@ func CodeHostListPRs(codeHostID int, projectName, namespace, targetBr string, ke
 		return nil, err
 	}
 	prs, err := cli.ListPrs(client.ListOpt{
-		Namespace:   namespace,
-		ProjectName: projectName,
-		Key:         key,
-		Page:        page,
-		PerPage:     perPage,
-		TargeBr:     targetBr,
+		Namespace:    namespace,
+		ProjectName:  projectName,
+		Key:          key,
+		Page:         page,
+		PerPage:      perPage,
+		TargetBranch: targetBranch,
 	})
 	if err != nil {
 		log.Errorf("list prs err:%s", err)

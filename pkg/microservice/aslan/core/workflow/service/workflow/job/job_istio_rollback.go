@@ -17,12 +17,14 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 type IstioRollBackJob struct {
@@ -45,12 +47,51 @@ func (j *IstioRollBackJob) SetPreset() error {
 	if err := commonmodels.IToi(j.job.Spec, j.spec); err != nil {
 		return err
 	}
+	j.job.Spec = j.spec
+	return nil
+}
+
+func (j *IstioRollBackJob) SetOptions() error {
+	j.spec = &commonmodels.IstioRollBackJobSpec{}
+	if err := commonmodels.IToi(j.job.Spec, j.spec); err != nil {
+		return err
+	}
+
+	newTargets := make([]*commonmodels.IstioJobTarget, 0)
+
+	originalWorkflow, err := commonrepo.NewWorkflowV4Coll().Find(j.workflow.Name)
+	if err != nil {
+		log.Errorf("Failed to find original workflow to set options, error: %s", err)
+	}
+
+	originalSpec := new(commonmodels.IstioRollBackJobSpec)
+	found := false
+	for _, stage := range originalWorkflow.Stages {
+		if !found {
+			for _, job := range stage.Jobs {
+				if job.Name == j.job.Name && job.JobType == j.job.JobType {
+					if err := commonmodels.IToi(job.Spec, originalSpec); err != nil {
+						return err
+					}
+					found = true
+					break
+				}
+			}
+		} else {
+			break
+		}
+	}
+
+	if !found {
+		return fmt.Errorf("failed to find the original workflow: %s", j.workflow.Name)
+	}
+
 	kubeClient, err := kubeclient.GetKubeClient(config.HubServerAddress(), j.spec.ClusterID)
 	if err != nil {
 		return fmt.Errorf("failed to get kube client, err: %v", err)
 	}
-	newTargets := make([]*commonmodels.IstioJobTarget, 0)
-	for _, target := range j.spec.Targets {
+
+	for _, target := range originalSpec.Targets {
 		deployment, found, err := getter.GetDeployment(j.spec.Namespace, target.WorkloadName, kubeClient)
 		if err != nil || !found {
 			log.Errorf("deployment %s not found in namespace: %s", target.WorkloadName, j.spec.Namespace)
@@ -88,8 +129,24 @@ func (j *IstioRollBackJob) SetPreset() error {
 		}
 
 	}
-	j.spec.Targets = newTargets
+
+	j.spec.TargetOptions = newTargets
 	j.job.Spec = j.spec
+	return nil
+}
+
+func (j *IstioRollBackJob) ClearSelectionField() error {
+	j.spec = &commonmodels.IstioRollBackJobSpec{}
+	if err := commonmodels.IToi(j.job.Spec, j.spec); err != nil {
+		return err
+	}
+
+	j.spec.Targets = make([]*commonmodels.IstioJobTarget, 0)
+	j.job.Spec = j.spec
+	return nil
+}
+
+func (j *IstioRollBackJob) UpdateWithLatestSetting() error {
 	return nil
 }
 
@@ -126,6 +183,10 @@ func (j *IstioRollBackJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, error)
 		jobTask := &commonmodels.JobTask{
 			Name:    jobNameFormat(j.job.Name + "-" + target.WorkloadName),
 			JobType: string(config.JobIstioRollback),
+			JobInfo: map[string]string{
+				JobNameKey:      j.job.Name,
+				"workload_name": target.WorkloadName,
+			},
 			Spec: &commonmodels.JobIstioRollbackSpec{
 				Namespace:   j.spec.Namespace,
 				ClusterID:   j.spec.ClusterID,
@@ -134,6 +195,7 @@ func (j *IstioRollBackJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, error)
 				Targets:     target,
 				Timeout:     j.spec.Timeout,
 			},
+			ErrorPolicy: j.job.ErrorPolicy,
 		}
 		resp = append(resp, jobTask)
 	}
@@ -142,5 +204,9 @@ func (j *IstioRollBackJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, error)
 }
 
 func (j *IstioRollBackJob) LintJob() error {
+	if err := util.CheckZadigProfessionalLicense(); err != nil {
+		return e.ErrLicenseInvalid.AddDesc("")
+	}
+
 	return nil
 }

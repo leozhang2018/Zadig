@@ -17,25 +17,63 @@ limitations under the License.
 package handler
 
 import (
-	"github.com/gin-gonic/gin"
+	"fmt"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/environment/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
+	"github.com/gin-gonic/gin"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/environment/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
-//func ConfigDiff(c *gin.Context) {
-//	ctx := internalhandler.NewContext(c)
-//	defer func() { internalhandler.JSONResponse(c, ctx) }()
-//	envName := c.Query("envName")
-//
-//	ctx.Resp, ctx.Err = service.ConfigDiff(envName, c.Param("productName"), c.Param("serviceName"), c.Param("configName"), ctx.Logger)
-//	return
-//}
-
 func ServiceDiff(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
-	envName := c.Query("envName")
 
-	ctx.Resp, ctx.Err = service.GetServiceDiff(envName, c.Param("productName"), c.Param("serviceName"), ctx.Logger)
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	envName := c.Query("envName")
+	projectKey := c.Param("productName")
+	production := c.Query("production") == "true"
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionEnv.View {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionView)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+
+			err = commonutil.CheckZadigProfessionalLicense()
+			if err != nil {
+				ctx.Err = err
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Env.View {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionView)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+		}
+	}
+
+	ctx.Resp, ctx.Err = service.GetServiceDiff(envName, projectKey, c.Param("serviceName"), production, ctx.Logger)
 }

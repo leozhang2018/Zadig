@@ -25,12 +25,14 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/gin-gonic/gin/binding"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/system/service"
-	systemservice "github.com/koderover/zadig/pkg/microservice/aslan/core/system/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/service"
+	systemservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/service"
+	vmservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/vm/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 type batchCreatePMArgs struct {
@@ -64,8 +66,17 @@ func ListLabels(c *gin.Context) {
 }
 
 func CreatePMHost(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
 
 	args := new(commonmodels.PrivateKey)
 	data, err := c.GetRawData()
@@ -77,19 +88,40 @@ func CreatePMHost(c *gin.Context) {
 	}
 	internalhandler.InsertOperationLog(c, ctx.UserName, "", "新增", "项目资源-主机管理", fmt.Sprintf("hostName:%s ip:%s", args.Name, args.IP), string(data), ctx.Logger)
 
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(data))
 	if err := c.ShouldBindWith(&args, binding.JSON); err != nil {
 		ctx.Err = e.ErrInvalidParam.AddDesc("invalid physical machine args")
 		return
 	}
 	args.UpdateBy = ctx.UserName
-	args.ProjectName = c.Query("projectName")
-	ctx.Err = systemservice.CreatePrivateKey(args, ctx.Logger)
+	args.ProjectName = projectKey
+	ctx.Resp, ctx.Err = systemservice.CreatePrivateKey(args, ctx.Logger)
 }
 
 func BatchCreatePMHost(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
 
 	args := new(batchCreatePMArgs)
 	data, err := c.GetRawData()
@@ -99,22 +131,41 @@ func BatchCreatePMHost(c *gin.Context) {
 	if err = json.Unmarshal(data, args); err != nil {
 		log.Errorf("BatchCreatePMHost json.Unmarshal err : %v", err)
 	}
-	internalhandler.InsertOperationLog(c, ctx.UserName, "", "批量新增", "项目资源-主机管理", "", string(data), ctx.Logger)
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "批量新增", "项目资源-主机管理", "", string(data), ctx.Logger)
 	c.Request.Body = io.NopCloser(bytes.NewBuffer(data))
 	if err := c.ShouldBindJSON(&args); err != nil {
 		ctx.Err = e.ErrInvalidParam.AddDesc("invalid physical machine args")
 		return
 	}
 
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
 	for _, pmArg := range args.Data {
-		pmArg.ProjectName = c.Query("projectName")
+		pmArg.ProjectName = projectKey
 	}
 	ctx.Err = systemservice.BatchCreatePrivateKey(args.Data, args.Option, ctx.UserName, ctx.Logger)
 }
 
 func UpdatePMHost(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	args := new(commonmodels.PrivateKey)
 	data, err := c.GetRawData()
@@ -134,13 +185,191 @@ func UpdatePMHost(c *gin.Context) {
 	}
 	args.UpdateBy = ctx.UserName
 
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[args.ProjectName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[args.ProjectName].IsProjectAdmin {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
 	ctx.Err = systemservice.UpdatePrivateKey(c.Param("id"), args, ctx.Logger)
 }
 
+// TODO: add authorization to this
 func DeletePMHost(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	host, err := commonrepo.NewPrivateKeyColl().Find(commonrepo.FindPrivateKeyOption{
+		ID: c.Param("id"),
+	})
+	if err != nil {
+		ctx.Err = e.ErrDeletePrivateKey.AddErr(fmt.Errorf("find pm host from db error: %v", err))
+		return
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[host.ProjectName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[host.ProjectName].IsProjectAdmin {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	internalhandler.InsertOperationLog(c, ctx.UserName, "", "删除", "项目资源-主机管理", fmt.Sprintf("id:%s", c.Param("id")), "", ctx.Logger)
 	ctx.Err = systemservice.DeletePrivateKey(c.Param("id"), ctx.UserName, ctx.Logger)
+}
+
+func GetAgentAccessCmd(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	vmID := c.Param("id")
+	if vmID == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid vm id")
+		return
+	}
+
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "接入主机", "项目资源-主机管理", vmID, "", ctx.Logger)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = vmservice.GetAgentAccessCmd(vmID, ctx.Logger)
+}
+
+func OfflineVM(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	vmID := c.Param("id")
+	if vmID == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid vm id")
+		return
+	}
+
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "下线主机", "项目资源-主机管理", vmID, "", ctx.Logger)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	ctx.Err = vmservice.OfflineVM(vmID, ctx.UserName, ctx.Logger)
+}
+
+func RecoveryVM(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	vmID := c.Param("id")
+	if vmID == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid vm id")
+		return
+	}
+
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "恢复主机", "项目资源-主机管理", vmID, "", ctx.Logger)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = vmservice.RecoveryVM(vmID, ctx.UserName, ctx.Logger)
+}
+
+func UpgradeAgent(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	vmID := c.Param("id")
+	if vmID == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid vm id")
+		return
+	}
+
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "组件升级", "项目资源-主机管理", vmID, "", ctx.Logger)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = vmservice.UpgradeAgent(vmID, ctx.UserName, ctx.Logger)
 }

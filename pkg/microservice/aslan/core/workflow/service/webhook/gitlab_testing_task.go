@@ -20,16 +20,16 @@ import (
 	"regexp"
 	"strconv"
 
-	multierror "github.com/hashicorp/go-multierror"
-	gitlab "github.com/xanzy/go-gitlab"
+	"github.com/hashicorp/go-multierror"
+	"github.com/xanzy/go-gitlab"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/scmnotify"
-	testingservice "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/testing/service"
-	"github.com/koderover/zadig/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/scmnotify"
+	testingservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/testing/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 type gitEventMatcherForTesting interface {
@@ -169,7 +169,7 @@ func TriggerTestByGitlabEvent(event interface{}, baseURI, requestID string, log 
 					mErr = multierror.Append(mErr, err)
 				} else if matches {
 					log.Infof("event match hook %v of %s", item.MainRepo, testing.Name)
-					var mergeRequestID, commitID, ref string
+					var mergeRequestID, commitID, ref, eventType string
 					var prID int
 					autoCancelOpt := &AutoCancelOpt{
 						TaskType: config.TestType,
@@ -178,18 +178,22 @@ func TriggerTestByGitlabEvent(event interface{}, baseURI, requestID string, log 
 					}
 					switch ev := event.(type) {
 					case *gitlab.MergeEvent:
+						eventType = EventTypePR
 						mergeRequestID = strconv.Itoa(ev.ObjectAttributes.IID)
 						commitID = ev.ObjectAttributes.LastCommit.ID
 						prID = ev.ObjectAttributes.IID
 						autoCancelOpt.MergeRequestID = mergeRequestID
 						autoCancelOpt.CommitID = commitID
-						autoCancelOpt.Type = AutoCancelPR
+						autoCancelOpt.Type = eventType
 					case *gitlab.PushEvent:
+						eventType = EventTypePush
 						ref = ev.Ref
 						commitID = ev.After
 						autoCancelOpt.Ref = ref
 						autoCancelOpt.CommitID = commitID
-						autoCancelOpt.Type = AutoCancelPush
+						autoCancelOpt.Type = eventType
+					case *gitlab.TagEvent:
+						eventType = EventTypeTag
 					}
 					if autoCancelOpt.Type != "" {
 						err := AutoCancelTask(autoCancelOpt, log)
@@ -198,29 +202,31 @@ func TriggerTestByGitlabEvent(event interface{}, baseURI, requestID string, log 
 							mErr = multierror.Append(mErr, err)
 						}
 						// 发送本次commit的通知
-						if autoCancelOpt.Type == AutoCancelPR && notification == nil {
+						if autoCancelOpt.Type == EventTypePR && notification == nil {
 							notification, _ = scmnotify.NewService().SendInitWebhookComment(
 								item.MainRepo, prID, baseURI, false, true, false, false, log,
 							)
 						}
 					}
 
-					if notification != nil {
-						item.TestArgs.NotificationID = notification.ID.Hex()
-					}
-
 					args := matcher.UpdateTaskArgs(item.TestArgs, requestID)
 					args.MergeRequestID = mergeRequestID
 					args.Ref = ref
+					args.EventType = eventType
 					args.CommitID = commitID
 					args.Source = setting.SourceFromGitlab
 					args.CodehostID = item.MainRepo.CodehostID
 					args.RepoOwner = item.MainRepo.RepoOwner
 					args.RepoNamespace = item.MainRepo.GetRepoNamespace()
 					args.RepoName = item.MainRepo.RepoName
+					args.Branch = item.MainRepo.Branch
+					if notification != nil {
+						item.TestArgs.NotificationID = notification.ID.Hex()
+						args.NotificationID = notification.ID.Hex()
+					}
 
 					// 3. create task with args
-					if resp, err := testingservice.CreateTestTask(args, log); err != nil {
+					if resp, err := testingservice.CreateTestTaskV2(args, "webhook", "", "", log); err != nil {
 						log.Errorf("failed to create testing task when receive event %v due to %v ", event, err)
 						mErr = multierror.Append(mErr, err)
 					} else {

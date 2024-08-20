@@ -19,18 +19,16 @@ package service
 import (
 	"go.uber.org/zap"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/tool/crypto"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func CreateExternalSystem(args *ExternalSystemDetail, log *zap.SugaredLogger) error {
 	err := commonrepo.NewExternalSystemColl().Create(&commonmodels.ExternalSystem{
-		Name:     args.Name,
-		Server:   args.Server,
-		APIToken: args.APIToken,
+		Name:    args.Name,
+		Server:  args.Server,
+		Headers: args.Headers,
 	})
 	if err != nil {
 		log.Errorf("Create external system error: %s", err)
@@ -45,21 +43,13 @@ func ListExternalSystem(encryptedKey string, pageNum, pageSize int64, log *zap.S
 		log.Errorf("Failed to list external system from db, the error is: %s", err)
 		return nil, 0, err
 	}
-	aesKey, err := service.GetAesKeyFromEncryptedKey(encryptedKey, log)
-	if err != nil {
-		return nil, 0, err
-	}
 	systemList := make([]*ExternalSystemDetail, 0)
 	for _, item := range resp {
-		apiToken, err := crypto.AesEncryptByKey(item.APIToken, aesKey.PlainText)
-		if err != nil {
-			return nil, 0, err
-		}
 		systemList = append(systemList, &ExternalSystemDetail{
-			ID:       item.ID.Hex(),
-			Name:     item.Name,
-			Server:   item.Server,
-			APIToken: apiToken,
+			ID:      item.ID.Hex(),
+			Name:    item.Name,
+			Server:  item.Server,
+			Headers: item.Headers,
 		})
 	}
 	return systemList, length, nil
@@ -76,6 +66,7 @@ func GetExternalSystemDetail(id string, log *zap.SugaredLogger) (*ExternalSystem
 	resp.Name = externalSystem.Name
 	resp.Server = externalSystem.Server
 	resp.APIToken = externalSystem.APIToken
+	resp.Headers = externalSystem.Headers
 	return resp, nil
 }
 
@@ -83,9 +74,9 @@ func UpdateExternalSystem(id string, system *ExternalSystemDetail, log *zap.Suga
 	err := commonrepo.NewExternalSystemColl().Update(
 		id,
 		&commonmodels.ExternalSystem{
-			Name:     system.Name,
-			Server:   system.Server,
-			APIToken: system.APIToken,
+			Name:    system.Name,
+			Server:  system.Server,
+			Headers: system.Headers,
 		},
 	)
 	if err != nil {

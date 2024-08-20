@@ -32,19 +32,21 @@ import (
 	"github.com/otiai10/copy"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/config"
-	microserviceConfig "github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/command"
-	gitservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/git"
-	environmentservice "github.com/koderover/zadig/pkg/microservice/aslan/core/environment/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/service/service"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/gitee"
+	"github.com/koderover/zadig/v2/pkg/config"
+	microserviceConfig "github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/command"
+	gitservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/git"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/repository"
+	environmentservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/environment/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/service/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/gitee"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 func ProcessGiteeHook(payload []byte, req *http.Request, requestID string, log *zap.SugaredLogger) error {
@@ -79,17 +81,18 @@ func ProcessGiteeHook(payload []byte, req *http.Request, requestID string, log *
 			commonrepo.NewWebHookUserColl().Upsert(webhookUser)
 		}
 
+		// FIXME: this func maybe panic if any errors occurred, just like gitee token expired
 		if err := updateServiceTemplateByGiteeEvent(req.RequestURI, log); err != nil {
 			errorList = multierror.Append(errorList, err)
 		}
 		// build webhook
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err = TriggerWorkflowByGiteeEvent(event, baseURI, requestID, log); err != nil {
-				errorList = multierror.Append(errorList, err)
-			}
-		}()
+		//wg.Add(1)
+		//go func() {
+		//	defer wg.Done()
+		//	if err = TriggerWorkflowByGiteeEvent(event, baseURI, requestID, log); err != nil {
+		//		errorList = multierror.Append(errorList, err)
+		//	}
+		//}()
 
 		//test webhook
 		wg.Add(1)
@@ -118,13 +121,13 @@ func ProcessGiteeHook(payload []byte, req *http.Request, requestID string, log *
 		}
 
 		// build webhook
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err = TriggerWorkflowByGiteeEvent(event, baseURI, requestID, log); err != nil {
-				errorList = multierror.Append(errorList, err)
-			}
-		}()
+		//wg.Add(1)
+		//go func() {
+		//	defer wg.Done()
+		//	if err = TriggerWorkflowByGiteeEvent(event, baseURI, requestID, log); err != nil {
+		//		errorList = multierror.Append(errorList, err)
+		//	}
+		//}()
 
 		//test webhook
 		wg.Add(1)
@@ -144,13 +147,13 @@ func ProcessGiteeHook(payload []byte, req *http.Request, requestID string, log *
 		}()
 	case *gitee.TagPushEvent:
 		// build webhook
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			if err = TriggerWorkflowByGiteeEvent(event, baseURI, requestID, log); err != nil {
-				errorList = multierror.Append(errorList, err)
-			}
-		}()
+		//wg.Add(1)
+		//go func() {
+		//	defer wg.Done()
+		//	if err = TriggerWorkflowByGiteeEvent(event, baseURI, requestID, log); err != nil {
+		//		errorList = multierror.Append(errorList, err)
+		//	}
+		//}()
 
 		//test webhook
 		wg.Add(1)
@@ -174,98 +177,137 @@ func ProcessGiteeHook(payload []byte, req *http.Request, requestID string, log *
 }
 
 func updateServiceTemplateByGiteeEvent(uri string, log *zap.SugaredLogger) error {
-	serviceTmpls, err := GetGiteeServiceTemplates()
+	svcTmplsMap := map[bool][]*commonmodels.Service{}
+	serviceTmpls, err := GetGiteeTestingServiceTemplates()
 	if err != nil {
-		log.Errorf("failed to get gitee service templates, err: %s", err)
+		log.Errorf("failed to get gitee testing service templates, err: %s", err)
 		return err
 	}
+	svcTmplsMap[false] = serviceTmpls
+	productionServiceTmpls, err := GetGiteeProductionServiceTemplates()
+	if err != nil {
+		log.Errorf("failed to get gitee production service templates, err: %s", err)
+		return err
+	}
+	svcTmplsMap[true] = productionServiceTmpls
+
 	errs := &multierror.Error{}
-	for _, serviceTmpl := range serviceTmpls {
-		service, err := commonservice.GetServiceTemplate(serviceTmpl.ServiceName, serviceTmpl.Type, serviceTmpl.ProductName, setting.ProductStatusDeleting, serviceTmpl.Revision, log)
-		if err != nil {
-			log.Errorf("failed to get gitee service templates, err:%s", err)
-			errs = multierror.Append(errs, err)
-		}
-		detail, err := systemconfig.New().GetCodeHost(service.CodehostID)
-		if err != nil {
-			log.Errorf("failed to get codehost detail err:%s", err)
-			errs = multierror.Append(errs, err)
-		}
-		newRepoName := fmt.Sprintf("%s-new", service.RepoName)
-		err = command.RunGitCmds(detail, service.RepoOwner, service.GetRepoNamespace(), newRepoName, service.BranchName, "origin")
-		if err != nil {
-			log.Errorf("failed to run git cmds err:%s", err)
-			errs = multierror.Append(errs, err)
-		}
+	for production, serviceTmpls := range svcTmplsMap {
+		for _, serviceTmpl := range serviceTmpls {
+			serviceTmpl.Production = production
 
-		newBase, err := GetWorkspaceBasePath(newRepoName)
-		if err != nil {
-			errs = multierror.Append(errs, err)
-		}
+			service, err := commonservice.GetServiceTemplate(serviceTmpl.ServiceName, serviceTmpl.Type, serviceTmpl.ProductName, setting.ProductStatusDeleting, serviceTmpl.Revision, production, log)
+			if err != nil {
+				log.Errorf("failed to get gitee service templates, err:%s", err)
+				errs = multierror.Append(errs, err)
+			}
+			detail, err := systemconfig.New().GetCodeHost(service.CodehostID)
+			if err != nil {
+				log.Errorf("failed to get codehost detail err:%s", err)
+				errs = multierror.Append(errs, err)
+			}
+			newRepoName := fmt.Sprintf("%s-new", service.RepoName)
+			if (time.Now().Unix() - detail.UpdatedAt) >= 86000 {
+				token, err := gitee.RefreshAccessToken(detail.Address, detail.RefreshToken)
+				if err == nil {
+					detail.AccessToken = token.AccessToken
+					detail.RefreshToken = token.RefreshToken
+					detail.UpdatedAt = int64(token.CreatedAt)
 
-		oldBase, err := GetWorkspaceBasePath(service.RepoName)
-		if err != nil {
-			errs = multierror.Append(errs, err)
-			err = command.RunGitCmds(detail, service.RepoOwner, service.GetRepoNamespace(), service.RepoName, service.BranchName, "origin")
+					if err = systemconfig.New().UpdateCodeHost(detail.ID, detail); err != nil {
+						log.Errorf("failed to updateCodeHost err:%s", err)
+						errs = multierror.Append(errs, err)
+						return errs.ErrorOrNil()
+					}
+				} else {
+					log.Errorf("failed to refresh accessToken, err:%s", err)
+					errs = multierror.Append(errs, err)
+					return errs.ErrorOrNil()
+				}
+			}
+			err = command.RunGitCmds(detail, service.RepoOwner, service.GetRepoNamespace(), newRepoName, service.BranchName, "origin")
+			if err != nil {
+				log.Errorf("failed to run git cmds err:%s", err)
+				errs = multierror.Append(errs, err)
+			}
+
+			newBase, err := GetWorkspaceBasePath(newRepoName)
 			if err != nil {
 				errs = multierror.Append(errs, err)
 			}
-		}
 
-		filePath, err := os.Stat(path.Join(newBase, service.LoadPath))
-		if err != nil {
-			errs = multierror.Append(errs, err)
-		}
+			oldBase, err := GetWorkspaceBasePath(service.RepoName)
+			if err != nil {
+				errs = multierror.Append(errs, err)
+				err = command.RunGitCmds(detail, service.RepoOwner, service.GetRepoNamespace(), service.RepoName, service.BranchName, "origin")
+				if err != nil {
+					errs = multierror.Append(errs, err)
+				}
+			}
 
-		var newYamlContent string
-		var oldYamlContent string
-		if filePath.IsDir() {
-			if newFileContents, err := readAllFileContentUnderDir(path.Join(newBase, service.LoadPath)); err == nil {
-				newYamlContent = strings.Join(newFileContents, setting.YamlFileSeperator)
+			filePath, err := os.Stat(path.Join(newBase, service.LoadPath))
+			if err != nil {
+				errs = multierror.Append(errs, err)
+			}
+
+			var newYamlContent string
+			var oldYamlContent string
+			if filePath.IsDir() {
+				if newFileContents, err := readAllFileContentUnderDir(path.Join(newBase, service.LoadPath)); err == nil {
+					newYamlContent = util.JoinYamls(newFileContents)
+				} else {
+					errs = multierror.Append(errs, err)
+				}
+
+				if oldFileContents, err := readAllFileContentUnderDir(path.Join(oldBase, service.LoadPath)); err == nil {
+					oldYamlContent = util.JoinYamls(oldFileContents)
+				} else {
+					errs = multierror.Append(errs, err)
+				}
 			} else {
-				errs = multierror.Append(errs, err)
+				if contentBytes, err := ioutil.ReadFile(path.Join(newBase, service.LoadPath)); err == nil {
+					newYamlContent = string(contentBytes)
+				} else {
+					errs = multierror.Append(errs, err)
+				}
+
+				if contentBytes, err := ioutil.ReadFile(path.Join(oldBase, service.LoadPath)); err == nil {
+					oldYamlContent = string(contentBytes)
+				} else {
+					errs = multierror.Append(errs, err)
+				}
 			}
 
-			if oldFileContents, err := readAllFileContentUnderDir(path.Join(oldBase, service.LoadPath)); err == nil {
-				oldYamlContent = strings.Join(oldFileContents, setting.YamlFileSeperator)
+			if strings.Compare(newYamlContent, oldYamlContent) != 0 {
+				log.Infof("Started to sync service template %s from gitee %s", service.ServiceName, service.LoadPath)
+				service.CreateBy = "system"
+				service.Yaml = newYamlContent
+				if err := SyncServiceTemplateFromGitee(service, log); err != nil {
+					errs = multierror.Append(errs, err)
+				}
 			} else {
-				errs = multierror.Append(errs, err)
+				log.Infof("Service template %s from gitee %s is not affected, no sync", service.ServiceName, service.LoadPath)
 			}
-		} else {
-			if contentBytes, err := ioutil.ReadFile(path.Join(newBase, service.LoadPath)); err == nil {
-				newYamlContent = string(contentBytes)
-			} else {
-				errs = multierror.Append(errs, err)
-			}
-
-			if contentBytes, err := ioutil.ReadFile(path.Join(oldBase, service.LoadPath)); err == nil {
-				oldYamlContent = string(contentBytes)
-			} else {
-				errs = multierror.Append(errs, err)
-			}
-		}
-
-		if strings.Compare(newYamlContent, oldYamlContent) != 0 {
-			log.Infof("Started to sync service template %s from gitee %s", service.ServiceName, service.LoadPath)
-			service.CreateBy = "system"
-			service.Yaml = newYamlContent
-			if err := SyncServiceTemplateFromGitee(service, log); err != nil {
-				errs = multierror.Append(errs, err)
-			}
-		} else {
-			log.Infof("Service template %s from gitee %s is not affected, no sync", service.ServiceName, service.LoadPath)
 		}
 	}
 
 	return errs.ErrorOrNil()
 }
 
-// GetGiteeServiceTemplates Get all service templates maintained in gitee
-func GetGiteeServiceTemplates() ([]*commonmodels.Service, error) {
+// GetGiteeTestingServiceTemplates Get all service templates maintained in gitee
+func GetGiteeTestingServiceTemplates() ([]*commonmodels.Service, error) {
 	opt := &commonrepo.ServiceListOption{
 		Source: setting.SourceFromGitee,
 	}
 	return commonrepo.NewServiceColl().ListMaxRevisions(opt)
+}
+
+// GetGiteeProductionServiceTemplates Get all service templates maintained in gitee
+func GetGiteeProductionServiceTemplates() ([]*commonmodels.Service, error) {
+	opt := &commonrepo.ServiceListOption{
+		Source: setting.SourceFromGitee,
+	}
+	return commonrepo.NewProductionServiceColl().ListMaxRevisions(opt)
 }
 
 func GetWorkspaceBasePath(repoName string) (string, error) {
@@ -297,12 +339,12 @@ func SyncServiceTemplateFromGitee(service *commonmodels.Service, log *zap.Sugare
 			return e.ErrValidateTemplate.AddDesc(err.Error())
 		}
 
-		if err := commonrepo.NewServiceColl().Create(service); err != nil {
+		if err := repository.Create(service, service.Production); err != nil {
 			log.Errorf("SyncServiceTemplateFromGitee Failed to sync service %s from gitee path %s error: %s", service.ServiceName, service.SrcPath, err)
 			return e.ErrCreateTemplate.AddDesc(err.Error())
 		}
 
-		return environmentservice.AutoDeployYamlServiceToEnvs(service.CreateBy, "", service, log)
+		return environmentservice.AutoDeployYamlServiceToEnvs(service.CreateBy, "", service, service.Production, log)
 	}
 	// remove old repo dir
 	oldRepoDir := filepath.Join(microserviceConfig.S3StoragePath(), service.RepoName)
@@ -365,6 +407,7 @@ func reloadServiceTmplFromGitee(svc *commonmodels.Service, log *zap.SugaredLogge
 			Branch:     svc.BranchName,
 			Paths:      []string{svc.LoadPath},
 		},
+		Production: svc.Production,
 	}, true, log)
 	return err
 }

@@ -18,13 +18,18 @@ package server
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"net/http/pprof"
 	"time"
 
-	commonconfig "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/cron/core/service/scheduler"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/gorilla/mux"
+	commonconfig "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/cron/core/service/scheduler"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 func Serve(ctx context.Context) error {
@@ -36,6 +41,7 @@ func Serve(ctx context.Context) error {
 	})
 
 	log.Infof("App Cron Started at %s", time.Now())
+	initMongodb()
 	cronClient := scheduler.NewCronClient()
 	cronClient.Init()
 
@@ -60,6 +66,21 @@ func Serve(ctx context.Context) error {
 		}
 	}()
 
+	// pprof service, you can access it by {your_ip}:8888/debug/pprof
+	go func() {
+		router := mux.NewRouter()
+		router.Handle("/debug/pprof", http.HandlerFunc(pprof.Index))
+		router.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
+		router.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
+		router.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
+		router.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+		router.Handle("/debug/pprof/{cmd}", http.HandlerFunc(pprof.Index))
+		err := http.ListenAndServe("0.0.0.0:8888", router)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}()
+
 	if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		log.Errorf("Failed to start http server, error: %s", err)
 		return err
@@ -72,4 +93,11 @@ func Serve(ctx context.Context) error {
 
 func ping(w http.ResponseWriter, _ *http.Request) {
 	_, _ = w.Write([]byte("success"))
+}
+
+func initMongodb() {
+	mongotool.Init(context.Background(), config.MongoURI())
+	if err := mongotool.Ping(context.Background()); err != nil {
+		panic(fmt.Errorf("failed to connect to mongo, error: %s", err))
+	}
 }

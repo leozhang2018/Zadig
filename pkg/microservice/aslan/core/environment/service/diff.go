@@ -17,24 +17,25 @@ limitations under the License.
 package service
 
 import (
+	"fmt"
+
 	"go.uber.org/zap"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/kube"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/kube"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/repository"
+	commontypes "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/types"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 type SvcDiffResult struct {
-	Current TmplYaml `json:"current,omitempty"`
-	Latest  TmplYaml `json:"latest,omitempty"`
-}
-
-type ConfigDiffResult struct {
-	Current TmplConfig `json:"current,omitempty"`
-	Latest  TmplConfig `json:"latest,omitempty"`
+	ReleaseName       string   `json:"release_name"`
+	ServiceName       string   `json:"service_name"`
+	ChartName         string   `json:"chart_name"`
+	DeployedFromChart bool     `json:"deployed_from_chart"`
+	Current           TmplYaml `json:"current"`
+	Latest            TmplYaml `json:"latest"`
+	Error             string   `json:"error"`
 }
 
 type TmplYaml struct {
@@ -53,54 +54,44 @@ type ConfigTmplData struct {
 }
 
 // GetServiceDiff 获得服务模板当前版本和最新版本的对比
-func GetServiceDiff(envName, productName, serviceName string, log *zap.SugaredLogger) (*SvcDiffResult, error) {
+func GetServiceDiff(envName, productName, serviceName string, production bool, log *zap.SugaredLogger) (*SvcDiffResult, error) {
 	resp := new(SvcDiffResult)
-	opt := &commonrepo.ProductFindOptions{Name: productName, EnvName: envName}
+	opt := &commonrepo.ProductFindOptions{
+		Name: productName,
+		EnvName: envName,
+		Production: &production,
+	}
 	productInfo, err := commonrepo.NewProductColl().Find(opt)
 	if err != nil {
 		log.Errorf("[%s][%s]find current configmaps error: %v", envName, productName, err)
 		return resp, e.ErrFindProduct.AddDesc("查找product失败")
 	}
-	var serviceInfo *commonmodels.ProductService
-	for _, serviceGroup := range productInfo.Services {
-		for _, service := range serviceGroup {
-			if service.ServiceName == serviceName {
-				serviceInfo = service
-			}
-		}
+	serviceInfo := productInfo.GetServiceMap()[serviceName]
+	if serviceInfo == nil {
+		return resp, fmt.Errorf("service %s not found in environment", serviceName)
 	}
+
 	svcOpt := &commonrepo.ServiceFindOption{
-		ServiceName:   serviceName,
-		ProductName:   serviceInfo.ProductName,
-		Revision:      serviceInfo.Revision,
-		ExcludeStatus: setting.ProductStatusDeleting,
+		ServiceName: serviceName,
+		ProductName: serviceInfo.ProductName,
+		Revision:    serviceInfo.Revision,
 	}
-	oldService, err := commonrepo.NewServiceColl().Find(svcOpt)
+	oldService, err := repository.QueryTemplateService(svcOpt, productInfo.Production)
 	if err != nil {
 		log.Errorf("[%s][%s][%s]find config template [%d] error: %v", envName, productName, serviceName, serviceInfo.Revision, err)
 		return resp, e.ErrGetService.AddDesc("查找service template失败")
 	}
+
 	svcOpt.Revision = 0
-	newService, err := commonrepo.NewServiceColl().Find(svcOpt)
+	newService, err := repository.QueryTemplateService(svcOpt, productInfo.Production)
 	if err != nil {
 		log.Errorf("[%s][%s][%s]find max revision config template error: %v", envName, productName, serviceName, err)
 		return resp, e.ErrGetService.AddDesc("查找service template失败")
 	}
-	oldRender := &commonmodels.RenderSet{}
-	newRender := &commonmodels.RenderSet{}
-	if productInfo.Render != nil {
-		oldRender, err = commonservice.GetRenderSet(productInfo.Render.Name, productInfo.Render.Revision, false, envName, log)
-		if err != nil {
-			return resp, err
-		}
-		newRender, err = commonservice.GetRenderSet(productInfo.Render.Name, 0, false, envName, log)
-		if err != nil {
-			return resp, err
-		}
-	}
-	//resp.Current.Yaml = commonservice.RenderValueForString(oldService.Yaml, oldRender)
 
-	resp.Current.Yaml, err = kube.RenderServiceYaml(oldService.Yaml, "", "", oldRender, oldService.ServiceVars, oldService.VariableYaml)
+	svcRender := serviceInfo.GetServiceRender()
+
+	resp.Current.Yaml, err = kube.RenderServiceYaml(oldService.Yaml, productName, serviceName, svcRender)
 	if err != nil {
 		log.Error("failed to RenderServiceYaml, err: %s", err)
 		return nil, err
@@ -109,13 +100,20 @@ func GetServiceDiff(envName, productName, serviceName string, log *zap.SugaredLo
 	resp.Current.Revision = oldService.Revision
 	resp.Current.UpdateBy = oldService.CreateBy
 
-	resp.Latest.Yaml, err = kube.RenderServiceYaml(newService.Yaml, "", "", newRender, newService.ServiceVars, newService.VariableYaml)
+	mergedYaml, mergedServiceVariableKVs, err := commontypes.MergeRenderAndServiceTemplateVariableKVs(svcRender.OverrideYaml.RenderVariableKVs, newService.ServiceVariableKVs)
+	if err != nil {
+		return nil, fmt.Errorf("failed to merge render and service variable kvs serviceName: %s, error: %v", svcRender.ServiceName, err)
+	}
+
+	svcRender.OverrideYaml.YamlContent = mergedYaml
+	svcRender.OverrideYaml.RenderVariableKVs = mergedServiceVariableKVs
+
+	resp.Latest.Yaml, err = kube.RenderServiceYaml(newService.Yaml, productName, serviceName, svcRender)
 	if err != nil {
 		log.Error("failed to RenderServiceYaml, err: %s", err)
 		return nil, err
 	}
 
-	//resp.Latest.Yaml = commonservice.RenderValueForString(newService.Yaml, newRender)
 	resp.Latest.Revision = newService.Revision
 	resp.Latest.UpdateBy = newService.CreateBy
 	return resp, nil

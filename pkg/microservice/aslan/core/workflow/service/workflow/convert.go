@@ -21,14 +21,14 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/task"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/base"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/task"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/base"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 func ConvertQueueToTask(queueTask *commonmodels.Queue) *task.Task {
@@ -69,13 +69,13 @@ func ConvertQueueToTask(queueTask *commonmodels.Queue) *task.Task {
 		Render:                  queueTask.Render,
 		StorageURI:              queueTask.StorageURI,
 		TestReports:             queueTask.TestReports,
-		RwLock:                  queueTask.RwLock,
 		ResetImage:              queueTask.ResetImage,
 		ResetImagePolicy:        queueTask.ResetImagePolicy,
 		TriggerBy:               queueTask.TriggerBy,
 		Features:                queueTask.Features,
 		IsRestart:               queueTask.IsRestart,
 		StorageEndpoint:         queueTask.StorageEndpoint,
+		ScanningArgs:            queueTask.ScanningArgs,
 	}
 }
 
@@ -118,7 +118,6 @@ func ConvertTaskToQueue(task *task.Task) *commonmodels.Queue {
 		Render:                  task.Render,
 		StorageURI:              task.StorageURI,
 		TestReports:             task.TestReports,
-		RwLock:                  task.RwLock,
 		ResetImage:              task.ResetImage,
 		ResetImagePolicy:        task.ResetImagePolicy,
 		TriggerBy:               task.TriggerBy,
@@ -210,7 +209,7 @@ func getJenkinsIntegration(jenkinsBuild *commonmodels.JenkinsBuild) *commonmodel
 	if jenkinsBuild == nil {
 		return nil
 	}
-	jenkinsIntegration, err := commonrepo.NewJenkinsIntegrationColl().Get(jenkinsBuild.JenkinsID)
+	jenkinsIntegration, err := commonrepo.NewCICDToolColl().Get(jenkinsBuild.JenkinsID)
 	if err != nil {
 		return nil
 	}

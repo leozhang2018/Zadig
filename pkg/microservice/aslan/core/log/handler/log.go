@@ -24,9 +24,9 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	logservice "github.com/koderover/zadig/pkg/microservice/aslan/core/log/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	logservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/log/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func GetBuildJobContainerLogs(c *gin.Context) {
@@ -166,4 +166,29 @@ func GetScanningContainerLogs(c *gin.Context) {
 	}
 
 	ctx.Resp, ctx.Err = logservice.GetScanningContainerLogs(id, taskID, ctx.Logger)
+}
+
+func GetTestingContainerLogs(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	testName := c.Param("test_name")
+	if testName == "" {
+		ctx.Err = fmt.Errorf("testName must be provided")
+		return
+	}
+
+	taskIDStr := c.Param("task_id")
+	if taskIDStr == "" {
+		ctx.Err = fmt.Errorf("task_id must be provided")
+		return
+	}
+
+	taskID, err := strconv.ParseInt(taskIDStr, 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
+		return
+	}
+
+	ctx.Resp, ctx.Err = logservice.GetTestingContainerLogs(testName, taskID, ctx.Logger)
 }

@@ -20,8 +20,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 type BlueGreenReleaseJob struct {
@@ -49,6 +51,10 @@ func (j *BlueGreenReleaseJob) SetPreset() error {
 }
 
 func (j *BlueGreenReleaseJob) MergeArgs(args *commonmodels.Job) error {
+	return nil
+}
+
+func (j *BlueGreenReleaseJob) UpdateWithLatestSetting() error {
 	return nil
 }
 
@@ -82,8 +88,12 @@ func (j *BlueGreenReleaseJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, err
 			continue
 		}
 		task := &commonmodels.JobTask{
-			Name:    jobNameFormat(j.job.Name + "-" + target.K8sServiceName),
-			Key:     strings.Join([]string{j.job.Name, target.K8sServiceName}, "."),
+			Name: jobNameFormat(j.job.Name + "-" + target.K8sServiceName),
+			Key:  strings.Join([]string{j.job.Name, target.K8sServiceName}, "."),
+			JobInfo: map[string]string{
+				JobNameKey:         j.job.Name,
+				"k8s_service_name": target.K8sServiceName,
+			},
 			JobType: string(config.JobK8sBlueGreenRelease),
 			Spec: &commonmodels.JobTaskBlueGreenReleaseSpec{
 				Namespace:          deployJobSpec.Namespace,
@@ -97,6 +107,7 @@ func (j *BlueGreenReleaseJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, err
 				ContainerName:      target.ContainerName,
 				Version:            target.Version,
 			},
+			ErrorPolicy: j.job.ErrorPolicy,
 		}
 		resp = append(resp, task)
 	}
@@ -107,6 +118,9 @@ func (j *BlueGreenReleaseJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, err
 
 func (j *BlueGreenReleaseJob) LintJob() error {
 	j.spec = &commonmodels.BlueGreenReleaseJobSpec{}
+	if err := util.CheckZadigProfessionalLicense(); err != nil {
+		return e.ErrLicenseInvalid.AddDesc("")
+	}
 	if err := commonmodels.IToiYaml(j.job.Spec, j.spec); err != nil {
 		return err
 	}

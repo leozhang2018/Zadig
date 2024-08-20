@@ -21,16 +21,15 @@ import (
 	"k8s.io/client-go/informers"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/setting"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 type envHandle interface {
-	createGroup(username string, product *commonmodels.Product, group []*commonmodels.ProductService, renderSet *commonmodels.RenderSet, inf informers.SharedInformerFactory, kubeClient client.Client) error
-	listGroupServices(allServices []*commonmodels.ProductService, envName, productName string, informer informers.SharedInformerFactory, productInfo *commonmodels.Product) []*commonservice.ServiceResp
+	createGroup(username string, product *commonmodels.Product, group []*commonmodels.ProductService, inf informers.SharedInformerFactory, kubeClient client.Client) error
+	listGroupServices(allServices []*commonmodels.ProductService, envName string, informer informers.SharedInformerFactory, productInfo *commonmodels.Product) []*commonservice.ServiceResp
 	updateService(args *SvcOptArgs) error
-	//queryServiceStatus( serviceTmpl *commonmodels.Service, kubeClient informers.SharedInformerFactory) (string, string, []string)
 }
 
 func envHandleFunc(projectType string, log *zap.SugaredLogger) envHandle {

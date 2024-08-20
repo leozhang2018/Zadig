@@ -22,13 +22,13 @@ import (
 
 	"go.uber.org/zap"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonutil "github.com/koderover/zadig/pkg/microservice/aslan/core/common/util"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 func CreateBuild(username string, build *commonmodels.Build, log *zap.SugaredLogger) error {
@@ -170,11 +170,6 @@ func EnsureResp(build *commonmodels.Build) {
 				Repos: target.Repos,
 				Envs:  envs,
 			}
-			for _, v := range targetRepo.Envs {
-				if v.IsCredential {
-					v.Value = setting.MaskValue
-				}
-			}
 			build.TargetRepos = append(build.TargetRepos, targetRepo)
 		}
 	}
@@ -200,6 +195,23 @@ func MergeBuildEnvs(templateEnvs []*commonmodels.KeyVal, customEnvs []*commonmod
 	retEnvs := make([]*commonmodels.KeyVal, 0)
 	for _, v := range templateEnvs {
 		if cv, ok := customEnvMap[v.Key]; ok {
+			cv.ChoiceOption = v.ChoiceOption
+			retEnvs = append(retEnvs, cv)
+		} else {
+			retEnvs = append(retEnvs, v)
+		}
+	}
+	return retEnvs
+}
+
+func MergeParams(templateEnvs []*commonmodels.Param, customEnvs []*commonmodels.Param) []*commonmodels.Param {
+	customEnvMap := make(map[string]*commonmodels.Param)
+	for _, v := range customEnvs {
+		customEnvMap[v.Name] = v
+	}
+	retEnvs := make([]*commonmodels.Param, 0)
+	for _, v := range templateEnvs {
+		if cv, ok := customEnvMap[v.Name]; ok {
 			retEnvs = append(retEnvs, cv)
 		} else {
 			retEnvs = append(retEnvs, v)

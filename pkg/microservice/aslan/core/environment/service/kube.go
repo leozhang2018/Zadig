@@ -28,6 +28,7 @@ import (
 	"time"
 
 	"go.uber.org/zap"
+	"helm.sh/helm/v3/pkg/action"
 	"helm.sh/helm/v3/pkg/releaseutil"
 	"helm.sh/helm/v3/pkg/storage/driver"
 	corev1 "k8s.io/api/core/v1"
@@ -43,27 +44,30 @@ import (
 	"k8s.io/client-go/tools/remotecommand"
 	"k8s.io/kubectl/pkg/scheme"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/yaml"
 
-	commonconfig "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/template"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/kube"
-	"github.com/koderover/zadig/pkg/microservice/podexec/core/service"
-	"github.com/koderover/zadig/pkg/setting"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	"github.com/koderover/zadig/pkg/shared/kube/resource"
-	"github.com/koderover/zadig/pkg/shared/kube/wrapper"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	helmtool "github.com/koderover/zadig/pkg/tool/helmclient"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/kube/informer"
-	"github.com/koderover/zadig/pkg/tool/kube/serializer"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
-	kubeutil "github.com/koderover/zadig/pkg/tool/kube/util"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/util"
+	commonconfig "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/kube"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/repository"
+	commontypes "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/podexec/core/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	"github.com/koderover/zadig/v2/pkg/shared/kube/resource"
+	"github.com/koderover/zadig/v2/pkg/shared/kube/wrapper"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	helmtool "github.com/koderover/zadig/v2/pkg/tool/helmclient"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/informer"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/serializer"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
+	kubeutil "github.com/koderover/zadig/v2/pkg/tool/kube/util"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 type serviceInfo struct {
@@ -88,6 +92,7 @@ type FetchResourceArgs struct {
 	ResourceTypes string `form:"-"`
 	Type          string `form:"type"`
 	Name          string `form:"name"`
+	Production    bool   `form:"-"`
 }
 
 type WorkloadCommonData struct {
@@ -105,6 +110,11 @@ type WorkloadDetailResp struct {
 	Pods     []*resource.Pod           `json:"pods"`
 	Ingress  []*resource.Ingress       `json:"ingress"`
 	Services []*resource.Service       `json:"service_endpoints"`
+}
+
+type AvailableNamespace struct {
+	*resource.Namespace
+	Used bool `json:"used_by_other_env"`
 }
 
 func ListKubeEvents(env string, productName string, name string, rtype string, log *zap.SugaredLogger) ([]*resource.Event, error) {
@@ -139,11 +149,12 @@ func ListKubeEvents(env string, productName string, name string, rtype string, l
 	return res, err
 }
 
-func ListPodEvents(envName, productName, podName string, log *zap.SugaredLogger) ([]*resource.Event, error) {
+func ListPodEvents(envName, productName, podName string, production bool, log *zap.SugaredLogger) ([]*resource.Event, error) {
 	res := make([]*resource.Event, 0)
 	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    productName,
-		EnvName: envName,
+		Name:       productName,
+		EnvName:    envName,
+		Production: &production,
 	})
 	if err != nil {
 		return res, err
@@ -170,9 +181,30 @@ func ListPodEvents(envName, productName, podName string, log *zap.SugaredLogger)
 	return res, nil
 }
 
+func FindNsUseEnvs(productInfo *commonmodels.Product, log *zap.SugaredLogger) ([]*SharedNSEnvs, error) {
+	clusterID, namespace := productInfo.ClusterID, productInfo.Namespace
+	resp := make([]*SharedNSEnvs, 0)
+	envs, err := commonrepo.NewProductColl().ListEnvByNamespace(clusterID, namespace)
+	if err != nil {
+		log.Errorf("Failed to list existed namespace from the env List, error: %s", err)
+		return resp, err
+	}
+	for _, env := range envs {
+		if env.String() == productInfo.String() {
+			continue
+		}
+		resp = append(resp, &SharedNSEnvs{
+			ProjectName: env.ProductName,
+			EnvName:     env.EnvName,
+			Production:  env.Production,
+		})
+	}
+	return resp, nil
+}
+
 // ListAvailableNamespaces lists available namespaces created by non-koderover
-func ListAvailableNamespaces(clusterID, listType string, log *zap.SugaredLogger) ([]*resource.Namespace, error) {
-	resp := make([]*resource.Namespace, 0)
+func ListAvailableNamespaces(clusterID, listType string, log *zap.SugaredLogger) ([]*AvailableNamespace, error) {
+	resp := make([]*AvailableNamespace, 0)
 	kubeClient, err := kubeclient.GetKubeClient(config.HubServerAddress(), clusterID)
 	if err != nil {
 		log.Errorf("ListNamespaces clusterID:%s err:%v", clusterID, err)
@@ -186,25 +218,16 @@ func ListAvailableNamespaces(clusterID, listType string, log *zap.SugaredLogger)
 		}
 		return resp, err
 	}
+
 	filterK8sNamespaces := sets.NewString("kube-node-lease", "kube-public", "kube-system")
-	if listType == setting.ListNamespaceTypeCreate {
-		nsList, err := commonrepo.NewProductColl().ListExistedNamespace()
-		if err != nil {
-			log.Errorf("Failed to list existed namespace from the env List, error: %s", err)
-			return nil, err
-		}
-		filterK8sNamespaces.Insert(nsList...)
+
+	usedNSList, err := commonrepo.NewProductColl().ListNamespace(clusterID)
+	if err != nil {
+		return nil, err
 	}
+	usedNSSet := sets.NewString(usedNSList...)
 
 	filter := func(namespace *corev1.Namespace) bool {
-		if listType == setting.ListNamespaceTypeALL {
-			return true
-		}
-		if value, IsExist := namespace.Labels[setting.EnvCreatedBy]; IsExist {
-			if value == setting.EnvCreator {
-				return false
-			}
-		}
 		if filterK8sNamespaces.Has(namespace.Name) {
 			return false
 		}
@@ -212,46 +235,25 @@ func ListAvailableNamespaces(clusterID, listType string, log *zap.SugaredLogger)
 	}
 
 	for _, namespace := range namespaces {
-		if filter(namespace) {
-			resp = append(resp, wrapper.Namespace(namespace).Resource())
+		if !filter(namespace) {
+			continue
 		}
+		nsResource := &AvailableNamespace{
+			Namespace: wrapper.Namespace(namespace).Resource(),
+		}
+		if usedNSSet.Has(namespace.Name) {
+			nsResource.Used = true
+		}
+		resp = append(resp, nsResource)
 	}
 	return resp, nil
 }
 
-func ListServicePods(productName, envName string, serviceName string, log *zap.SugaredLogger) ([]*resource.Pod, error) {
-	res := make([]*resource.Pod, 0)
-
+func DeletePod(envName, productName, podName string, production bool, log *zap.SugaredLogger) error {
 	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    productName,
-		EnvName: envName,
-	})
-	if err != nil {
-		return res, e.ErrListServicePod.AddErr(err)
-	}
-	kubeClient, err := kubeclient.GetKubeClient(config.HubServerAddress(), product.ClusterID)
-	if err != nil {
-		return res, e.ErrListServicePod.AddErr(err)
-	}
-
-	selector := labels.Set{setting.ProductLabel: productName, setting.ServiceLabel: serviceName}.AsSelector()
-	pods, err := getter.ListPods(product.Namespace, selector, kubeClient)
-	if err != nil {
-		errMsg := fmt.Sprintf("[%s] ListServicePods %s error: %v", product.Namespace, selector, err)
-		log.Error(errMsg)
-		return res, e.ErrListServicePod.AddDesc(errMsg)
-	}
-
-	for _, pod := range pods {
-		res = append(res, wrapper.Pod(pod).Resource())
-	}
-	return res, nil
-}
-
-func DeletePod(envName, productName, podName string, log *zap.SugaredLogger) error {
-	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    productName,
-		EnvName: envName,
+		Name:       productName,
+		EnvName:    envName,
+		Production: &production,
 	})
 	if err != nil {
 		return e.ErrDeletePod.AddErr(err)
@@ -406,10 +408,11 @@ func podFileTmpPath(envName, productName, podName, container string) string {
 	return filepath.Join(commonconfig.DataPath(), "podfile", productName, envName, podName, container)
 }
 
-func DownloadFile(envName, productName, podName, container, path string, log *zap.SugaredLogger) ([]byte, string, error) {
+func DownloadFile(envName, productName, podName, container, path string, production bool, log *zap.SugaredLogger) ([]byte, string, error) {
 	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    productName,
-		EnvName: envName,
+		Name:       productName,
+		EnvName:    envName,
+		Production: &production,
 	})
 	if err != nil {
 		return nil, "", err
@@ -607,8 +610,13 @@ func ListWorkloadsInfo(clusterID, namespace string, log *zap.SugaredLogger) ([]*
 	return resp, nil
 }
 
-func ListCustomWorkload(clusterID, namespace string, log *zap.SugaredLogger) ([]string, error) {
-	resp := make([]string, 0)
+type WorkloadImageTarget struct {
+	Target    string `json:"target"`
+	ImageName string `json:"image_name"`
+}
+
+func ListCustomWorkload(clusterID, namespace string, log *zap.SugaredLogger) ([]*WorkloadImageTarget, error) {
+	resp := make([]*WorkloadImageTarget, 0)
 	kubeClient, err := kubeclient.GetKubeClient(config.HubServerAddress(), clusterID)
 	if err != nil {
 		log.Errorf("ListCustomWorkload clusterID:%s err:%v", clusterID, err)
@@ -624,7 +632,7 @@ func ListCustomWorkload(clusterID, namespace string, log *zap.SugaredLogger) ([]
 	}
 	for _, deployment := range deployments {
 		for _, container := range deployment.Spec.Template.Spec.Containers {
-			resp = append(resp, strings.Join([]string{setting.Deployment, deployment.Name, container.Name}, "/"))
+			resp = append(resp, &WorkloadImageTarget{strings.Join([]string{setting.Deployment, deployment.Name, container.Name}, "/"), util.ExtractImageName(container.Image)})
 		}
 	}
 	statefulsets, err := getter.ListStatefulSets(namespace, labels.Everything(), kubeClient)
@@ -637,7 +645,33 @@ func ListCustomWorkload(clusterID, namespace string, log *zap.SugaredLogger) ([]
 	}
 	for _, statefulset := range statefulsets {
 		for _, container := range statefulset.Spec.Template.Spec.Containers {
-			resp = append(resp, strings.Join([]string{setting.StatefulSet, statefulset.Name, container.Name}, "/"))
+			resp = append(resp, &WorkloadImageTarget{strings.Join([]string{setting.StatefulSet, statefulset.Name, container.Name}, "/"), util.ExtractImageName(container.Image)})
+		}
+	}
+
+	clientset, err := kubeclient.GetClientset(config.HubServerAddress(), clusterID)
+	if err != nil {
+		log.Errorf("get client set error: %v", err)
+		return resp, err
+	}
+	versionInfo, err := clientset.Discovery().ServerVersion()
+	if err != nil {
+		log.Errorf("get server version error: %v", err)
+		return resp, err
+	}
+	cronJobs, cronJobBetas, err := getter.ListCronJobs(namespace, labels.Everything(), kubeClient, VersionLessThan121(versionInfo))
+	if err != nil {
+		log.Errorf("list cronjobs error: %v", err)
+		return resp, err
+	}
+	for _, cronJob := range cronJobs {
+		for _, container := range cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers {
+			resp = append(resp, &WorkloadImageTarget{strings.Join([]string{setting.CronJob, cronJob.Name, container.Name}, "/"), util.ExtractImageName(container.Image)})
+		}
+	}
+	for _, cronJobBeta := range cronJobBetas {
+		for _, container := range cronJobBeta.Spec.JobTemplate.Spec.Template.Spec.Containers {
+			resp = append(resp, &WorkloadImageTarget{strings.Join([]string{setting.CronJob, cronJobBeta.Name, container.Name}, "/"), util.ExtractImageName(container.Image)})
 		}
 	}
 	return resp, nil
@@ -657,6 +691,9 @@ func ListCanaryDeploymentServiceInfo(clusterID, namespace string, log *zap.Sugar
 		return resp, err
 	}
 	for _, service := range services {
+		if service.Spec.Selector == nil {
+			continue
+		}
 		deploymentContainers := &ServiceMatchedDeploymentContainers{
 			ServiceName: service.Name,
 		}
@@ -744,8 +781,9 @@ func ListAllK8sResourcesInNamespace(clusterID, namespace string, log *zap.Sugare
 func ListK8sResOverview(args *FetchResourceArgs, log *zap.SugaredLogger) (*K8sResourceResp, error) {
 
 	productInfo, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    args.ProjectName,
-		EnvName: args.EnvName,
+		Name:       args.ProjectName,
+		EnvName:    args.EnvName,
+		Production: &args.Production,
 	})
 
 	if err != nil {
@@ -780,7 +818,7 @@ func ListK8sResOverview(args *FetchResourceArgs, log *zap.SugaredLogger) (*K8sRe
 	case "jobs":
 		return ListJobs(page, pageSize, namespace, kubeClient)
 	case "cronjobs":
-		return ListCronJobs(page, pageSize, productInfo.ClusterID, namespace, kubeClient)
+		return ListCronJobs(page, pageSize, productInfo.ClusterID, namespace, kubeClient, inf)
 	case "services":
 		return ListServices(page, pageSize, namespace, kubeClient, inf)
 	case "ingresses":
@@ -797,8 +835,9 @@ func ListK8sResOverview(args *FetchResourceArgs, log *zap.SugaredLogger) (*K8sRe
 
 func GetK8sResourceYaml(args *FetchResourceArgs, log *zap.SugaredLogger) (string, error) {
 	productInfo, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    args.ProjectName,
-		EnvName: args.EnvName,
+		Name:       args.ProjectName,
+		EnvName:    args.EnvName,
+		Production: &args.Production,
 	})
 
 	if err != nil {
@@ -846,8 +885,9 @@ func GetK8sResourceYaml(args *FetchResourceArgs, log *zap.SugaredLogger) (string
 
 func GetWorkloadDetail(args *FetchResourceArgs, workloadType, workloadName string, log *zap.SugaredLogger) (*WorkloadDetailResp, error) {
 	productInfo, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    args.ProjectName,
-		EnvName: args.EnvName,
+		Name:       args.ProjectName,
+		EnvName:    args.EnvName,
+		Production: &args.Production,
 	})
 
 	if err != nil {
@@ -904,12 +944,9 @@ func getWorkloadDetail(ns, resType, name string, kc client.Client, cs *kubernete
 	return resp, err
 }
 
-func GetResourceDeployStatus(productName string, request *K8sDeployStatusCheckRequest, log *zap.SugaredLogger) ([]*ServiceDeployStatus, error) {
+func GetResourceDeployStatus(productName string, request *K8sDeployStatusCheckRequest, production bool, log *zap.SugaredLogger) ([]*ServiceDeployStatus, error) {
 	clusterID, namespace := request.ClusterID, request.Namespace
-	productServices, err := commonrepo.NewServiceColl().ListMaxRevisionsByProduct(productName)
-	if err != nil {
-		return nil, e.ErrGetResourceDeployInfo.AddErr(fmt.Errorf("failed to find product services, err: %s", err))
-	}
+
 	svcSet := sets.NewString()
 	for _, svc := range request.Services {
 		svcSet.Insert(svc.ServiceName)
@@ -927,35 +964,25 @@ func GetResourceDeployStatus(productName string, request *K8sDeployStatusCheckRe
 		return resourcesByType[deployStatus.Type][deployStatus.Name]
 	}
 
-	defaultValues := request.DefaultValues
-
-	productInfo, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    productName,
-		EnvName: request.EnvName,
-	})
-
-	if err == nil && productInfo != nil {
-		renderset, _, err := commonrepo.NewRenderSetColl().FindRenderSet(&commonrepo.RenderSetFindOption{
-			ProductTmpl: productName,
-			EnvName:     request.EnvName,
-			IsDefault:   false,
-			Revision:    productInfo.Render.Revision,
-			Name:        productInfo.Render.Name,
-		})
-		if err == nil && renderset != nil {
-			defaultValues = renderset.DefaultValues
-		}
+	productServices, err := repository.ListMaxRevisionsServices(productName, production)
+	if err != nil {
+		return nil, e.ErrGetResourceDeployInfo.AddErr(fmt.Errorf("failed to find product services, err: %s", err))
 	}
 
-	fakeRenderSet := &models.RenderSet{
-		DefaultValues: defaultValues,
-	}
+	fakeRenderMap := make(map[string]*template.ServiceRender)
 
 	for _, sv := range request.Services {
-		fakeRenderSet.ServiceVariables = append(fakeRenderSet.ServiceVariables, &template.ServiceRender{
-			ServiceName:  sv.ServiceName,
-			OverrideYaml: &template.CustomYaml{YamlContent: sv.VariableYaml},
-		})
+		variableYaml, err := commontypes.RenderVariableKVToYaml(sv.VariableKVs)
+		if err != nil {
+			return nil, e.ErrGetResourceDeployInfo.AddErr(fmt.Errorf("failed to convert render variable yaml, err: %s", err))
+		}
+		fakeRenderMap[sv.ServiceName] = &template.ServiceRender{
+			ServiceName: sv.ServiceName,
+			OverrideYaml: &template.CustomYaml{
+				YamlContent:       variableYaml,
+				RenderVariableKVs: sv.VariableKVs,
+			},
+		}
 	}
 
 	for _, svc := range productServices {
@@ -963,17 +990,13 @@ func GetResourceDeployStatus(productName string, request *K8sDeployStatusCheckRe
 		if len(svcSet) > 0 && !svcSet.Has(svc.ServiceName) {
 			continue
 		}
-		//rederedYaml := commonservice.RenderValueForString(svc.Yaml, fakeRenderSet)
-		rederedYaml, err := kube.RenderServiceYaml(svc.Yaml, productInfo.ProductName, svc.ServiceName, fakeRenderSet, svc.ServiceVars, svc.VariableYaml)
+
+		rederedYaml, err := kube.RenderServiceYaml(svc.Yaml, productName, svc.ServiceName, fakeRenderMap[svc.ServiceName])
 		if err != nil {
-			log.Errorf("failed to render service yaml, err: %s", err)
-			return nil, err
+			return nil, e.ErrGetResourceDeployInfo.AddErr(fmt.Errorf("failed to render service yaml, serviceName：%s, err: %w", svc.ServiceName, err))
 		}
 
-		rederedYaml = kube.ParseSysKeys(namespace, request.EnvName, productName, svc.ServiceName, rederedYaml)
-
 		manifests := releaseutil.SplitManifests(rederedYaml)
-
 		resources := make([]*ResourceDeployStatus, 0)
 		for _, item := range manifests {
 			u, err := serializer.NewDecoder().YamlToUnstructured([]byte(item))
@@ -985,6 +1008,7 @@ func GetResourceDeployStatus(productName string, request *K8sDeployStatusCheckRe
 			rds := &ResourceDeployStatus{
 				Type:   u.GetKind(),
 				Name:   u.GetName(),
+				GVK:    u.GroupVersionKind(),
 				Status: StatusUnDeployed,
 			}
 			rds = addDeployStatus(rds)
@@ -1016,38 +1040,29 @@ func setResourceDeployStatus(namespace string, resourceMap map[string]map[string
 		return nil
 	}
 
-	allGvks := map[string]schema.GroupVersionKind{
-		getter.DeploymentGVK.Kind:  getter.DeploymentGVK,
-		getter.StatefulSetGVK.Kind: getter.StatefulSetGVK,
-		getter.ServiceGVK.Kind:     getter.ServiceGVK,
-		getter.IngressGVK.Kind:     getter.IngressGVK,
-		getter.ConfigMapGVK.Kind:   getter.ConfigMapGVK,
-		getter.JobGVK.Kind:         getter.JobGVK,
-		getter.CronJobGVK.Kind:     getter.CronJobGVK,
-		getter.RoleGVK.Kind:        getter.RoleGVK,
-		getter.ClusterRoleGVK.Kind: getter.ClusterRoleGVK,
-	}
-
 	version, err := clientset.Discovery().ServerVersion()
 	if err != nil {
-		log.Warnf("Failed to determine server version, error is: %s", err)
-	}
-	if kubeclient.VersionLessThan122(version) {
-		allGvks[getter.IngressGVK.Kind] = getter.IngressBetaGVK
+		return fmt.Errorf("failed to get server version, err: %s", err)
 	}
 
-	relatedGvks := make(map[string]schema.GroupVersionKind)
-	for kind, _ := range resourceMap {
-		relatedGvks[kind] = allGvks[kind]
+	relatedGvks := make(map[schema.GroupVersionKind]schema.GroupVersionKind)
+	for _, resList := range resourceMap {
+		for _, res := range resList {
+			gvk := kube.GetValidGVK(res.GVK, version)
+			relatedGvks[gvk] = gvk
+		}
 	}
 
 	for kind, gvk := range relatedGvks {
-		resources := resourceMap[kind]
 		u := &unstructured.UnstructuredList{}
 		u.SetGroupVersionKind(gvk)
 		err := getter.ListResourceInCache(namespace, nil, nil, u, kubeClient)
 		if err != nil {
 			log.Warnf("failed to get resources with gvk: %s, err: %s", gvk, err)
+			continue
+		}
+		resources, ok := resourceMap[kind.Kind]
+		if !ok {
 			continue
 		}
 		for _, item := range u.Items {
@@ -1059,9 +1074,18 @@ func setResourceDeployStatus(namespace string, resourceMap map[string]map[string
 	return nil
 }
 
-func GetReleaseDeployStatus(productName string, request *HelmDeployStatusCheckRequest) ([]*ServiceDeployStatus, error) {
+func GetReleaseDeployStatus(productName string, production bool, request *HelmDeployStatusCheckRequest) ([]*ServiceDeployStatus, error) {
 	clusterID, namespace, envName := request.ClusterID, request.Namespace, request.EnvName
-	productServices, err := commonrepo.NewServiceColl().ListMaxRevisionsByProduct(productName)
+	_, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
+		Name:              productName,
+		EnvName:           envName,
+		Production:        &production,
+		IgnoreNotFoundErr: true,
+	})
+	if err != nil {
+		return nil, e.ErrGetResourceDeployInfo.AddErr(fmt.Errorf("failed to find product: %s/%s, err: %s", productName, envName, err))
+	}
+	productServices, err := repository.ListMaxRevisionsServices(productName, production)
 	if err != nil {
 		return nil, e.ErrGetResourceDeployInfo.AddErr(fmt.Errorf("failed to find product services, err: %s", err))
 	}
@@ -1115,6 +1139,194 @@ func setReleaseDeployStatus(namespace string, resourceMap map[string]*ResourceDe
 		if release != nil {
 			deployStatus.Status = StatusDeployed
 		}
+		customValues, err := helmClient.GetReleaseValues(releaseName, false)
+		if err != nil {
+			log.Warnf("failed to get release values with name: %s, err: %s", releaseName, err)
+			continue
+		}
+		if len(customValues) == 0 {
+			continue
+		}
+		overrideYaml, err := yaml.Marshal(customValues)
+		if err != nil {
+			log.Warnf("failed to marshal values map when fetching release deploy status, err: %s", err)
+			continue
+		}
+		deployStatus.OverrideYaml = string(overrideYaml)
 	}
 	return nil
+}
+
+type GetReleaseInstanceDeployStatusResponse struct {
+	ReleaseName  string `json:"release_name"`
+	ChartName    string `json:"chart_name"`
+	ChartVersion string `json:"chart_version"`
+	Status       string `json:"status"`
+	Values       string `json:"values"`
+}
+
+func GetReleaseInstanceDeployStatus(productName string, production bool, request *HelmDeployStatusCheckRequest) ([]*GetReleaseInstanceDeployStatusResponse, error) {
+	clusterID, namespace, envName := request.ClusterID, request.Namespace, request.EnvName
+	productInfo, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
+		Name:              productName,
+		EnvName:           envName,
+		Production:        &production,
+		IgnoreNotFoundErr: true,
+	})
+	if err != nil {
+		return nil, e.ErrGetResourceDeployInfo.AddErr(fmt.Errorf("failed to find product: %s/%s, err: %s", productName, envName, err))
+	}
+	productServiceMap, err := repository.GetMaxRevisionsServicesMap(productName, production)
+	if err != nil {
+		return nil, e.ErrGetResourceDeployInfo.AddErr(fmt.Errorf("failed to find product services, err: %s", err))
+	}
+
+	releaseToServiceMap := make(map[string]*ResourceDeployStatus)
+	for _, prodSvc := range productInfo.GetServiceMap() {
+		svcInfo, ok := productServiceMap[prodSvc.ServiceName]
+		if !ok {
+			continue
+		}
+		releaseName := util.GeneReleaseName(svcInfo.GetReleaseNaming(), productName, namespace, envName, prodSvc.ServiceName)
+		deployStatus := &ResourceDeployStatus{
+			Type:   "release",
+			Name:   releaseName,
+			Status: StatusUnDeployed,
+		}
+		releaseToServiceMap[releaseName] = deployStatus
+	}
+
+	chartSvcMap := productInfo.GetChartServiceMap()
+	for _, chartSvc := range chartSvcMap {
+		deployStatus := &ResourceDeployStatus{
+			Type:   "release",
+			Name:   chartSvc.ReleaseName,
+			Status: StatusUnDeployed,
+		}
+		releaseToServiceMap[chartSvc.ReleaseName] = deployStatus
+	}
+
+	helmClient, err := helmtool.NewClientFromNamespace(clusterID, namespace)
+	if err != nil {
+		return nil, e.ErrGetResourceDeployInfo.AddErr(err)
+	}
+
+	releases, err := helmClient.ListReleasesByStateMask(action.ListDeployed | action.ListUninstalled | action.ListUninstalling | action.ListPendingInstall | action.ListPendingUpgrade | action.ListPendingRollback | action.ListSuperseded | action.ListFailed | action.ListUnknown)
+	if err != nil {
+		log.Warnf("failed to list releases with ns: %s, err: %s", namespace, err)
+	}
+
+	resp := make([]*GetReleaseInstanceDeployStatusResponse, 0)
+	for _, release := range releases {
+		if _, ok := releaseToServiceMap[release.Name]; ok {
+			continue
+		}
+
+		values, err := helmClient.GetReleaseValues(release.Name, false)
+		if err != nil {
+			log.Warnf("failed to get release values with name: %s, err: %s", release.Name, err)
+			continue
+		}
+		valuesYaml, err := yaml.Marshal(values)
+		if err != nil {
+			log.Warnf("failed to marshal values map when fetching release deploy status, err: %s", err)
+			continue
+		}
+
+		resp = append(resp, &GetReleaseInstanceDeployStatusResponse{
+			ReleaseName:  release.Name,
+			ChartName:    release.Chart.Metadata.Name,
+			ChartVersion: release.Chart.Metadata.Version,
+			Status:       release.Info.Status.String(),
+			Values:       string(valuesYaml),
+		})
+	}
+
+	return resp, err
+}
+
+type ListPodsInfoRespone struct {
+	Name       string   `json:"name"`
+	Ready      string   `json:"ready"`
+	Status     string   `json:"status"`
+	Images     []string `json:"images"`
+	CreateTime int64    `json:"create_time"`
+}
+
+func ListPodsInfo(projectName, envName string, production bool, log *zap.SugaredLogger) ([]*ListPodsInfoRespone, error) {
+	res := make([]*ListPodsInfoRespone, 0)
+	productInfo, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
+		Name:       projectName,
+		EnvName:    envName,
+		Production: &production,
+	})
+	if err != nil {
+		return nil, e.ErrListPod.AddErr(fmt.Errorf("failed to get product info, err: %s", err))
+	}
+
+	kubeClient, err := kubeclient.GetKubeClient(config.HubServerAddress(), productInfo.ClusterID)
+	if err != nil {
+		return res, e.ErrListPod.AddErr(err)
+	}
+
+	pods, err := getter.ListPods(productInfo.Namespace, labels.Everything(), kubeClient)
+	if err != nil {
+		errMsg := fmt.Sprintf("[%s] ListPods error: %v", productInfo.Namespace, err)
+		log.Error(errMsg)
+		return res, e.ErrListPod.AddDesc(errMsg)
+	}
+
+	for _, pod := range pods {
+		resPod := wrapper.Pod(pod).Resource()
+		images := []string{}
+		readyTotal := 0
+		ready := 0
+		for _, c := range resPod.Containers {
+			images = append(images, c.Image)
+			readyTotal++
+			if c.Ready {
+				ready++
+			}
+		}
+		elem := &ListPodsInfoRespone{
+			Name:       resPod.Name,
+			Ready:      fmt.Sprintf("%d/%d", ready, readyTotal),
+			Status:     resPod.Status,
+			Images:     images,
+			CreateTime: resPod.CreateTime,
+		}
+		res = append(res, elem)
+	}
+	return res, nil
+}
+
+func GetPodDetailInfo(projectName, envName, podName string, production bool, log *zap.SugaredLogger) (*resource.Pod, error) {
+	productInfo, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
+		Name:       projectName,
+		EnvName:    envName,
+		Production: &production,
+	})
+	if err != nil {
+		return nil, e.ErrGetPodDetail.AddErr(fmt.Errorf("failed to get product info, err: %s", err))
+	}
+
+	kubeClient, err := kubeclient.GetKubeClient(config.HubServerAddress(), productInfo.ClusterID)
+	if err != nil {
+		return nil, e.ErrGetPodDetail.AddErr(err)
+	}
+
+	pod, found, err := getter.GetPod(productInfo.Namespace, podName, kubeClient)
+	if err != nil {
+		errMsg := fmt.Sprintf("[%s] GetPod error: %v", productInfo.Namespace, err)
+		log.Error(errMsg)
+		return nil, e.ErrGetPodDetail.AddDesc(errMsg)
+	}
+	if !found {
+		errMsg := fmt.Sprintf("[%s] can't find pod %s", productInfo.Namespace, podName)
+		log.Error(errMsg)
+		return nil, e.ErrGetPodDetail.AddDesc(errMsg)
+	}
+
+	res := wrapper.Pod(pod).Resource()
+	return res, nil
 }

@@ -26,7 +26,9 @@ import (
 
 	"github.com/spf13/viper"
 
-	"github.com/koderover/zadig/pkg/tool/httpclient"
+	vmlog "github.com/koderover/zadig/v2/pkg/cli/zadig-agent/helper/log"
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 type Client struct {
@@ -39,6 +41,7 @@ type Client struct {
 const (
 	SonarWorkDirKey = "sonar.working.directory"
 	CETaskIDKey     = "ceTaskId"
+	ProjectKey      = "projectKey"
 )
 
 func NewSonarClient(host, token string) *Client {
@@ -79,6 +82,22 @@ type CETask struct {
 	Status         CETaskStatus `json:"status"`
 	SubmitterLogin string       `json:"submitterLogin"`
 	WarningCount   int          `json:"warningCount"`
+	SubmittedAt    string       `json:"submittedAt"`
+	StartedAt      string       `json:"startedAt"`
+	ExecutedAt     string       `json:"executedAt"`
+}
+
+type MeasuresComponentResponse struct {
+	Component Component `json:"component"`
+}
+
+type Component struct {
+	Measures []Measure `json:"measures"`
+}
+
+type Measure struct {
+	Metric string `json:"metric"`
+	Value  string `json:"value"`
 }
 
 func (c *Client) GetCETaskInfo(taskID string) (*CETaskInfo, error) {
@@ -88,6 +107,15 @@ func (c *Client) GetCETaskInfo(taskID string) (*CETaskInfo, error) {
 		return nil, fmt.Errorf("get sonar compute engine task: %s info error: %v", taskID, err)
 	}
 	return res, nil
+}
+
+func (c *Client) GetComponentMeasures(componentKey string) (*MeasuresComponentResponse, error) {
+	url := "/api/measures/component"
+	resp := &MeasuresComponentResponse{}
+	if _, err := c.Client.Get(url, httpclient.SetQueryParam("component", componentKey), httpclient.SetQueryParam("metricKeys", "ncloc,bugs,vulnerabilities,code_smells,coverage"), httpclient.SetResult(resp)); err != nil {
+		return nil, fmt.Errorf("search sonar component measures: component %s, error: %v", componentKey, err)
+	}
+	return resp, nil
 }
 
 type QualityGateStatus string
@@ -157,6 +185,10 @@ func GetSonarCETaskID(content string) string {
 	return getKeyValue(content, CETaskIDKey)
 }
 
+func GetProjectKey(content string) string {
+	return getKeyValue(content, ProjectKey)
+}
+
 func getKeyValue(content, inputKey string) string {
 	kvStrs := strings.Split(content, "\n")
 	for _, kvStr := range kvStrs {
@@ -178,11 +210,21 @@ func getKeyValue(content, inputKey string) string {
 }
 
 func PrintSonarConditionTables(conditions []Condition) {
-	fmt.Printf("%-40s|%-10s|%-10s|%-10s|%-20s|\n", "Metric", "Status", "Operator", "Threshold", "Actualvalue")
+	log.Infof("")
+	log.Infof("%-40s|%-10s|%-10s|%-10s|%-20s|", "Metric", "Status", "Operator", "Threshold", "Actualvalue")
 	for _, condition := range conditions {
-		fmt.Printf("%-40s|%-10s|%-10s|%-10s|%-20s|\n", condition.MetricKey, condition.Status, condition.Comparator, condition.ErrorThreshold, condition.ActualValue)
+		log.Infof("%-40s|%-10s|%-10s|%-10s|%-20s|", condition.MetricKey, condition.Status, condition.Comparator, condition.ErrorThreshold, condition.ActualValue)
 	}
-	fmt.Printf("\n")
+	log.Infof("")
+}
+
+func VMPrintSonarConditionTables(conditions []Condition, logger *vmlog.JobLogger) {
+	logger.Infof("")
+	logger.Infof("%-40s|%-10s|%-10s|%-10s|%-20s|", "Metric", "Status", "Operator", "Threshold", "Actualvalue")
+	for _, condition := range conditions {
+		logger.Infof("%-40s|%-10s|%-10s|%-10s|%-20s|", condition.MetricKey, condition.Status, condition.Comparator, condition.ErrorThreshold, condition.ActualValue)
+	}
+	logger.Infof("")
 }
 
 func GetSonarProjectKeyFromConfig(config string) string {

@@ -20,7 +20,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/koderover/zadig/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 const (
@@ -29,8 +29,8 @@ const (
 )
 
 type JobOutput struct {
-	Name  string `json:"name"`
-	Value string `json:"value"`
+	Name  string `json:"name" bson:"name"`
+	Value string `json:"value" bson:"value"`
 }
 
 func GetJobOutputKey(key, outputName string) string {

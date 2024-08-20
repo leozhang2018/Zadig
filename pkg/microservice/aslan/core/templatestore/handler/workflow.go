@@ -17,28 +17,79 @@ limitations under the License.
 package handler
 
 import (
+	"fmt"
+	"net/http"
+
 	"github.com/gin-gonic/gin"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	templateservice "github.com/koderover/zadig/pkg/microservice/aslan/core/templatestore/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	templateservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/templatestore/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func GetWorkflowTemplateByID(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		internalhandler.JSONResponse(c, ctx)
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.Template.View {
+			projectKey := c.Query("projectName")
+			if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Workflow.Create {
+				c.AbortWithStatus(http.StatusForbidden)
+				return
+			}
+		}
+	}
+
 	resp, err := templateservice.GetWorkflowTemplateByID(c.Param("id"), ctx.Logger)
 	if err != nil {
 		c.JSON(e.ErrorMessage(err))
-		c.Abort()
+		c.AbortWithStatus(http.StatusInternalServerError)
 		return
 	}
 	c.YAML(200, resp)
 }
 
 func ListWorkflowTemplate(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.Template.View {
+			projectKey := c.Query("projectName")
+			if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+				ctx.UnAuthorized = true
+				return
+			}
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Workflow.Create {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
 	excludeBuildIn := false
 	if c.Query("excludeBuildIn") == "true" {
 		excludeBuildIn = true
@@ -48,8 +99,27 @@ func ListWorkflowTemplate(c *gin.Context) {
 }
 
 func CreateWorkflowTemplate(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.Template.Create {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	if err = commonutil.CheckZadigProfessionalLicense(); err != nil {
+		ctx.Err = err
+		return
+	}
 
 	args := new(commonmodels.WorkflowV4Template)
 
@@ -62,8 +132,28 @@ func CreateWorkflowTemplate(c *gin.Context) {
 }
 
 func UpdateWorkflowTemplate(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.Template.Edit {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	if err = commonutil.CheckZadigProfessionalLicense(); err != nil {
+		ctx.Err = err
+		return
+	}
 
 	args := new(commonmodels.WorkflowV4Template)
 
@@ -76,8 +166,23 @@ func UpdateWorkflowTemplate(c *gin.Context) {
 }
 
 func DeleteWorkflowTemplateByID(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.Template.Delete {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	ctx.Err = templateservice.DeleteWorkflowTemplateByID(c.Param("id"), ctx.Logger)
 }

@@ -22,7 +22,7 @@ import (
 
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
 )
 
 type Pipeline struct {
@@ -69,6 +69,10 @@ type Stage struct {
 	Desc        string                            `bson:"desc,omitempty"     json:"desc,omitempty"`
 	SubTasks    map[string]map[string]interface{} `bson:"sub_tasks"          json:"sub_tasks"`
 	AfterAll    bool                              `bson:"after_all"          json:"after_all"`
+	StartTime   int64                             `bson:"start_time" json:"start_time"`
+	EndTime     int64                             `bson:"end_time" json:"end_time"`
+	Error       string                            `bson:"error" json:"error"`
+	TypeName    string                            `bson:"-" json:"name,omitempty"`
 }
 
 type Hook struct {
@@ -89,6 +93,7 @@ type GitHook struct {
 	MatchFolders []string `bson:"match_folders"            json:"match_folders,omitempty"`
 	CodehostID   int      `bson:"codehost_id"              json:"codehost_id"`
 	AutoCancel   bool     `bson:"auto_cancel"              json:"auto_cancel"`
+	IsManual     bool     `bson:"is_manual"                json:"is_manual"`
 }
 
 type SubTask map[string]interface{}

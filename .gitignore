@@ -2,6 +2,7 @@
 *.o
 *.a
 *.so
+*.exe
 
 # Folders
 .idea
@@ -10,12 +11,14 @@ bin
 .cache
 gin-bin
 .mock
+out
 
 # Files
 *.tar.gz
 *.dat
 *.local.*
 *.out
+*.exe
 
 node_modules
 bower_components
@@ -54,3 +57,4 @@ docker/*.tar.gz
 /main
 
 test/integration/reporters/*.xml
+pkg/cli/upgradeassistant/cmd/migrate/*_test.go

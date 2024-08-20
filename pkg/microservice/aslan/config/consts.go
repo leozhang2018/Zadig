@@ -18,8 +18,10 @@ package config
 
 import (
 	"regexp"
+	"strings"
+	"time"
 
-	"github.com/koderover/zadig/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 var (
@@ -34,16 +36,11 @@ const (
 	ServiceNameRegexString = "^[a-zA-Z0-9-_]+$"
 	ConfigNameRegexString  = "^[a-zA-Z0-9-]+$"
 	ImageRegexString       = "^[a-zA-Z0-9.:\\/-]+$"
-	CVMNameRegexString     = "^[a-zA-Z_]\\w+$"
+	CVMNameRegexString     = "^[a-zA-Z_]\\w*$"
 
 	EnvRecyclePolicyAlways     = "always"
 	EnvRecyclePolicyTaskStatus = "success"
 	EnvRecyclePolicyNever      = "never"
-
-	// 定时器的所属job类型
-	WorkflowCronjob   = "workflow"
-	WorkflowV4Cronjob = "workflow_v4"
-	TestingCronjob    = "test"
 )
 
 var (
@@ -97,6 +94,10 @@ const (
 
 type Status string
 
+func (s Status) ToLower() Status {
+	return Status(strings.ToLower(string(s)))
+}
+
 const (
 	StatusDisabled       Status = "disabled"
 	StatusCreated        Status = "created"
@@ -106,6 +107,7 @@ const (
 	StatusFailed         Status = "failed"
 	StatusTimeout        Status = "timeout"
 	StatusCancelled      Status = "cancelled"
+	StatusPause          Status = "pause"
 	StatusWaiting        Status = "waiting"
 	StatusQueued         Status = "queued"
 	StatusBlocked        Status = "blocked"
@@ -114,7 +116,33 @@ const (
 	StatusNotRun         Status = "notRun"
 	StatusPrepare        Status = "prepare"
 	StatusReject         Status = "reject"
-	StatusWaitingApprove Status = "waitforapprove"
+	StatusDistributed    Status = "distributed"
+	StatusWaitingApprove Status = "wait_for_approval"
+	StatusDebugBefore    Status = "debug_before"
+	StatusDebugAfter     Status = "debug_after"
+	StatusUnstable       Status = "unstable"
+	StatusManualApproval Status = "wait_for_manual_error_handling"
+)
+
+func FailedStatus() []Status {
+	return []Status{StatusFailed, StatusTimeout, StatusCancelled, StatusReject}
+}
+
+func InCompletedStatus() []Status {
+	return []Status{StatusCreated, StatusRunning, StatusWaiting, StatusQueued, StatusBlocked, QueueItemPending, StatusPrepare, StatusWaitingApprove, ""}
+}
+
+func CompletedStatus() []Status {
+	return []Status{StatusPassed, StatusFailed, StatusTimeout, StatusCancelled, StatusReject}
+}
+
+type CustomWorkflowTaskType string
+
+const (
+	WorkflowTaskTypeWorkflow CustomWorkflowTaskType = "workflow"
+	WorkflowTaskTypeTesting  CustomWorkflowTaskType = "test"
+	WorkflowTaskTypeScanning CustomWorkflowTaskType = "scan"
+	WorkflowTaskTypeDelivery CustomWorkflowTaskType = "delivery"
 )
 
 type TaskStatus string
@@ -158,19 +186,25 @@ type StepType string
 const (
 	StepTools             StepType = "tools"
 	StepShell             StepType = "shell"
+	StepBatchFile         StepType = "batch_file"
+	StepPowerShell        StepType = "powershell"
 	StepGit               StepType = "git"
 	StepDockerBuild       StepType = "docker_build"
 	StepDeploy            StepType = "deploy"
 	StepHelmDeploy        StepType = "helm_deploy"
 	StepCustomDeploy      StepType = "custom_deploy"
 	StepImageDistribute   StepType = "image_distribute"
+	StepDownloadArchive   StepType = "download_archive"
 	StepArchive           StepType = "archive"
 	StepArchiveDistribute StepType = "archive_distribute"
 	StepJunitReport       StepType = "junit_report"
 	StepHtmlReport        StepType = "html_report"
 	StepTarArchive        StepType = "tar_archive"
 	StepSonarCheck        StepType = "sonar_check"
+	StepSonarGetMetrics   StepType = "sonar_get_metrics"
 	StepDistributeImage   StepType = "distribute_image"
+	StepDebugBefore       StepType = "debug_before"
+	StepDebugAfter        StepType = "debug_after"
 )
 
 type JobType string
@@ -184,7 +218,9 @@ const (
 	JobZadigScanning        JobType = "zadig-scanning"
 	JobCustomDeploy         JobType = "custom-deploy"
 	JobZadigDeploy          JobType = "zadig-deploy"
+	JobZadigVMDeploy        JobType = "zadig-vm-deploy"
 	JobZadigHelmDeploy      JobType = "zadig-helm-deploy"
+	JobZadigHelmChartDeploy JobType = "zadig-helm-chart-deploy"
 	JobFreestyle            JobType = "freestyle"
 	JobPlugin               JobType = "plugin"
 	JobK8sBlueGreenDeploy   JobType = "k8s-blue-green-deploy"
@@ -196,10 +232,21 @@ const (
 	JobK8sPatch             JobType = "k8s-resource-patch"
 	JobIstioRelease         JobType = "istio-release"
 	JobIstioRollback        JobType = "istio-rollback"
+	JobUpdateEnvIstioConfig JobType = "update-env-istio-config"
 	JobJira                 JobType = "jira"
 	JobNacos                JobType = "nacos"
 	JobApollo               JobType = "apollo"
+	JobSQL                  JobType = "sql"
+	JobJenkins              JobType = "jenkins"
 	JobMeegoTransition      JobType = "meego-transition"
+	JobWorkflowTrigger      JobType = "workflow-trigger"
+	JobOfflineService       JobType = "offline-service"
+	JobMseGrayRelease       JobType = "mse-gray-release"
+	JobMseGrayOffline       JobType = "mse-gray-offline"
+	JobGuanceyunCheck       JobType = "guanceyun-check"
+	JobGrafana              JobType = "grafana"
+	JobBlueKing             JobType = "blueking"
+	JobApproval             JobType = "approval"
 )
 
 const (
@@ -208,11 +255,27 @@ const (
 	ZadigLastAppliedReplicas = "last-applied-replicas"
 )
 
+type DBInstanceType string
+
+const (
+	DBInstanceTypeMySQL   DBInstanceType = "mysql"
+	DBInstanceTypeMariaDB DBInstanceType = "mariadb"
+)
+
+type ObservabilityType string
+
+const (
+	ObservabilityTypeGrafana   ObservabilityType = "grafana"
+	ObservabilityTypeGuanceyun ObservabilityType = "guanceyun"
+)
+
 type ApprovalType string
 
 const (
-	NativeApproval ApprovalType = "native"
-	LarkApproval   ApprovalType = "lark"
+	NativeApproval   ApprovalType = "native"
+	LarkApproval     ApprovalType = "lark"
+	DingTalkApproval ApprovalType = "dingtalk"
+	WorkWXApproval   ApprovalType = "workwx"
 )
 
 type ApproveOrReject string
@@ -227,6 +290,42 @@ type DeploySourceType string
 const (
 	SourceRuntime DeploySourceType = "runtime"
 	SourceFromJob DeploySourceType = "fromjob"
+)
+
+type TriggerWorkflowSourceType string
+
+const (
+	TriggerWorkflowSourceRuntime TriggerWorkflowSourceType = "runtime"
+	TriggerWorkflowSourceFromJob TriggerWorkflowSourceType = "fromjob"
+)
+
+type EnvType string
+
+const (
+	EnvTypeTest       = "test"
+	EvnTypeProduction = "production"
+)
+
+type TestModuleType string
+
+const (
+	ProductTestType TestModuleType = ""
+	ServiceTestType TestModuleType = "service_test"
+)
+
+type ScanningModuleType string
+
+const (
+	NormalScanningType  ScanningModuleType = ""
+	ServiceScanningType ScanningModuleType = "service_scanning"
+)
+
+type DeployContent string
+
+const (
+	DeployImage  DeployContent = "image"
+	DeployVars   DeployContent = "vars"
+	DeployConfig DeployContent = "config"
 )
 
 type StageType string
@@ -247,34 +346,15 @@ const (
 type NotifyType int
 
 var (
-	Announcement   NotifyType = 1 // 公告
-	PipelineStatus NotifyType = 2 // 提醒
-	Message        NotifyType = 3 // 消息
+	Announcement       NotifyType = 1 // 公告
+	PipelineStatus     NotifyType = 2 // 提醒
+	Message            NotifyType = 3 // 消息
+	WorkflowTaskStatus NotifyType = 4 // 工作流任务状态
 )
 
 // Validation constants
 const (
 	NameSpaceRegexString = "[^a-z0-9.-]"
-)
-
-// ProductPermission ...
-type ProductPermission string
-
-// ProductAuthType ...
-type ProductAuthType string
-
-const (
-	// ProductReadPermission ...
-	ProductReadPermission = ProductPermission("read")
-	// ProductWritePermission ...
-	ProductWritePermission = ProductPermission("write")
-)
-
-const (
-	// ProductAuthUser ...
-	ProductAuthUser = ProductAuthType("user")
-	// ProductAuthTeam ...
-	ProductAuthTeam = ProductAuthType("team")
 )
 
 type HookEventType string
@@ -284,12 +364,6 @@ const (
 	HookEventPr      = HookEventType("pull_request")
 	HookEventTag     = HookEventType("tag")
 	HookEventUpdated = HookEventType("ref-updated")
-)
-
-const (
-	KeyStateNew     = "new"
-	KeyStateUnused  = "unused"
-	KeyStatePresent = "present"
 )
 
 const (
@@ -324,9 +398,10 @@ const (
 
 // for custom blue-green release job
 const (
-	BlueGreenVerionLabelName = "zadig-blue-green-version"
-	BlueServiceNameSuffix    = "-zadig-blue"
-	OriginVersion            = "origin"
+	BlueGreenVersionLabelName = "zadig-blue-green-version"
+	BlueServiceNameSuffix     = "-zadig-blue"
+	OriginVersion             = "origin"
+	BlueVersion               = "blue"
 )
 
 // for custom gray release job
@@ -339,6 +414,13 @@ const (
 	GrayDeploymentSuffix       = "-zadig-gray"
 )
 
+type WorkflowTriggerType string
+
+const (
+	WorkflowTriggerTypeCommon WorkflowTriggerType = "common"
+	WorkflowTriggerTypeFixed  WorkflowTriggerType = "fixed"
+)
+
 type ProjectType string
 
 const (
@@ -348,20 +430,183 @@ const (
 	ProjectTypeLoaded = "loaded"
 )
 
+type ParamType string
+
+const (
+	ParamTypeString = "string"
+	ParamTypeBool   = "bool"
+	ParamTypeChoice = "choice"
+)
+
+type WorkflowParamType string
+
+const (
+	WorkflowParamTypeString WorkflowParamType = "string"
+	WorkflowParamTypeText   WorkflowParamType = "text"
+	WorkflowParamTypeChoice WorkflowParamType = "choice"
+	WorkflowParamTypeRepo   WorkflowParamType = "repo"
+)
+
+type ParamSourceType string
+
+const (
+	ParamSourceRuntime = "runtime"
+	ParamSourceFixed   = "fixed"
+	ParamSourceGlobal  = "global"
+)
+
 type RegistryProvider string
 
 const (
-	RegistryProviderACR       = "acr"
-	RegistryProviderSWR       = "swr"
-	RegistryProviderTCR       = "tcr"
-	RegistryProviderHarbor    = "harbor"
-	RegistryProviderDockerhub = "dockerhub"
-	RegistryProviderECR       = "ecr"
-	RegistryProviderNative    = "native"
+	RegistryProviderACR           = "acr"
+	RegistryProviderACREnterprise = "acr-enterprise"
+	RegistryProviderSWR           = "swr"
+	RegistryProviderTCR           = "tcr"
+	RegistryProviderTCREnterprise = "tcr-enterprise"
+	RegistryProviderHarbor        = "harbor"
+	RegistryProviderDockerhub     = "dockerhub"
+	RegistryProviderECR           = "ecr"
+	RegistryProviderJFrog         = "jfrog"
+	RegistryProviderNative        = "native"
+)
+
+type S3StorageProvider int
+
+const (
+	S3StorageProviderAmazonS3 = 5
+)
+
+type ClusterProvider int
+
+const (
+	ClusterProviderAmazonEKS     = 4
+	ClusterProviderTKEServerless = 5
+)
+
+type VMProvider int
+
+const (
+	VMProviderAmazon = 4
 )
 
 const (
 	TestJobJunitReportStepName   = "junit-report-step"
 	TestJobHTMLReportStepName    = "html-report-step"
 	TestJobArchiveResultStepName = "archive-result-step"
+	TestJobObjectStorageStepName = "object-storage-step"
+)
+
+type JobRunPolicy string
+
+const (
+	DefaultRun    JobRunPolicy = ""                // default run this job
+	DefaultNotRun JobRunPolicy = "default_not_run" // default not run this job
+	ForceRun      JobRunPolicy = "force_run"       // force run this job
+	SkipRun       JobRunPolicy = "skip"
+)
+
+type JobErrorPolicy string
+
+const (
+	JobErrorPolicyStop        JobErrorPolicy = "stop"
+	JobErrorPolicyIgnoreError JobErrorPolicy = "ignore_error"
+	JobErrorPolicyManualCheck JobErrorPolicy = "manual_check"
+	JobErrorPolicyRetry       JobErrorPolicy = "retry"
+)
+
+const DefaultDeleteDeploymentTimeout = 10 * time.Minute
+
+// Service creation source for openAPI
+const (
+	SourceFromTemplate = "template"
+	SourceFromYaml     = "yaml"
+)
+
+type JiraAuthType string
+
+const (
+	JiraBasicAuth           JiraAuthType = "password_or_token"
+	JiraPersonalAccessToken JiraAuthType = "personal_access_token"
+)
+
+// statistics dashboard id enum
+const (
+	DashboardDataTypeTestPassRate           = "test_pass_rate"
+	DashboardDataTypeTestAverageDuration    = "test_average_duration"
+	DashboardDataTypeBuildSuccessRate       = "build_success_rate"
+	DashboardDataTypeBuildAverageDuration   = "build_average_duration"
+	DashboardDataTypeBuildFrequency         = "build_frequency"
+	DashboardDataTypeDeploySuccessRate      = "deploy_success_rate"
+	DashboardDataTypeDeployAverageDuration  = "deploy_average_duration"
+	DashboardDataTypeDeployFrequency        = "deploy_frequency"
+	DashboardDataTypeReleaseSuccessRate     = "release_success_rate"
+	DashboardDataTypeReleaseAverageDuration = "release_average_duration"
+	DashboardDataTypeReleaseFrequency       = "release_frequency"
+
+	DashboardDataSourceZadig = "zadig"
+	DashboardDataSourceApi   = "api"
+
+	DashboardDataCategoryQuality    = "quality"
+	DashboardDataCategoryEfficiency = "efficiency"
+	DashboardDataCategorySchedule   = "schedule"
+
+	DashboardFunctionBuildAverageDuration = "5400/(x+540)"
+	DashboardFunctionBuildSuccessRate     = "-2400/(x-120)-20"
+	DashboardFunctionDeploySuccessRate    = "-2400/(x-120)-20"
+	DashboardFunctionDeployFrequency      = "100-40000/(3*x+400)"
+	DashboardFunctionTestPassRate         = "(x**2)/80-x/4+1.25"
+	DashboardFunctionTestAverageDuration  = "90000/(x+900)"
+	DashboardFunctionReleaseFrequency     = "100-200/(x+2)"
+)
+
+const (
+	CUSTOME_THEME = "custom"
+)
+
+type ReleasePlanStatus string
+
+const (
+	StatusPlanning       ReleasePlanStatus = "planning"
+	StatusWaitForApprove ReleasePlanStatus = "wait_for_approval"
+	StatusExecuting      ReleasePlanStatus = "executing"
+	StatusSuccess        ReleasePlanStatus = "success"
+	StatusCancel         ReleasePlanStatus = "cancel"
+)
+
+// ReleasePlanStatusMap is a map of status and its available next status
+var ReleasePlanStatusMap = map[ReleasePlanStatus][]ReleasePlanStatus{
+	StatusPlanning:       {StatusWaitForApprove, StatusExecuting},
+	StatusWaitForApprove: {StatusPlanning, StatusExecuting},
+	StatusExecuting:      {StatusPlanning, StatusSuccess, StatusCancel},
+}
+
+type ReleasePlanJobType string
+
+const (
+	JobText     ReleasePlanJobType = "text"
+	JobWorkflow ReleasePlanJobType = "workflow"
+)
+
+type ReleasePlanJobStatus string
+
+const (
+	ReleasePlanJobStatusTodo    ReleasePlanJobStatus = "todo"
+	ReleasePlanJobStatusDone    ReleasePlanJobStatus = "done"
+	ReleasePlanJobStatusSkipped ReleasePlanJobStatus = "skipped"
+	ReleasePlanJobStatusFailed  ReleasePlanJobStatus = "failed"
+	ReleasePlanJobStatusRunning ReleasePlanJobStatus = "running"
+)
+
+// WorkWX Related constants
+const (
+	DefaultWorkWXApprovalControlType = "Textarea"
+	DefaultWorkWXApprovalControlID   = "Textarea-1"
+)
+
+type ProductionType string
+
+const (
+	Production = "production"
+	Testing    = "testing"
+	Both       = "both"
 )

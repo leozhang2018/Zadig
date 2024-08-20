@@ -24,10 +24,10 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
-	yamlutil "github.com/koderover/zadig/pkg/util/yaml"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	yamlutil "github.com/koderover/zadig/v2/pkg/util/yaml"
 )
 
 // GetTemplateVariableYaml returns variable yaml of yamlTemplate or templateService
@@ -68,7 +68,7 @@ func SafeMergeVariableYaml(variableYamls ...string) (string, map[string]string, 
 		yamlsToMerge = append(yamlsToMerge, []byte(vYaml))
 	}
 
-	mergedYaml, err := yamlutil.Merge(yamlsToMerge)
+	mergedYaml, err := yamlutil.CleanMerge(yamlsToMerge)
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to merge variable yamls, err: %s", err)
 	}

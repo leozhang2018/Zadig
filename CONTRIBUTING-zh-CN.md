@@ -130,9 +130,9 @@ Zadig 的成长离不开大家的支持。我们欢迎各类贡献，小到修�
 2. 使用以下命令来更新`aslan`的API文档:
 
 ```bash
-cd [your root path of Zadig-X]
+cd [your root path of zadig]
 
-swag init -d ./lib/microservice/aslan/ -g server/rest/router.go -o ./lib/microservice/aslan/server/rest/doc
+make swag
 ```
 
 更多细节参考 [Swag CLI](https://github.com/swaggo/swag#swag-cli)。

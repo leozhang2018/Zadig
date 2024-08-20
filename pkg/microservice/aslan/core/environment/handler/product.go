@@ -22,11 +22,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/environment/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	"github.com/koderover/zadig/pkg/types"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	templatemodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/environment/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
+// CleanProductCronJob is called from cron
 func CleanProductCronJob(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
@@ -34,11 +37,40 @@ func CleanProductCronJob(c *gin.Context) {
 	service.CleanProductCronJob(ctx.RequestID, ctx.Logger)
 }
 
+type getInitProductResponse struct {
+	ProductName    string                           `json:"product_name"`
+	CreateTime     int64                            `json:"create_time"`
+	Revision       int64                            `json:"revision"`
+	UpdateBy       string                           `json:"update_by"`
+	Services       [][]*commonmodels.ProductService `json:"services"`
+	Render         *commonmodels.RenderInfo         `json:"render"`
+	ServiceRenders []*templatemodels.ServiceRender  `json:"chart_infos,omitempty"`
+	Source         string                           `json:"source"`
+}
+
+// @Summary Get init product
+// @Description Get init product
+// @Tags 	environment
+// @Accept 	json
+// @Produce json
+// @Param 	name			path		string								true	"project template name"
+// @Param 	envType 		query		string								true	"env type"
+// @Param 	isBaseEnv 		query		string								true	"is base env"
+// @Param 	baseEnv 		query		string								true	"base env"
+// @Success 200 			{object} 	getInitProductResponse
+// @Router /api/aslan/environment/init_info/{name} [get]
 func GetInitProduct(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	productTemplateName := c.Param("name")
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Param("name")
 
 	envType := types.EnvType(c.Query("envType"))
 	isBaseEnvStr := c.Query("isBaseEnv")
@@ -49,7 +81,6 @@ func GetInitProduct(c *gin.Context) {
 	}
 
 	var isBaseEnv bool
-	var err error
 	if envType == types.ShareEnv {
 		isBaseEnv, err = strconv.ParseBool(isBaseEnvStr)
 		if err != nil {
@@ -58,5 +89,35 @@ func GetInitProduct(c *gin.Context) {
 		}
 	}
 
-	ctx.Resp, ctx.Err = service.GetInitProduct(productTemplateName, envType, isBaseEnv, baseEnvName, ctx.Logger)
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.SystemActions.Project.Create &&
+			// this api is also used in creating testing env for some reason
+			!(ctx.Resources.ProjectAuthInfo[projectKey].Env.Create ||
+				ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin) {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	product, err := service.GetInitProduct(projectKey, envType, isBaseEnv, baseEnvName, false, ctx.Logger)
+	if err != nil {
+		ctx.Err = err
+		return
+	}
+
+	ctx.Resp = getInitProductResponse{
+		ProductName:    product.ProductName,
+		CreateTime:     product.CreateTime,
+		Revision:       product.Revision,
+		UpdateBy:       product.UpdateBy,
+		Services:       product.Services,
+		Render:         product.Render,
+		ServiceRenders: product.ServiceRenders,
+		Source:         product.Source,
+	}
 }

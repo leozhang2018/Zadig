@@ -22,11 +22,11 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/base"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/base"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func InitbasicImageInfos() []*commonmodels.BasicImage {
@@ -48,8 +48,8 @@ func InitbasicImageInfos() []*commonmodels.BasicImage {
 			UpdateBy:   "system",
 		},
 		{
-			Value:      "sonarsource/sonar-scanner-cli",
-			Label:      "sonar:latest",
+			Value:      "sonarsource/sonar-scanner-cli:5.0.1",
+			Label:      "sonar:5.0.1",
 			CreateTime: time.Now().Unix(),
 			UpdateTime: time.Now().Unix(),
 			UpdateBy:   "system",

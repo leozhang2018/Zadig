@@ -19,14 +19,14 @@ package handler
 import (
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/stat/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/stat/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 type getStatReq struct {
-	StartDate    int64    `json:"startDate,omitempty" form:"startDate,default:0"`
-	EndDate      int64    `json:"endDate,omitempty"   form:"endDate,default:0"`
+	StartDate    int64    `json:"startDate,omitempty" form:"startDate,default=0"`
+	EndDate      int64    `json:"endDate,omitempty"   form:"endDate,default=0"`
 	ProductNames []string `json:"productNames"`
 }
 

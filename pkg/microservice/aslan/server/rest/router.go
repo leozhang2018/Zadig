@@ -18,41 +18,65 @@ package rest
 
 import (
 	"github.com/gin-gonic/gin"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	swaggerfiles "github.com/swaggo/files"
 	ginswagger "github.com/swaggo/gin-swagger"
 
-	cachehandler "github.com/koderover/zadig/pkg/handler/cache"
-	buildhandler "github.com/koderover/zadig/pkg/microservice/aslan/core/build/handler"
-	codehosthandler "github.com/koderover/zadig/pkg/microservice/aslan/core/code/handler"
-	collaborationhandler "github.com/koderover/zadig/pkg/microservice/aslan/core/collaboration/handler"
-	commonhandler "github.com/koderover/zadig/pkg/microservice/aslan/core/common/handler"
-	cronhandler "github.com/koderover/zadig/pkg/microservice/aslan/core/cron/handler"
-	deliveryhandler "github.com/koderover/zadig/pkg/microservice/aslan/core/delivery/handler"
-	environmenthandler "github.com/koderover/zadig/pkg/microservice/aslan/core/environment/handler"
-	labelhandler "github.com/koderover/zadig/pkg/microservice/aslan/core/label/handler"
-	loghandler "github.com/koderover/zadig/pkg/microservice/aslan/core/log/handler"
-	multiclusterhandler "github.com/koderover/zadig/pkg/microservice/aslan/core/multicluster/handler"
-	projecthandler "github.com/koderover/zadig/pkg/microservice/aslan/core/project/handler"
-	servicehandler "github.com/koderover/zadig/pkg/microservice/aslan/core/service/handler"
-	stathandler "github.com/koderover/zadig/pkg/microservice/aslan/core/stat/handler"
-	systemhandler "github.com/koderover/zadig/pkg/microservice/aslan/core/system/handler"
-	templatehandler "github.com/koderover/zadig/pkg/microservice/aslan/core/templatestore/handler"
-	workflowhandler "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/handler"
-	testinghandler "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/testing/handler"
-	evaluationhandler "github.com/koderover/zadig/pkg/microservice/picket/core/evaluation/handler"
-	filterhandler "github.com/koderover/zadig/pkg/microservice/picket/core/filter/handler"
-	publichandler "github.com/koderover/zadig/pkg/microservice/picket/core/public/handler"
-	podexecservice "github.com/koderover/zadig/pkg/microservice/podexec/core/service"
-	policyhandler "github.com/koderover/zadig/pkg/microservice/policy/core/handler"
-	configcodehostHandler "github.com/koderover/zadig/pkg/microservice/systemconfig/core/codehost/handler"
-	connectorHandler "github.com/koderover/zadig/pkg/microservice/systemconfig/core/connector/handler"
-	emailHandler "github.com/koderover/zadig/pkg/microservice/systemconfig/core/email/handler"
-	featuresHandler "github.com/koderover/zadig/pkg/microservice/systemconfig/core/features/handler"
-	userHandler "github.com/koderover/zadig/pkg/microservice/user/core/handler"
+	cachehandler "github.com/koderover/zadig/v2/pkg/handler/cache"
+	buildhandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/build/handler"
+	codehosthandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/handler"
+	collaborationhandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/collaboration/handler"
+	commonhandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/handler"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/workflowcontroller"
+	cronhandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/cron/handler"
+	deliveryhandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/delivery/handler"
+	environmenthandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/environment/handler"
+	labelhandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/label/handler"
+	loghandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/log/handler"
+	multiclusterhandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/multicluster/handler"
+	clusterservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/multicluster/service"
+	projecthandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/project/handler"
+	releaseplanhandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/release_plan/handler"
+	servicehandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/service/handler"
+	stathandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/stat/handler"
+	systemhandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/handler"
+	templatehandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/templatestore/handler"
+	vmhandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/vm/handler"
+	workflowhandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/handler"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow"
+	testinghandler "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/testing/handler"
+	evaluationhandler "github.com/koderover/zadig/v2/pkg/microservice/picket/core/evaluation/handler"
+	filterhandler "github.com/koderover/zadig/v2/pkg/microservice/picket/core/filter/handler"
+	publichandler "github.com/koderover/zadig/v2/pkg/microservice/picket/core/public/handler"
+	podexecservice "github.com/koderover/zadig/v2/pkg/microservice/podexec/core/service"
+	configcodehostHandler "github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/codehost/handler"
+	connectorHandler "github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/connector/handler"
+	emailHandler "github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/email/handler"
+	featuresHandler "github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/features/handler"
+	"github.com/koderover/zadig/v2/pkg/tool/metrics"
 
 	// Note: have to load docs for swagger to work. See https://blog.csdn.net/weixin_43249914/article/details/103035711
-	_ "github.com/koderover/zadig/pkg/microservice/aslan/server/rest/doc"
+	_ "github.com/koderover/zadig/v2/pkg/microservice/aslan/server/rest/doc"
 )
+
+func init() {
+	// initialization for prometheus metrics
+	metrics.Metrics = prometheus.NewRegistry()
+
+	metrics.Metrics.MustRegister(metrics.RunningWorkflows)
+	metrics.Metrics.MustRegister(metrics.PendingWorkflows)
+	metrics.Metrics.MustRegister(metrics.RequestTotal)
+	metrics.Metrics.MustRegister(metrics.CPU)
+	metrics.Metrics.MustRegister(metrics.Memory)
+	metrics.Metrics.MustRegister(metrics.CPUPercentage)
+	metrics.Metrics.MustRegister(metrics.MemoryPercentage)
+	metrics.Metrics.MustRegister(metrics.Healthy)
+	metrics.Metrics.MustRegister(metrics.Cluster)
+	metrics.Metrics.MustRegister(metrics.ResponseTime)
+
+	metrics.UpdatePodMetrics()
+}
 
 // @title Zadig aslan service REST APIs
 // @version 1.0
@@ -62,7 +86,6 @@ import (
 // @contact.email contact@koderover.com
 // @license.name Apache 2.0
 // @license.url http://www.apache.org/licenses/LICENSE-2.0.html
-// @BasePath /api/aslan
 func (s *engine) injectRouterGroup(router *gin.RouterGroup) {
 	// ---------------------------------------------------------------------------------------
 	// 对外公共接口
@@ -78,12 +101,18 @@ func (s *engine) injectRouterGroup(router *gin.RouterGroup) {
 	}
 
 	for name, r := range map[string]injector{
-		"/openapi/statistics": new(stathandler.OpenAPIRouter),
-		"/openapi/projects":   new(projecthandler.OpenAPIRouter),
-		"/openapi/system":     new(systemhandler.OpenAPIRouter),
-		"/openapi/workflows":  new(workflowhandler.OpenAPIRouter),
-		"/openapi/quality":    new(testinghandler.QualityRouter),
-		"/openapi/build":      new(buildhandler.OpenAPIRouter),
+		"/openapi/statistics":   new(stathandler.OpenAPIRouter),
+		"/openapi/projects":     new(projecthandler.OpenAPIRouter),
+		"/openapi/system":       new(systemhandler.OpenAPIRouter),
+		"/openapi/workflows":    new(workflowhandler.OpenAPIRouter),
+		"/openapi/environments": new(environmenthandler.OpenAPIRouter),
+		"/openapi/quality":      new(testinghandler.QualityRouter),
+		"/openapi/build":        new(buildhandler.OpenAPIRouter),
+		"/openapi/service":      new(servicehandler.OpenAPIRouter),
+		"/openapi/release_plan": new(releaseplanhandler.OpenAPIRouter),
+		"/openapi/delivery":     new(deliveryhandler.OpenAPIRouter),
+		"/openapi/cluster":      new(multiclusterhandler.OpenAPIRouter),
+		"/openapi/logs":         new(loghandler.OpenAPIRouter),
 	} {
 		r.Inject(router.Group(name))
 	}
@@ -102,16 +131,19 @@ func (s *engine) injectRouterGroup(router *gin.RouterGroup) {
 		"/api/environment":   new(environmenthandler.Router),
 		"/api/cron":          new(cronhandler.Router),
 		"/api/workflow":      new(workflowhandler.Router),
+		"/api/release_plan":  new(releaseplanhandler.Router),
 		"/api/build":         new(buildhandler.Router),
 		"/api/delivery":      new(deliveryhandler.Router),
 		"/api/logs":          new(loghandler.Router),
 		"/api/testing":       new(testinghandler.Router),
+		"/api/quality":       new(testinghandler.QualityCenterRouter),
 		"/api/cluster":       new(multiclusterhandler.Router),
 		"/api/template":      new(templatehandler.Router),
 		"/api/collaboration": new(collaborationhandler.Router),
 		"/api/label":         new(labelhandler.Router),
 		"/api/stat":          new(stathandler.Router),
 		"/api/cache":         cachehandler.NewRouter(),
+		"/api/vm":            new(vmhandler.Router),
 	} {
 		r.Inject(router.Group(name))
 	}
@@ -126,24 +158,12 @@ func (s *engine) injectRouterGroup(router *gin.RouterGroup) {
 		r.Inject(router.Group("/api/v1"))
 	}
 
-	// inject user service APIs
-	for _, r := range []injector{
-		new(userHandler.Router),
-	} {
-		r.Inject(router.Group("/api/v1"))
-	}
-
 	// inject podexec service API(s)
 	podexec := router.Group("/api/podexec")
 	{
-		podexec.GET("/:productName/:namespace/:podName/:containerName/podExec/:envName", podexecservice.ServeWs)
-	}
-
-	// inject policy APIs
-	for _, r := range []injector{
-		new(policyhandler.Router),
-	} {
-		r.Inject(router.Group("/api/v1"))
+		podexec.GET("/:productName/:podName/:containerName/podExec/:envName", podexecservice.ServeWs)
+		podexec.GET("/production/:productName/:podName/:containerName/podExec/:envName", podexecservice.ServeWs)
+		podexec.GET("/debug/:workflowName/:jobName/task/:taskID", podexecservice.DebugWorkflow)
 	}
 
 	// inject picket APIs
@@ -161,6 +181,28 @@ func (s *engine) injectRouterGroup(router *gin.RouterGroup) {
 	}
 
 	router.GET("/api/apidocs/*any", ginswagger.WrapHandler(swaggerfiles.Handler))
+
+	// prometheus metrics API
+	handlefunc := func(c *gin.Context) {
+		metrics.UpdatePodMetrics()
+
+		runningQueue := workflow.RunningTasks()
+		pendingQueue := workflow.PendingTasks()
+		runningCustomQueue := workflowcontroller.RunningTasks()
+		pendingCustomQueue := workflowcontroller.PendingTasks()
+
+		metrics.SetRunningWorkflows(int64(len(runningQueue) + len(runningCustomQueue)))
+		metrics.SetPendingWorkflows(int64(len(pendingQueue) + len(pendingCustomQueue)))
+
+		metrics.Cluster.Reset()
+		clusterStatusMap := clusterservice.GetClusterStatus()
+		for clusterName, status := range clusterStatusMap {
+			metrics.SetClusterStatus(clusterName, status)
+		}
+
+		promhttp.HandlerFor(metrics.Metrics, promhttp.HandlerOpts{}).ServeHTTP(c.Writer, c.Request)
+	}
+	router.GET("/api/metrics", handlefunc)
 }
 
 type injector interface {

@@ -17,19 +17,28 @@ limitations under the License.
 package handler
 
 import (
-	"github.com/gin-gonic/gin"
+	"encoding/json"
+	"fmt"
+	"strconv"
 
-	testingservice "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/testing/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	"github.com/gin-gonic/gin"
+	testingservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/testing/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func OpenAPICreateScanningModule(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
 	args := new(testingservice.OpenAPICreateScanningReq)
-	err := c.BindJSON(args)
+	err = c.BindJSON(args)
 	if err != nil {
 		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
 	}
@@ -40,5 +49,152 @@ func OpenAPICreateScanningModule(c *gin.Context) {
 		return
 	}
 
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[args.ProjectName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[args.ProjectName].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[args.ProjectName].Scanning.Create {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
 	ctx.Err = testingservice.OpenAPICreateScanningModule(ctx.UserName, args, ctx.Logger)
+}
+
+func OpenAPICreateScanningTask(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	args := new(testingservice.OpenAPICreateScanningTaskReq)
+	err = c.BindJSON(args)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
+	}
+	args.ProjectName = c.Query("projectKey")
+	args.ScanName = c.Param("scanName")
+	isValid, err := args.Validate()
+	if !isValid {
+		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
+		return
+	}
+	data, err := c.GetRawData()
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
+	}
+	internalhandler.InsertOperationLog(c, ctx.UserName, args.ProjectName, "OpenAPI"+"新增", "代码扫描任务", args.ScanName, string(data), ctx.Logger)
+
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[args.ProjectName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[args.ProjectName].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[args.ProjectName].Scanning.Execute {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	taskID, err := testingservice.OpenAPICreateScanningTask(ctx.UserName, ctx.Account, ctx.UserID, args, ctx.Logger)
+	ctx.Resp = testingservice.OpenAPICreateScanningTaskResp{
+		TaskID: taskID,
+	}
+	ctx.Err = err
+}
+
+func OpenAPIGetScanningTaskDetail(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	scanName := c.Param("scanName")
+	projectKey := c.Query("projectKey")
+	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid param taskID")
+		return
+	}
+	if taskID == 0 || projectKey == "" || scanName == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid params")
+		return
+	}
+
+	ctx.Resp, ctx.Err = testingservice.OpenAPIGetScanningTaskDetail(taskID, projectKey, scanName, ctx.Logger)
+}
+
+func OpenAPICreateTestTask(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	args := new(testingservice.OpenAPICreateTestTaskReq)
+	data, err := c.GetRawData()
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
+		return
+	}
+	if err = json.Unmarshal(data, args); err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
+		return
+	}
+	isValid, err := args.Validate()
+	if !isValid {
+		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
+		return
+	}
+	internalhandler.InsertOperationLog(c, ctx.UserName, args.ProjectName, "新增", "OpenAPI"+"测试-task", fmt.Sprintf("%s-%s", args.TestName, "job"), string(data), ctx.Logger)
+
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[args.ProjectName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[args.ProjectName].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[args.ProjectName].Test.Execute {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	taskID, err := testingservice.OpenAPICreateTestTask(ctx.UserName, ctx.Account, ctx.UserID, args, ctx.Logger)
+	ctx.Resp = testingservice.OpenAPICreateTestTaskResp{
+		TaskID: taskID,
+	}
+	ctx.Err = err
+}
+
+func OpenAPIGetTestTaskResult(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	projectKey := c.Query("projectKey")
+	testName := c.Param("testName")
+	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid param taskID")
+		return
+	}
+	if taskID == 0 || projectKey == "" || testName == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid params")
+		return
+	}
+
+	ctx.Resp, ctx.Err = testingservice.OpenAPIGetTestTaskResult(taskID, projectKey, testName, ctx.Logger)
 }

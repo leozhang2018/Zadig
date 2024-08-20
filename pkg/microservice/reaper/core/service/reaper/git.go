@@ -29,11 +29,11 @@ import (
 
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/koderover/zadig/pkg/microservice/reaper/config"
-	c "github.com/koderover/zadig/pkg/microservice/reaper/core/service/cmd"
-	"github.com/koderover/zadig/pkg/microservice/reaper/core/service/meta"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/config"
+	c "github.com/koderover/zadig/v2/pkg/microservice/reaper/core/service/cmd"
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/core/service/meta"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 func (r *Reaper) RunGitGc(folder string) error {
@@ -106,8 +106,6 @@ func (r *Reaper) runGitCmds() error {
 				repo.Password = password
 				tokens = append(tokens, repo.Password)
 			}
-		} else if repo.Source == meta.ProviderCodehub {
-			tokens = append(tokens, repo.Password)
 		} else if repo.Source == meta.ProviderOther {
 			tokens = append(tokens, repo.PrivateAccessToken)
 			tokens = append(tokens, repo.SSHKey)
@@ -213,14 +211,6 @@ func (r *Reaper) buildGitCommands(repo *meta.Repo, hostNames sets.String) []*c.C
 
 		cmds = append(cmds, &c.Command{
 			Cmd:          c.RemoteAdd(repo.RemoteName, u.String()),
-			DisableTrace: true,
-		})
-	} else if repo.Source == meta.ProviderCodehub {
-		u, _ := url.Parse(repo.Address)
-		host := strings.TrimSuffix(strings.Join([]string{u.Host, u.Path}, "/"), "/")
-		user := url.QueryEscape(repo.User)
-		cmds = append(cmds, &c.Command{
-			Cmd:          c.RemoteAdd(repo.RemoteName, fmt.Sprintf("%s://%s:%s@%s/%s/%s.git", u.Scheme, user, repo.Password, host, owner, repo.Name)),
 			DisableTrace: true,
 		})
 	} else if repo.Source == meta.ProviderGitee || repo.Source == meta.ProviderGiteeEE {

@@ -19,17 +19,18 @@ package client
 import (
 	"fmt"
 
-	"github.com/koderover/zadig/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/config"
 	"istio.io/client-go/pkg/clientset/versioned/typed/networking/v1alpha3"
 	"k8s.io/client-go/discovery"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/metrics/pkg/client/clientset/versioned/typed/metrics/v1beta1"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/setting"
-	aslanClient "github.com/koderover/zadig/pkg/shared/client/aslan"
-	"github.com/koderover/zadig/pkg/tool/kube/multicluster"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	aslanClient "github.com/koderover/zadig/v2/pkg/shared/client/aslan"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/multicluster"
 )
 
 func GetKubeClient(hubserverAddr, clusterID string) (client.Client, error) {
@@ -70,11 +71,36 @@ func GetKubeClientSet(hubServerAddr, clusterID string) (*kubernetes.Clientset, e
 	if err != nil {
 		return nil, err
 	}
+	if cluster.Status != setting.Normal {
+		return nil, fmt.Errorf("无法连接集群: %s, 状态: %s", cluster.Name, cluster.Status)
+	}
 	switch cluster.Type {
 	case setting.AgentClusterType, "":
 		return multicluster.GetKubeClientSet(hubServerAddr, clusterID)
 	case setting.KubeConfigClusterType:
 		return multicluster.GetKubeClientSetFromKubeConfig(clusterID, cluster.KubeConfig)
+	default:
+		return nil, fmt.Errorf("failed to create kubeclient: unknown cluster type: %s", cluster.Type)
+	}
+}
+
+func GetKubeMetricsClient(hubserverAddr, clusterID string) (*v1beta1.MetricsV1beta1Client, error) {
+	if clusterID == setting.LocalClusterID || clusterID == "" {
+		if clusterID == setting.LocalClusterID {
+			clusterID = ""
+		}
+
+		return multicluster.GetKubeMetricsClient(hubserverAddr, clusterID)
+	}
+	cluster, err := aslanClient.New(config.AslanServiceAddress()).GetClusterInfo(clusterID)
+	if err != nil {
+		return nil, err
+	}
+	switch cluster.Type {
+	case setting.AgentClusterType, "":
+		return multicluster.GetKubeMetricsClient(hubserverAddr, clusterID)
+	case setting.KubeConfigClusterType:
+		return multicluster.GetKubeMetricsClientFromKubeConfig(clusterID, cluster.KubeConfig)
 	default:
 		return nil, fmt.Errorf("failed to create kubeclient: unknown cluster type: %s", cluster.Type)
 	}
@@ -156,6 +182,9 @@ func GetRESTConfig(hubServerAddr, clusterID string) (*rest.Config, error) {
 	cluster, err := aslanClient.New(config.AslanServiceAddress()).GetClusterInfo(clusterID)
 	if err != nil {
 		return nil, err
+	}
+	if cluster == nil {
+		return nil, fmt.Errorf("cluster %s not found", clusterID)
 	}
 
 	switch cluster.Type {

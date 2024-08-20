@@ -25,9 +25,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/collaboration/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/collaboration/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type CollaborationModeFindOptions struct {
@@ -99,6 +99,7 @@ func (c *CollaborationModeColl) Update(username string, args *models.Collaborati
 			"update_time": time.Now().Unix(),
 			"update_by":   username,
 			"members":     args.Members,
+			"member_info": args.MemberInfo,
 			"workflows":   args.Workflows,
 			"recycle_day": args.RecycleDay,
 			"revision":    res.Revision + 1,

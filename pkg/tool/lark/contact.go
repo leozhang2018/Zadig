@@ -22,7 +22,7 @@ import (
 	larkcontact "github.com/larksuite/oapi-sdk-go/v3/service/contact/v3"
 	"github.com/pkg/errors"
 
-	"github.com/koderover/zadig/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 func (client *Client) GetUserOpenIDByEmailOrMobile(_type, value string) (string, error) {
@@ -214,10 +214,19 @@ func (client *Client) GetUserInfoByID(id string) (*UserInfo, error) {
 		return nil, resp.CodeError
 	}
 
+	if resp.Data.User == nil {
+		return nil, errors.New("GetUserInfoByID: user is nil")
+	}
+
+	avatar := ""
+	if resp.Data.User.Avatar != nil {
+		avatar = getStringFromPointer(resp.Data.User.Avatar.Avatar240)
+	}
+
 	return &UserInfo{
 		ID:     id,
 		Name:   getStringFromPointer(resp.Data.User.Name),
-		Avatar: getStringFromPointer(resp.Data.User.Avatar.Avatar240),
+		Avatar: avatar,
 	}, nil
 }
 

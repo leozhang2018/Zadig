@@ -24,10 +24,10 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 
-	"github.com/koderover/zadig/pkg/microservice/systemconfig/config"
-	"github.com/koderover/zadig/pkg/microservice/systemconfig/core/email/repository/models"
-	"github.com/koderover/zadig/pkg/tool/log"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/systemconfig/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/email/repository/models"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type EmailHostColl struct {
@@ -58,7 +58,7 @@ func (c *EmailHostColl) Find() (*models.EmailHost, error) {
 
 	err := c.Collection.FindOne(ctx, query).Decode(emailHost)
 	if err != nil {
-		return nil, nil
+		return nil, err
 	}
 	return emailHost, nil
 }

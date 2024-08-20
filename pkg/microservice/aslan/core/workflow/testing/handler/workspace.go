@@ -17,13 +17,15 @@ limitations under the License.
 package handler
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/testing/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/testing/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func GetTestArtifactInfo(c *gin.Context) {
@@ -39,6 +41,21 @@ func GetTestArtifactInfo(c *gin.Context) {
 	dir := c.Query("dir")
 
 	ctx.Resp, ctx.Err = service.GetTestArtifactInfo(c.Param("pipelineName"), dir, taskID, ctx.Logger)
+}
+
+func GetTestArtifactInfoV2(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	taskID, err := strconv.ParseInt(c.Param("taskId"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
+		return
+	}
+
+	workflowName := fmt.Sprintf(setting.TestWorkflowNamingConvention, c.Param("testName"))
+
+	ctx.Resp, ctx.Err = service.GetWorkflowV4TestArtifactInfo(workflowName, c.Query("jobName"), taskID, ctx.Logger)
 }
 
 func GetWorkflowV4TestArtifactInfo(c *gin.Context) {

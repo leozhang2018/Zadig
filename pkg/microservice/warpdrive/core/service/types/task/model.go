@@ -21,9 +21,10 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/common"
-	"github.com/koderover/zadig/pkg/setting"
+	templatemodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/common"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 type Task struct {
@@ -65,6 +66,8 @@ type Task struct {
 	WorkflowArgs *WorkflowTaskArgs `bson:"workflow_args"         json:"workflow_args,omitempty"`
 	// TestArgs test workflow args
 	TestArgs *TestTaskArgs `bson:"test_args,omitempty"         json:"test_args,omitempty"`
+	// ScanningArgs argument for scanning tasks
+	ScanningArgs *ScanningArgs `bson:"scanning_args,omitempty" json:"scanning_args,omitempty"`
 	// ServiceTaskArgs sh deploy args
 	ServiceTaskArgs *ServiceTaskArgs `bson:"service_args,omitempty"         json:"service_args,omitempty"`
 	// ArtifactPackageTaskArgs arguments for artifact-package type tasks
@@ -244,6 +247,14 @@ type TestTaskArgs struct {
 	RepoName       string `bson:"repo_name"        json:"repo_name"`
 }
 
+type ScanningArgs struct {
+	ScanningName string `json:"scanning_name" bson:"scanning_name"`
+	ScanningID   string `json:"scanning_id"   bson:"scanning_id"`
+
+	// NotificationID is the id of scmnotify.Notification
+	NotificationID string `bson:"notification_id" json:"notification_id"`
+}
+
 type BuildArgs struct {
 	Repos []*Repository `bson:"repos"               json:"repos"`
 }
@@ -281,14 +292,14 @@ type ArtifactPackageTaskArgs struct {
 }
 
 type ProductService struct {
-	ServiceName string           `bson:"service_name"               json:"service_name"`
-	ProductName string           `bson:"product_name"               json:"product_name"`
-	Type        string           `bson:"type"                       json:"type"`
-	Revision    int64            `bson:"revision"                   json:"revision"`
-	Containers  []*Container     `bson:"containers"                 json:"containers,omitempty"`
-	Configs     []*ServiceConfig `bson:"configs,omitempty"          json:"configs,omitempty"`
-	Render      *RenderInfo      `bson:"render,omitempty"           json:"render,omitempty"` // 记录每个服务render信息 便于更新单个服务
-	EnvConfigs  []*EnvConfig     `bson:"-"                          json:"env_configs,omitempty"`
+	ServiceName string                        `bson:"service_name"               json:"service_name"`
+	ProductName string                        `bson:"product_name"               json:"product_name"`
+	Type        string                        `bson:"type"                       json:"type"`
+	Revision    int64                         `bson:"revision"                   json:"revision"`
+	Containers  []*Container                  `bson:"containers"                 json:"containers,omitempty"`
+	Configs     []*ServiceConfig              `bson:"configs,omitempty"          json:"configs,omitempty"`
+	Render      *templatemodels.ServiceRender `bson:"render,omitempty"           json:"render,omitempty"` // 记录每个服务render信息 便于更新单个服务
+	EnvConfigs  []*EnvConfig                  `bson:"-"                          json:"env_configs,omitempty"`
 }
 
 type Container struct {

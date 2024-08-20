@@ -19,15 +19,14 @@ package handler
 import (
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/stat/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/stat/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/stat/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 type GetDeployStatArgs struct {
-	StartDate int64 `json:"startDate"      form:"startDate,default:0"`
-	EndDate   int64 `json:"endDate"        form:"endDate,default:0"`
+	StartDate int64 `json:"startDate"      form:"startDate,default=0"`
+	EndDate   int64 `json:"endDate"        form:"endDate,default=0"`
 }
 
 func GetDeployStat(c *gin.Context) {
@@ -40,24 +39,29 @@ func GetDeployStat(c *gin.Context) {
 		return
 	}
 
-	ctx.Resp, ctx.Err = service.GetDeployDailyTotalAndSuccess(&models.DeployStatOption{
-		StartDate: args.StartDate,
-		EndDate:   args.EndDate,
-	}, ctx.Logger)
+	ctx.Resp, ctx.Err = service.GetDeployDashboard(args.StartDate, args.EndDate, []string{}, ctx.Logger)
+}
+
+type OpenAPIGetDeployStatArgs struct {
+	StartDate int64  `json:"startDate"      form:"startDate,default=0"`
+	EndDate   int64  `json:"endDate"        form:"endDate,default=0"`
+	Project   string `json:"project"        form:"projectKey"`
 }
 
 func GetDeployStatsOpenAPI(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	args := new(GetDeployStatArgs)
+	args := new(OpenAPIGetDeployStatArgs)
 	if err := c.ShouldBindQuery(args); err != nil {
 		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
 		return
 	}
 
-	ctx.Resp, ctx.Err = service.GetDeployStats(&models.DeployStatOption{
-		StartDate: args.StartDate,
-		EndDate:   args.EndDate,
-	}, ctx.Logger)
+	projects := make([]string, 0)
+	if args.Project != "" {
+		projects = append(projects, args.Project)
+	}
+
+	ctx.Resp, ctx.Err = service.GetDeployDashboard(args.StartDate, args.EndDate, projects, ctx.Logger)
 }

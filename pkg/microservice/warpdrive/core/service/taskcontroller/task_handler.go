@@ -23,19 +23,22 @@ import (
 	"strings"
 	"time"
 
-	"github.com/nsqio/go-nsq"
-	uuid "github.com/satori/go.uuid"
+	"github.com/google/uuid"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/common"
-	plugins "github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/taskplugin"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/util/rand"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/msg_queue"
+	aslantask "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/task"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/common"
+	plugins "github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/taskplugin"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/util/rand"
 )
 
 var (
@@ -53,17 +56,7 @@ var durationBeforeNextTask = 10 * time.Second
 // Note: `durationTouchMsg` is used to emit `TOUCH` cmd and it should smaller than `durationBeforeNextTask`.
 var durationTouchMsg = 5 * time.Second
 
-// Sender: sender to send ack/notification
-// TaskPlugins: registered task plugin initiators to initiate specific plugin to execute task
-type ExecHandler struct {
-	Sender      *nsq.Producer
-	TaskPlugins map[config.TaskType]plugins.Initiator
-}
-
-type CancelHandler struct{}
-
-// Message handler to handle task execution message
-func (h *ExecHandler) HandleMessage(message *nsq.Message) error {
+func (h *ExecHandler) PipelineTaskHandler() {
 	defer func() {
 		// 每次处理完消息, 等待一段时间不处理新消息
 		time.Sleep(durationBeforeNextTask)
@@ -71,40 +64,22 @@ func (h *ExecHandler) HandleMessage(message *nsq.Message) error {
 
 	xl = log.SugaredLogger()
 
-	// 获取 PipelineTask 内容
-	if err := json.Unmarshal(message.Body, &pipelineTask); err != nil {
-		xl.Errorf("unmarshal PipelineTask error: %v", err)
-		return nil
-	}
 	taskName := fmt.Sprintf("%s:%d", pipelineTask.PipelineName, pipelineTask.TaskID)
 	xl.Infof("Receiving pipeline task %s message", taskName)
 
 	xl = Logger(pipelineTask)
 	ctx, cancel = context.WithCancel(context.Background())
 
-	go func(ctx context.Context, taskName string) {
-		for {
-			select {
-			case <-ctx.Done():
-				xl.Infof("Pipeline task %q has been canceled. Exit.", taskName)
-				return
-			case <-time.After(durationTouchMsg):
-				if pipelineTask == nil {
-					xl.Infof("Pipeline task %q has completed. Exit.", taskName)
-					return
-				}
-
-				xl.Infof("After %s, touch message %q.", durationTouchMsg.String(), taskName)
-				message.Touch()
-			}
-		}
-	}(ctx, taskName)
-
 	h.runPipelineTask(ctx, cancel, xl)
-
-	// Note: If returning `nil`, we emit `FIN` cmd to nsq indicating that the messsage has been processed succefully.
-	return nil
 }
+
+// TaskPlugins: registered task plugin initiators to initiate specific plugin to execute task
+type ExecHandler struct {
+	AckID       int
+	TaskPlugins map[config.TaskType]plugins.Initiator
+}
+
+type CancelHandler struct{}
 
 func (h *ExecHandler) runPipelineTask(ctx context.Context, cancel context.CancelFunc, xl *zap.SugaredLogger) {
 	defer func() {
@@ -166,8 +141,8 @@ func (h *ExecHandler) runPipelineTask(ctx context.Context, cancel context.Cancel
 		DockerHost:        dockerHost,
 		Workspace:         fmt.Sprintf("%s/%s", pipelineTask.ConfigPayload.S3Storage.Path, pipelineTask.PipelineName),
 		DistDir:           fmt.Sprintf("%s/%s/dist/%d", pipelineTask.ConfigPayload.S3Storage.Path, pipelineTask.PipelineName, pipelineTask.TaskID),
-		DockerMountDir:    fmt.Sprintf("/tmp/%s/docker/%d", uuid.NewV4(), time.Now().Unix()),
-		ConfigMapMountDir: fmt.Sprintf("/tmp/%s/cm/%d", uuid.NewV4(), time.Now().Unix()),
+		DockerMountDir:    fmt.Sprintf("/tmp/%s/docker/%d", uuid.NewString(), time.Now().Unix()),
+		ConfigMapMountDir: fmt.Sprintf("/tmp/%s/cm/%d", uuid.NewString(), time.Now().Unix()),
 		MultiRun:          pipelineTask.MultiRun,
 	}
 	pipelineTask.DockerHost = dockerHost
@@ -185,15 +160,8 @@ func (h *ExecHandler) runPipelineTask(ctx context.Context, cancel context.Cancel
 	// Return 之前会执行defer内容，更新pipeline end time, 发送ACK，发送notification
 }
 
-func (h *CancelHandler) HandleMessage(message *nsq.Message) error {
+func (h *CancelHandler) HandleMessage(msg *CancelMessage) error {
 	xl = Logger(pipelineTask)
-
-	// 获取 cancel message
-	var msg *CancelMessage
-	if err := json.Unmarshal(message.Body, &msg); err != nil {
-		xl.Errorf("unmarshal CancelMessage error: %v", err)
-		return nil
-	}
 
 	xl.Infof("receiving cancel task %s:%d message", msg.PipelineName, msg.TaskID)
 
@@ -217,43 +185,43 @@ func (h *CancelHandler) HandleMessage(message *nsq.Message) error {
 // 无需发送cancel信息
 func (h *ExecHandler) SendAck() {
 	xl = Logger(pipelineTask)
-	pb, err := func() ([]byte, error) {
-		pipelineTask.RwLock.Lock()
-		defer pipelineTask.RwLock.Unlock()
-
-		pb, err := json.Marshal(&pipelineTask)
-		if err != nil {
-			return nil, err
-		}
-		return pb, err
+	pipelineTask.RwLock.Lock()
+	defer func() {
+		h.AckID++
+		pipelineTask.RwLock.Unlock()
 	}()
-
+	t := new(aslantask.Task)
+	err := commonmodels.IToi(pipelineTask, t)
 	if err != nil {
-		xl.Errorf("marshal PipelineTask error: %v", err)
+		xl.Errorf("convert PipelineTask to Task error: %v", err)
+		return
+	}
+	err = mongodb.NewMsgQueuePipelineTaskColl().Create(&msg_queue.MsgQueuePipelineTask{
+		Task:      t,
+		QueueType: setting.TopicAck,
+		QueueID:   h.AckID,
+	})
+	if err != nil {
+		xl.Errorf("SendACK %d: create MsgQueuePipelineTask error: %v", h.AckID, err)
 		return
 	}
 
 	//DEBUG ONLY
-	xl.Infof("Sending ACK: %#v", pipelineTask)
-
-	if err := h.Sender.Publish(setting.TopicAck, pb); err != nil {
-		xl.Errorf("publish [%s] error: %v", setting.TopicAck, err)
-		return
-	}
+	xl.Infof("Sending ACK %d: %#v", h.AckID, pipelineTask)
 }
 
 // SendItReport ...
 func (h *ExecHandler) SendItReport() {
-	pb, err := json.Marshal(&itReport)
-	if err != nil {
-		xl.Errorf("marshal itReport error: %v", err)
+	report := new(commonmodels.ItReport)
+	if err := commonmodels.IToi(itReport, report); err != nil {
+		xl.Errorf("unmarshal ItReport message error: %v", err)
 		return
 	}
 
-	if err := h.Sender.Publish(setting.TopicItReport, pb); err != nil {
-		xl.Errorf("publish [%s] error: %v", setting.TopicItReport, err)
-		return
+	if err := mongodb.NewItReportColl().Upsert(report); err != nil {
+		xl.Errorf("create ItReport error: %v", err)
 	}
+	return
 }
 
 // SendNotification ...
@@ -279,8 +247,11 @@ func (h *ExecHandler) SendNotification() {
 		xl.Errorf("marshal Notify error: %v", err)
 		return
 	}
-	
-	if err := h.Sender.Publish(setting.TopicNotification, nb); err != nil {
+
+	if err := mongodb.NewMsgQueueCommonColl().Create(&msg_queue.MsgQueueCommon{
+		Payload:   string(nb),
+		QueueType: setting.TopicNotification,
+	}); err != nil {
 		xl.Errorf("publish [%s] error: %v", setting.TopicNotification, err)
 		return
 	}
@@ -331,7 +302,6 @@ func (h *ExecHandler) runStage(stagePosition int, stage *common.Stage, concurren
 			if deployTask.ServiceType != setting.HelmDeployType {
 				continue
 			}
-			workerConcurrency = 1
 			pluginInstance := plugins.InitializeHelmDeployTaskPlugin(config.TaskDeploy)
 			pluginInstance.Task = deployTask
 			if _, ok := pluginsByService[deployTask.ServiceName]; !ok {

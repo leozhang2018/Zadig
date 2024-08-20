@@ -26,9 +26,10 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type FindRegOps struct {
@@ -125,6 +126,32 @@ func (r *RegistryNamespaceColl) Find(opt *FindRegOps) (*models.RegistryNamespace
 
 func (r *RegistryNamespaceColl) FindAll(opt *FindRegOps) ([]*models.RegistryNamespace, error) {
 	query := opt.getQuery()
+
+	ctx := context.Background()
+	opts := options.Find()
+	resp := make([]*models.RegistryNamespace, 0)
+
+	cursor, err := r.Collection.Find(ctx, query, opts)
+	if err != nil {
+		return nil, err
+	}
+
+	err = cursor.All(ctx, &resp)
+	if err != nil {
+		return nil, err
+	}
+
+	return resp, err
+}
+
+func (r *RegistryNamespaceColl) FindByProject(projectName string) ([]*models.RegistryNamespace, error) {
+	query := bson.M{
+		"projects": bson.M{
+			"$elemMatch": bson.M{
+				"$in": bson.A{projectName, setting.AllProjects},
+			},
+		},
+	}
 
 	ctx := context.Background()
 	opts := options.Find()

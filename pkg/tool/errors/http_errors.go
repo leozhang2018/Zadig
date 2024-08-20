@@ -108,7 +108,11 @@ var (
 	// ErrValidateServiceUpdate
 	ErrValidateServiceUpdate = NewHTTPError(6057, "更新服务配置失败")
 	// ErrChartDryRun
-	ErrHelmDryRunFailed = NewHTTPError(6058, "helm chart --dry-run 失败，服务保存不成功")
+	ErrHelmDryRunFailed            = NewHTTPError(6058, "helm chart --dry-run 失败，服务保存不成功")
+	ErrListServiceTemplateVersions = NewHTTPError(6059, "列出服务模版版本失败")
+	// FIXME: run out of error code
+	ErrDiffServiceTemplateVersions    = NewHTTPError(6040, "Diff服务模版版本失败")
+	ErrRollbackServiceTemplateVersion = NewHTTPError(6041, "回滚服务模版版本失败")
 
 	//-----------------------------------------------------------------------------------------------
 	// Product APIs Range: 6060 - 6079
@@ -149,7 +153,8 @@ var (
 	// ErrListEnvs ...
 	ErrListEnvs = NewHTTPError(6075, "列出环境失败")
 	// ErrUpdateEnv ...
-	ErrUpdateEnv = NewHTTPError(6076, "更新环境失败")
+	ErrUpdateEnv    = NewHTTPError(6076, "更新环境失败")
+	ErrUpdateEnvCfg = NewHTTPError(6076, "更新环境资源配置失败")
 	// ErrDeleteEnv ...
 	ErrDeleteEnv = NewHTTPError(6077, "删除环境失败")
 	// ErrGetEnv ...
@@ -160,9 +165,23 @@ var (
 	ErrForkProduct = NewHTTPError(6060, "Fork开源项目失败")
 	// TODO: max error code reached, sharing error code with delete product
 	ErrUnForkProduct = NewHTTPError(6063, "删除Fork环境失败")
+	// TODO: max error code reached, sharing error code with get env
+	ErrGetEnvConfigs = NewHTTPError(6078, "获取环境配置失败")
+	// TODO: max error code reached, sharing error code with update env
+	ErrUpdateEnvConfigs = NewHTTPError(6076, "更新环境配置失败")
+	// TODO: max error code reached, sharing error code with update env
+	ErrEnvSleep                  = NewHTTPError(6076, "环境睡眠失败")
+	ErrCreateProjectGroup        = NewHTTPError(6077, "创建项目分组失败")
+	ErrUpdateProjectGroup        = NewHTTPError(6077, "更新项目分组失败")
+	ErrDeleteProjectGroup        = NewHTTPError(6077, "删除项目分组失败")
+	ErrListEnvServiceVersions    = NewHTTPError(6079, "列出环境服务版本失败")
+	ErrDiffEnvServiceVersions    = NewHTTPError(6079, "Diff环境服务版本失败")
+	ErrRollbackEnvServiceVersion = NewHTTPError(6079, "回滚环境服务版本失败")
+	ErrSetupPortalService        = NewHTTPError(6079, "设置入口服务失败")
+	ErrGetPortalService          = NewHTTPError(6079, "获取入口服务配置失败")
 
 	//-----------------------------------------------------------------------------------------------
-	// Product Service APIs Range: 6080 - 6099
+	// Product Service APIs Range: 6080 - 6099 AND 6150 -6199
 	//-----------------------------------------------------------------------------------------------
 
 	// ErrRestartService ...
@@ -207,9 +226,14 @@ var (
 	ErrLoginPm = NewHTTPError(6099, "登录主机失败")
 
 	ErrDeleteSvcHasSvcsInSubEnv = NewHTTPError(6094, "删除服务失败，待删除服务存在于子环境中")
+	ErrPreviewYaml              = NewHTTPError(6150, "预览Yaml失败")
+	ErrAnalysisEnvResource      = NewHTTPError(6151, "AI环境巡检失败")
+	ErrListPod                  = NewHTTPError(6152, "列出Pod失败")
+	ErrGetPodDetail             = NewHTTPError(6153, "获取Pod详情失败")
+	ErrVmExecCmd                = NewHTTPError(6154, "主机服务执行命令失败")
 
 	//-----------------------------------------------------------------------------------------------
-	// it report APIs Range: 6100 - 6199
+	// it report APIs Range: 6100 - 6149
 	//-----------------------------------------------------------------------------------------------
 
 	// ErrGetItReport ...
@@ -291,6 +315,16 @@ var (
 	// ErrApproveTask ...
 	ErrApproveTask = NewHTTPError(6169, "批准工作流任务失败")
 
+	// ErrSetBreakpoint
+	ErrSetBreakpoint = NewHTTPError(6170, "修改断点状态失败")
+
+	// ErrStopDebugShell
+	ErrStopDebugShell = NewHTTPError(6171, "结束调试步骤失败")
+
+	// ErrGetDebugShell
+	ErrGetDebugShell = NewHTTPError(6172, "获取调试 Shell 失败")
+
+	ErrEnableDebug = NewHTTPError(6173, "开启工作流任务调试失败")
 	//-----------------------------------------------------------------------------------------------
 	// Keystore APIs Range: 6180 - 6189
 	//-----------------------------------------------------------------------------------------------
@@ -490,6 +524,10 @@ var (
 	ErrFindWorkflow = NewHTTPError(6542, "查询workflow失败")
 	// ErrDeleteWorkflow ...
 	ErrDeleteWorkflow = NewHTTPError(6543, "删除workflow失败")
+	// ErrFilterWorkflowVars ...
+	ErrFilterWorkflowVars = NewHTTPError(6544, "过滤workflow服务变量失败")
+	// ErrFindWorkflow ...
+	ErrPresetWorkflow = NewHTTPError(6545, "预配置workflow失败")
 
 	//-----------------------------------------------------------------------------------------------
 	// Directory APIs Range: 6550 - 6560
@@ -500,6 +538,7 @@ var (
 	ErrCodehostListBranches   = NewHTTPError(6552, "请确认是否为有效代码源，列出分支失败")
 	ErrCodehostListPrs        = NewHTTPError(6553, "请确认是否为有效代码源，列出pr失败")
 	ErrCodehostListTags       = NewHTTPError(6554, "请确认是否为有效代码源，列出tag失败")
+	ErrCodehostListCommits    = NewHTTPError(6555, "请确认是否为有效代码源，列出commit失败")
 
 	//-----------------------------------------------------------------------------------------------
 	// delivery_version APIs Range: 6560 - 6569
@@ -511,6 +550,7 @@ var (
 	ErrGetDeliveryVersion    = NewHTTPError(6563, "查询交付中心版本失败")
 	ErrFindDeliveryProducts  = NewHTTPError(6564, "查询交付中心产品列表失败")
 	ErrUpdateDeliveryVersion = NewHTTPError(6565, "更新交付中心版本失败")
+	ErrCheckDeliveryVersion  = NewHTTPError(6566, "检查交付中心版本失败")
 
 	//-----------------------------------------------------------------------------------------------
 	// delivery_build APIs Range: 6570 - 6579
@@ -564,11 +604,12 @@ var (
 
 	// K8SCluster Manage APIs Range: 6640 - 6650
 	//-----------------------------------------------------------------------------------------------
-	ErrListK8SCluster  = NewHTTPError(6640, "列出集群列表失败")
-	ErrCreateCluster   = NewHTTPError(6641, "创建集群失败")
-	ErrUpdateCluster   = NewHTTPError(6642, "更新集群失败")
-	ErrClusterNotFound = NewHTTPError(6643, "未找到指定集群")
-	ErrDeleteCluster   = NewHTTPError(6644, "删除集群失败")
+	ErrListK8SCluster        = NewHTTPError(6640, "列出集群列表失败")
+	ErrCreateCluster         = NewHTTPError(6641, "创建集群失败")
+	ErrUpdateCluster         = NewHTTPError(6642, "更新集群失败")
+	ErrClusterNotFound       = NewHTTPError(6643, "未找到指定集群")
+	ErrDeleteCluster         = NewHTTPError(6644, "删除集群失败")
+	ErrDeleteClusterStrategy = NewHTTPError(6645, "删除集群调度策略失败")
 
 	//-----------------------------------------------------------------------------------------------
 	// operation APIs Range: 6650 - 6659
@@ -677,6 +718,7 @@ var (
 	// Cronjob Error Range: 6810 - 6819
 	//-----------------------------------------------------------------------------------------------
 	ErrUpsertCronjob = NewHTTPError(6810, "更新定时器失败")
+	ErrGetCronjob    = NewHTTPError(6811, "获取定时器失败")
 
 	//-----------------------------------------------------------------------------------------------
 	// dindClean Error Range: 6820 - 6829
@@ -684,17 +726,18 @@ var (
 	ErrDindClean       = NewHTTPError(6820, "系统正在清理中，请等待...")
 	ErrCreateDindClean = NewHTTPError(6821, "创建镜像缓存清理失败")
 	ErrUpdateDindClean = NewHTTPError(6822, "更新镜像缓存清理失败")
+	ErrCleanDindClean  = NewHTTPError(6823, "清理镜像缓存失败")
 
 	//-----------------------------------------------------------------------------------------------
 	// jenkins integraton Error Range: 6830 - 6839
 	//-----------------------------------------------------------------------------------------------
-	ErrCreateJenkinsIntegration = NewHTTPError(6831, "创建jenkins集成失败")
-	ErrListJenkinsIntegration   = NewHTTPError(6832, "获取jenkins集成列表失败")
-	ErrUpdateJenkinsIntegration = NewHTTPError(6833, "更新jenkins集成失败")
-	ErrDeleteJenkinsIntegration = NewHTTPError(6834, "删除jenkins集成失败")
-	ErrTestJenkinsConnection    = NewHTTPError(6835, "用户名或者密码不正确")
-	ErrListJobNames             = NewHTTPError(6836, "获取job名称列表失败")
-	ErrListJobBuildArgs         = NewHTTPError(6837, "获取job构建参数列表失败")
+	ErrCreateCICDTools       = NewHTTPError(6831, "创建CI/CD工具失败")
+	ErrListCICDTools         = NewHTTPError(6832, "获取CI/CD工具列表失败")
+	ErrUpdateCICDTools       = NewHTTPError(6833, "更新CI/CD工具失败")
+	ErrDeleteCICDTools       = NewHTTPError(6834, "删除CI/CD工具失败")
+	ErrTestJenkinsConnection = NewHTTPError(6835, "用户名或者密码不正确")
+	ErrListJobNames          = NewHTTPError(6836, "获取job名称列表失败")
+	ErrListJobBuildArgs      = NewHTTPError(6837, "获取job构建参数列表失败")
 
 	//-----------------------------------------------------------------------------------------------
 	// external link Error Range: 6840 - 6849
@@ -776,9 +819,9 @@ var (
 	ErrValidateIMApp = NewHTTPError(6935, "校验 IM 应用失败")
 
 	//-----------------------------------------------------------------------------------------------
-	// check workflow task lark approval available releated errors: 6940-6949
+	// check workflow task lark or dingtalk approval available releated errors: 6940-6949
 	//-----------------------------------------------------------------------------------------------
-	ErrCheckLarkApprovalCreator = NewHTTPError(6940, "获取飞书账号信息失败")
+	ErrCheckApprovalInitiator = NewHTTPError(6940, "获取 IM 审批发起人账号信息失败")
 
 	//-----------------------------------------------------------------------------------------------
 	// project management releated errors: 6950-6959
@@ -816,4 +859,82 @@ var (
 	ErrCreateMeegoHook = NewHTTPError(6982, "创建飞书 hook 失败")
 	ErrUpdateMeegoHook = NewHTTPError(6983, "更新飞书 hook 失败")
 	ErrDeleteMeegoHook = NewHTTPError(6984, "删除飞书 hook 失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// configuration releated Error Range: 6990 - 6999
+	//-----------------------------------------------------------------------------------------------
+	ErrGetApolloInfo = NewHTTPError(6990, "获取 apollo 信息失败")
+	ErrGetNacosInfo  = NewHTTPError(6991, "获取 nacos 信息失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// statistics dashboard Error Range: 7000 - 7009
+	//-----------------------------------------------------------------------------------------------
+	ErrCreateStatisticsDashboardConfig = NewHTTPError(7000, "创建统计看板配置失败")
+	ErrListStatisticsDashboardConfig   = NewHTTPError(7001, "列出统计看板配置失败")
+	ErrUpdateStatisticsDashboardConfig = NewHTTPError(7002, "更新统计看板配置失败")
+	ErrDeleteStatisticsDashboardConfig = NewHTTPError(7003, "删除统计看板配置失败")
+	ErrGetStatisticsDashboard          = NewHTTPError(7004, "获取统计看板失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// llm integraton Error Range: 7010 - 7019
+	//-----------------------------------------------------------------------------------------------
+	ErrCreateLLMIntegration = NewHTTPError(7010, "创建llm集成失败")
+	ErrListLLMIntegration   = NewHTTPError(7011, "获取llm集成列表失败")
+	ErrUpdateLLMIntegration = NewHTTPError(7012, "更新llm集成失败")
+	ErrDeleteLLMIntegration = NewHTTPError(7013, "删除llm集成失败")
+	ErrGetLLMIntegration    = NewHTTPError(7014, "获取llm集成详情失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// observability integration Error Range: 7020 - 7029
+	//-----------------------------------------------------------------------------------------------
+	ErrCreateObservabilityIntegration = NewHTTPError(7020, "创建 观测工具 集成失败")
+	ErrListObservabilityIntegration   = NewHTTPError(7021, "获取 观测工具 集成列表失败")
+	ErrUpdateObservabilityIntegration = NewHTTPError(7022, "更新 观测工具 集成失败")
+	ErrDeleteObservabilityIntegration = NewHTTPError(7023, "删除 观测工具 集成失败")
+	ErrGetObservabilityIntegration    = NewHTTPError(7024, "获取 观测工具 集成详情失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// zadig vm Error Range: 7030 - 7039
+	//-----------------------------------------------------------------------------------------------
+	ErrCreateZadigVM       = NewHTTPError(7030, "创建 zadig vm 失败")
+	ErrListZadigVM         = NewHTTPError(7031, "获取 zadig vm 列表失败")
+	ErrUpdateZadigVM       = NewHTTPError(7032, "更新 zadig vm 失败")
+	ErrDeleteZadigVM       = NewHTTPError(7033, "删除 zadig vm 失败")
+	ErrOfflineZadigVM      = NewHTTPError(7034, "下线 zadig vm 失败")
+	ErrUpgradeZadigVMAgent = NewHTTPError(7035, "升级 zadig agent 失败")
+	ErrRecoveryZadigVM     = NewHTTPError(7036, "恢复 zadig vm 失败")
+
+	// Business Directory Error Range: 7040 - 7049
+	//-----------------------------------------------------------------------------------------------
+	ErrGetBizDirProject        = NewHTTPError(7040, "获取业务目录项目失败")
+	ErrGetBizDirProjectService = NewHTTPError(7041, "获取业务目录服务失败")
+	ErrGetBizDirServiceDetail  = NewHTTPError(7042, "获取业务目录服务详情失败")
+	ErrSearchBizDirByProject   = NewHTTPError(7043, "根据项目搜索业务目录失败")
+	ErrSearchBizDirByService   = NewHTTPError(7044, "根据服务搜索业务目录失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// License APIs Range: 7050 - 7059
+	//-----------------------------------------------------------------------------------------------
+	ErrLicenseInvalid = NewHTTPError(7050, "用户许可证不可用，请检查许可证后重试")
+
+	//-----------------------------------------------------------------------------------------------
+	// Istio Grayscale APIs Range: 7060 - 7069
+	//-----------------------------------------------------------------------------------------------
+	ErrEnableIstioGrayscale             = NewHTTPError(7060, "开启Istio灰度失败")
+	ErrDisableIstioGrayscale            = NewHTTPError(7061, "关闭Istio灰度失败")
+	ErrCheckIstioGrayscale              = NewHTTPError(7062, "检查Istio灰度就绪失败")
+	ErrGetIstioGrayscaleConfig          = NewHTTPError(7063, "获取Istio灰度配置失败")
+	ErrSetIstioGrayscaleConfig          = NewHTTPError(7064, "设置Istio灰度失败")
+	ErrGetIstioGrayscalePortalService   = NewHTTPError(7065, "获取Istio灰度入口服务配置失败")
+	ErrSetupIstioGrayscalePortalService = NewHTTPError(7066, "设置Istio灰度入口服务失败")
+
+	//-----------------------------------------------------------------------------------------------
+	// release plan template releated errors: 7070 - 7079
+	//-----------------------------------------------------------------------------------------------
+	ErrCreateReleasePlanTemplate = NewHTTPError(7070, "创建发布计划模板失败")
+	ErrUpdateReleasePlanTemplate = NewHTTPError(7071, "更新发布计划模板失败")
+	ErrListReleasePlanTemplate   = NewHTTPError(7072, "列出发布计划模板失败")
+	ErrGetReleasePlanTemplate    = NewHTTPError(7073, "获取发布计划模板失败")
+	ErrDeleteReleasePlanTemplate = NewHTTPError(7074, "删除发布计划模板失败")
+	ErrLintReleasePlanTemplate   = NewHTTPError(7075, "检查发布计划模板失败")
 )

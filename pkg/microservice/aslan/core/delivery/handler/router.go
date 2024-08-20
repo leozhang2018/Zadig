@@ -29,14 +29,7 @@ func (*Router) Inject(router *gin.RouterGroup) {
 		deliveryArtifact.GET("", ListDeliveryArtifacts)
 		deliveryArtifact.GET("/:id", GetDeliveryArtifact)
 		deliveryArtifact.GET("/image", GetDeliveryArtifactIDByImage)
-		deliveryArtifact.POST("", CreateDeliveryArtifacts)
-		deliveryArtifact.POST("/:id", UpdateDeliveryArtifact)
 		deliveryArtifact.POST("/:id/activities", CreateDeliveryActivities)
-	}
-
-	deliveryProduct := router.Group("products")
-	{
-		deliveryProduct.GET("/:releaseId", GetProductByDeliveryInfo)
 	}
 
 	deliveryRelease := router.Group("releases")
@@ -44,7 +37,9 @@ func (*Router) Inject(router *gin.RouterGroup) {
 		deliveryRelease.GET("/:id", GetDeliveryVersion)
 		deliveryRelease.GET("", ListDeliveryVersion)
 		deliveryRelease.DELETE("/:id", GetProductNameByDelivery, DeleteDeliveryVersion)
+		deliveryRelease.POST("/k8s", CreateK8SDeliveryVersion)
 		deliveryRelease.POST("/helm", CreateHelmDeliveryVersion)
+		deliveryRelease.GET("/check", CheckDeliveryVersion)
 		deliveryRelease.POST("/helm/global-variables", ApplyDeliveryGlobalVariables)
 		deliveryRelease.GET("/helm/charts", DownloadDeliveryChart)
 		deliveryRelease.GET("/helm/charts/version", GetChartVersionFromRepo)
@@ -52,21 +47,17 @@ func (*Router) Inject(router *gin.RouterGroup) {
 		deliveryRelease.GET("/helm/charts/filePath", GetDeliveryChartFilePath)
 		deliveryRelease.GET("/helm/charts/fileContent", GetDeliveryChartFileContent)
 	}
+}
 
-	deliveryPackage := router.Group("packages")
-	{
-		deliveryPackage.GET("", ListPackagesVersion)
-	}
+type OpenAPIRouter struct{}
 
-	deliveryService := router.Group("servicenames")
+func (*OpenAPIRouter) Inject(router *gin.RouterGroup) {
+	deliveryRelease := router.Group("releases")
 	{
-		deliveryService.GET("", ListDeliveryServiceNames)
-	}
-
-	deliverySecurity := router.Group("security")
-	{
-		deliverySecurity.GET("/stats", ListDeliverySecurityStatistics)
-		deliverySecurity.GET("", ListDeliverySecurity)
-		deliverySecurity.POST("", CreateDeliverySecurity)
+		deliveryRelease.GET("", OpenAPIListDeliveryVersion)
+		deliveryRelease.GET("/:id", OpenAPIGetDeliveryVersion)
+		deliveryRelease.DELETE("/:id", OpenAPIDeleteDeliveryVersion)
+		deliveryRelease.POST("/k8s", OpenAPICreateK8SDeliveryVersion)
+		deliveryRelease.POST("/helm", OpenAPICreateHelmDeliveryVersion)
 	}
 }

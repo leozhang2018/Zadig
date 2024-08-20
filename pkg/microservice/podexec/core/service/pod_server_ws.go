@@ -18,27 +18,51 @@ package service
 
 import (
 	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"go.uber.org/zap"
+	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func ServeWs(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	namespace := c.Param("namespace")
-	podName := c.Param("podName")
-	containerName := c.Param("containerName")
-	clusterID := c.Query("clusterId")
-
-	if namespace == "" || podName == "" || containerName == "" {
-		ctx.Err = e.ErrInvalidParam.AddDesc("namespace,podName,containerName can't be empty,please check!")
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
 		return
 	}
-	log.Infof("exec containerName: %s, pod: %s, namespace: %s", containerName, podName, namespace)
+
+	podName := c.Param("podName")
+	containerName := c.Param("containerName")
+
+	if podName == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("containerName can't be empty,please check!")
+		return
+	}
+	log.Infof("exec containerName: %s, pod: %s", containerName, podName)
+
+	productName := c.Query("projectName")
+	envName := c.Param("envName")
+	productInfo, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{Name: productName, EnvName: envName})
+	if err != nil {
+		ctx.Err = e.ErrInternalError.AddDesc(fmt.Sprintf("failed to find product %s/%s, err: %s", productName, envName, err))
+		return
+	}
+	namespace, clusterID := productInfo.Namespace, productInfo.ClusterID
 
 	pty, err := NewTerminalSession(c.Writer, c.Request, nil)
 	if err != nil {
@@ -83,4 +107,124 @@ func ServeWs(c *gin.Context) {
 		ctx.Err = e.ErrInternalError.AddDesc(fmt.Sprintf("Exec to pod error! err: %v", err))
 		return
 	}
+}
+
+func DebugWorkflow(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+	logger := ctx.Logger
+	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("无效 task ID")
+		return
+	}
+
+	ctx.Err = debugWorkflow(c, c.Param("workflowName"), c.Param("jobName"), taskID, logger)
+	return
+}
+
+func debugWorkflow(c *gin.Context, workflowName, jobName string, taskID int64, logger *zap.SugaredLogger) error {
+	workflowTask, err := commonrepo.NewworkflowTaskv4Coll().Find(workflowName, taskID)
+	if err != nil {
+		return e.ErrStopDebugShell.AddDesc(fmt.Sprintf("failed to find task: %s", err))
+	}
+	if workflowTask.Finished() {
+		return e.ErrStopDebugShell.AddDesc("task has been finished")
+	}
+
+	var task *commonmodels.JobTask
+FOR:
+	for _, stage := range workflowTask.Stages {
+		for _, jobTask := range stage.Jobs {
+			if jobTask.Name == jobName {
+				task = jobTask
+				break FOR
+			}
+		}
+	}
+	if task == nil {
+		logger.Error("debug workflow failed: not found job")
+		return e.ErrInvalidParam.AddDesc("Job不存在")
+	}
+	log.Infof("DebugWorkflow: %s, %s, %d", workflowName, jobName, taskID)
+
+	jobTaskSpec := &commonmodels.JobTaskFreestyleSpec{}
+	if err := commonmodels.IToi(task.Spec, jobTaskSpec); err != nil {
+		logger.Errorf("debug workflow failed: IToi %v", err)
+		return e.ErrGetDebugShell.AddDesc("启动调试终端意外失败")
+	}
+
+	pty, err := NewTerminalSession(c.Writer, c.Request, nil, &TerminalSessionOption{
+		SecretEnvs: func() (secrets []string) {
+			for _, v := range jobTaskSpec.Properties.Envs {
+				if v.IsCredential {
+					secrets = append(secrets, v.Value)
+				}
+			}
+			return secrets
+		}(),
+		Type: Workflow,
+	})
+	if err != nil {
+		log.Errorf("get pty failed: %v", err)
+		return e.ErrGetDebugShell.AddDesc(fmt.Sprintf("get pty failed: %v", err))
+	}
+	defer func() {
+		log.Info("close session.")
+		_ = pty.Close()
+	}()
+
+	kubeClient, err := kubeclient.GetKubeClient(config.HubServerAddress(), jobTaskSpec.Properties.ClusterID)
+	if err != nil {
+		log.Errorf("debug workflow failed: get kube client error: %s", err)
+		return e.ErrGetDebugShell.AddDesc("启动调试终端意外失败: get kube client")
+	}
+	clientSet, err := kubeclient.GetClientset(config.HubServerAddress(), jobTaskSpec.Properties.ClusterID)
+	if err != nil {
+		log.Errorf("debug workflow failed: get kube client set error: %s", err)
+		return e.ErrGetDebugShell.AddDesc("启动调试终端意外失败: get kube client set")
+	}
+	restConfig, err := kubeclient.GetRESTConfig(config.HubServerAddress(), jobTaskSpec.Properties.ClusterID)
+	if err != nil {
+		log.Errorf("debug workflow failed: get kube rest config error: %s", err)
+		return e.ErrGetDebugShell.AddDesc("启动调试终端意外失败: get kube rest config")
+	}
+
+	pods, err := getter.ListPods(jobTaskSpec.Properties.Namespace, labels.Set{"job-name": task.K8sJobName}.AsSelector(), kubeClient)
+	if err != nil {
+		logger.Errorf("debug workflow failed: list pods %v", err)
+		return e.ErrGetDebugShell.AddDesc("启动调试终端意外失败: ListPods")
+	}
+	if len(pods) == 0 {
+		logger.Error("debug workflow failed: list pods num 0")
+		return e.ErrGetDebugShell.AddDesc("启动调试终端意外失败: ListPods num 0")
+	}
+	pod := pods[0]
+	switch pod.Status.Phase {
+	case corev1.PodRunning:
+	default:
+		logger.Errorf("debug workflow failed: pod status is %s", pod.Status.Phase)
+		return e.ErrGetDebugShell.AddDesc(fmt.Sprintf("Job 状态 %s 无法启动调试终端", pod.Status.Phase))
+	}
+
+	var envs []string
+	for _, env := range jobTaskSpec.Properties.Envs {
+		envs = append(envs, fmt.Sprintf("%s=%s", env.Key, env.Value))
+	}
+	script := ""
+	if len(envs) != 0 {
+		script += "env " + strings.Join(envs, " ") + " "
+	}
+	script += "bash\n"
+
+	err = ExecPod(clientSet, restConfig, []string{"/bin/sh", "-c", script}, pty, jobTaskSpec.Properties.Namespace, pod.Name, pod.Spec.Containers[0].Name)
+	if err != nil {
+		msg := fmt.Sprintf("Exec to pod error! err: %v", err)
+		log.Errorf(msg)
+		_, _ = pty.Write([]byte(msg))
+		pty.Done()
+
+		return e.ErrGetDebugShell.AddDesc(fmt.Sprintf("Exec to pod error! err: %v", err))
+	}
+	return nil
 }

@@ -19,7 +19,9 @@ package handler
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"net/http"
 	"reflect"
 	"strings"
 	"time"
@@ -28,15 +30,18 @@ import (
 	"github.com/golang-jwt/jwt"
 	"go.uber.org/zap"
 
-	systemmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/system/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/system/repository/mongodb"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/util/ginzap"
+	systemmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/user"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/util/ginzap"
 )
 
 // Context struct
 type Context struct {
 	Logger       *zap.SugaredLogger
+	UnAuthorized bool
 	Err          error
 	Resp         interface{}
 	Account      string
@@ -44,6 +49,7 @@ type Context struct {
 	UserID       string
 	IdentityType string
 	RequestID    string
+	Resources    *user.AuthorizedResources
 }
 
 type jwtClaims struct {
@@ -60,20 +66,36 @@ type FederatedClaims struct {
 	UserId      string `json:"user_id"`
 }
 
+// NewContext returns a context without user authorization info.
 // TODO: We need to implement a `context.Context` that conforms to the golang standard library.
+// After Jul.10 2023, this function should only be used when no authorization info is required.
+// If authorization info is required, use `NewContextWithAuthorization` instead.
 func NewContext(c *gin.Context) *Context {
 	logger := ginzap.WithContext(c).Sugar()
+	var err error
 	var claims jwtClaims
 
 	token := c.GetHeader(setting.AuthorizationHeader)
 	if len(token) > 0 {
-		var err error
 		claims, err = getUserFromJWT(token)
 		if err != nil {
 			logger.Warnf("Failed to get user from token, err: %s", err)
 		}
 	} else {
-		claims.Name = "system"
+		token = c.Query("token")
+		if len(token) == 0 {
+			claims.Name = "system"
+		} else {
+			parts := strings.Split(token, ".")
+			if len(parts) == 3 {
+				claims, err = getUserFromJWT(token)
+				if err != nil {
+					logger.Warnf("Failed to get user from token, err: %s", err)
+				}
+			} else {
+				claims.Name = "system"
+			}
+		}
 	}
 
 	return &Context{
@@ -84,6 +106,23 @@ func NewContext(c *gin.Context) *Context {
 		Logger:       ginzap.WithContext(c).Sugar(),
 		RequestID:    c.GetString(setting.RequestID),
 	}
+}
+
+// NewContextWithAuthorization returns a context with user authorization info.
+// This function should only be called when one need authorization information for api caller.
+func NewContextWithAuthorization(c *gin.Context) (*Context, error) {
+	logger := ginzap.WithContext(c).Sugar()
+	var resourceAuthInfo *user.AuthorizedResources
+	var err error
+	resp := NewContext(c)
+	// there is a case where the request does not have token (system call), in this case we will have admin access
+	resourceAuthInfo, err = user.New().GetUserAuthInfo(resp.UserID)
+	if err != nil {
+		logger.Errorf("failed to generate user authorization info, error: %s", err)
+		return resp, err
+	}
+	resp.Resources = resourceAuthInfo
+	return resp, nil
 }
 
 func GetResourcesInHeader(c *gin.Context) ([]string, bool) {
@@ -102,6 +141,64 @@ func GetResourcesInHeader(c *gin.Context) ([]string, bool) {
 	}
 
 	return resources, true
+}
+
+func GetCollaborationModePermission(uid, projectKey, resource, resourceName, action string) (bool, error) {
+	// when this method is called, uid is an expected field
+	if uid == "" {
+		return false, errors.New("empty user ID")
+	}
+	return user.New().CheckUserAuthInfoForCollaborationMode(uid, projectKey, resource, resourceName, action)
+}
+
+func ListAuthorizedProjects(uid string) ([]string, bool, error) {
+	if uid == "" {
+		return []string{}, false, errors.New("empty user ID")
+	}
+	return user.New().ListAuthorizedProjects(uid)
+}
+
+func ListAuthorizedProjectsByResourceAndVerb(uid, resource, verb string) ([]string, bool, error) {
+	if uid == "" {
+		return []string{}, false, errors.New("empty user ID")
+	}
+	return user.New().ListAuthorizedProjectsByResourceAndVerb(uid, resource, verb)
+}
+
+// CheckPermissionGivenByCollaborationMode checks if a user is permitted to perform specific action in a given project.
+// Although collaboration mode is used to control the action to specific resources, under some circumstances, there are
+// leaks/designs that allows user with resource permission not related to the corresponding resource to access.
+// e.g. ListTest API will allow anyone with edit workflow permission to call it. In this case, we need to check if the permission
+// is granted by collaboration mode.
+// AVOID USING THIS !!!
+// FIXME: This function shouldn't exist. The only reason it exists is the incompetent of the system designer.
+func CheckPermissionGivenByCollaborationMode(uid, projectKey, resource, action string) (bool, error) {
+	if uid == "" {
+		return false, errors.New("empty user ID")
+	}
+
+	return user.New().CheckPermissionGivenByCollaborationMode(uid, projectKey, resource, action)
+}
+
+func ListAuthorizedWorkflows(uid, projectKey string) (authorizedWorkflow, authorizedWorkflowV4 []string, enableFilter bool, err error) {
+	authorizedWorkflow = make([]string, 0)
+	authorizedWorkflowV4 = make([]string, 0)
+	enableFilter = true
+	if uid == "" {
+		err = errors.New("empty user ID")
+		return
+	}
+	authorizedWorkflow, authorizedWorkflowV4, err = user.New().ListAuthorizedWorkflows(uid, projectKey)
+	return
+}
+
+func ListCollaborationEnvironmentsPermission(uid, projectKey string) (authorizedEnv *types.CollaborationEnvPermission, err error) {
+	if uid == "" {
+		err = errors.New("empty user ID")
+		return
+	}
+	authorizedEnv, err = user.New().ListCollaborationEnvironmentsPermission(uid, projectKey)
+	return
 }
 
 func getUserFromJWT(token string) (jwtClaims, error) {
@@ -126,6 +223,14 @@ func getUserFromJWT(token string) (jwtClaims, error) {
 }
 
 func JSONResponse(c *gin.Context, ctx *Context) {
+	if ctx.UnAuthorized {
+		if ctx.Err != nil {
+			c.Set(setting.ResponseError, ctx.Err)
+		}
+		c.AbortWithStatus(http.StatusForbidden)
+		return
+	}
+
 	if ctx.Err != nil {
 		c.Set(setting.ResponseError, ctx.Err)
 		c.Abort()

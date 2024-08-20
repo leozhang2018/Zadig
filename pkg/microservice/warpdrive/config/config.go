@@ -17,21 +17,27 @@ limitations under the License.
 package config
 
 import (
-	"strings"
-
 	"github.com/spf13/viper"
 
 	// init the config first
-	_ "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/setting"
+	_ "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 func WarpDrivePodName() string {
 	return viper.GetString(setting.WarpDrivePodName)
 }
 
-func NSQLookupAddrs() []string {
-	return strings.Split(viper.GetString(setting.ENVNsqLookupAddrs), ",")
+func WarpDriveNamespace() string {
+	return viper.GetString(setting.WarpDriveNamespace)
+}
+
+func MongoURI() string {
+	return viper.GetString(setting.ENVMongoDBConnectionString)
+}
+
+func ExecutorImage() string {
+	return viper.GetString(setting.ENVExecutorImage)
 }
 
 func ReleaseImageTimeout() string {

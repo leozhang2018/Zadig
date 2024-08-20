@@ -17,20 +17,27 @@ limitations under the License.
 package handler
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/multicluster/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/multicluster/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func ListClusters(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	clusters, found := internalhandler.GetResourcesInHeader(c)
 	if found && len(clusters) == 0 {
@@ -38,19 +45,64 @@ func ListClusters(c *gin.Context) {
 		return
 	}
 
-	ctx.Resp, ctx.Err = service.ListClusters(clusters, c.Query("projectName"), ctx.Logger)
+	projectName := c.Query("projectName")
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if projectName == "" {
+			// TODO: Authorization leak
+			//if !ctx.Resources.SystemActions.ClusterManagement.View {
+			//	ctx.UnAuthorized = true
+			//	return
+			//}
+		} else {
+			if _, ok := ctx.Resources.ProjectAuthInfo[projectName]; !ok {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	ctx.Resp, ctx.Err = service.ListClusters(clusters, projectName, ctx.Logger)
 }
 
 func GetCluster(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.ClusterManagement.View {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	ctx.Resp, ctx.Err = service.GetCluster(c.Param("id"), ctx.Logger)
 }
 
 func CreateCluster(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.ClusterManagement.Create {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	args := new(service.K8SCluster)
 	if err := c.BindJSON(args); err != nil {
@@ -65,13 +117,32 @@ func CreateCluster(c *gin.Context) {
 
 	args.CreatedAt = time.Now().Unix()
 	args.CreatedBy = ctx.UserName
+	err = args.Validate()
+	if err != nil {
+		ctx.Err = err
+		return
+	}
 
 	ctx.Resp, ctx.Err = service.CreateCluster(args, ctx.Logger)
 }
 
 func UpdateCluster(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.ClusterManagement.Edit {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	args := new(service.K8SCluster)
 	if err := c.BindJSON(args); err != nil {
@@ -86,26 +157,108 @@ func UpdateCluster(c *gin.Context) {
 		return
 	}
 
+	err = args.Validate()
+	if err != nil {
+		ctx.Err = err
+		return
+	}
+
 	ctx.Resp, ctx.Err = service.UpdateCluster(c.Param("id"), args, ctx.Logger)
 }
 
-func DeleteCluster(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+func GetDeletionInfo(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.ClusterManagement.Delete {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = service.GetClusterDeletionInfo(c.Param("id"), ctx.Logger)
+}
+
+func DeleteCluster(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.ClusterManagement.Delete {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	ctx.Err = service.DeleteCluster(ctx.UserName, c.Param("id"), ctx.Logger)
 }
 
-func DisconnectCluster(c *gin.Context) {
+func GetClusterStrategyReferences(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	clusterID := c.Param("id")
+	if strings.TrimSpace(clusterID) == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid clusterID")
+		return
+	}
+
+	ctx.Resp, ctx.Err = service.GetClusterStrategyReferences(clusterID, ctx.Logger)
+}
+
+func DisconnectCluster(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.ClusterManagement.Edit {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	ctx.Err = service.DisconnectCluster(ctx.UserName, c.Param("id"), ctx.Logger)
 }
 
 func ReconnectCluster(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.ClusterManagement.Edit {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	ctx.Err = service.ReconnectCluster(ctx.UserName, c.Param("id"), ctx.Logger)
 }
@@ -145,8 +298,22 @@ func GetClusterYaml(hubURI string) func(*gin.Context) {
 }
 
 func UpgradeAgent(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.ClusterManagement.Edit {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	ctx.Err = service.UpgradeAgent(c.Param("id"), ctx.Logger)
 }
@@ -155,6 +322,5 @@ func CheckEphemeralContainers(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = service.CheckEphemeralContainers(c, c.Param("id"))
+	ctx.Resp, ctx.Err = service.CheckEphemeralContainers(c, c.Query("projectName"), c.Query("envName"))
 }
-

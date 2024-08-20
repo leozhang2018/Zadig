@@ -29,24 +29,24 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	"k8s.io/apimachinery/pkg/labels"
 
-	configbase "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/task"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/base"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/codehub"
-	git "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/github"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/gitee"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types"
-	"github.com/koderover/zadig/pkg/util"
+	configbase "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/task"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/base"
+	git "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/github"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/gerrit"
+	"github.com/koderover/zadig/v2/pkg/tool/gitee"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 const (
@@ -297,6 +297,11 @@ func SetTriggerBuilds(builds []*types.Repository, buildArgs []*types.Repository,
 	return nil
 }
 
+// SetRepoInfo set the information of the build param into the buildArgs, meanwhile add commit ID information into it
+func SetRepoInfo(build *types.Repository, buildArgs []*types.Repository, log *zap.SugaredLogger) {
+	setBuildInfo(build, buildArgs, log)
+}
+
 func setBuildInfo(build *types.Repository, buildArgs []*types.Repository, log *zap.SugaredLogger) {
 	codeHostInfo, err := systemconfig.New().GetCodeHost(build.CodehostID)
 	if err != nil {
@@ -342,17 +347,12 @@ func setBuildInfo(build *types.Repository, buildArgs []*types.Repository, log *z
 			build.CommitMessage = commit.Message
 			build.AuthorName = commit.AuthorName
 		}
-	} else if codeHostInfo.Type == systemconfig.CodeHubProvider {
-		codeHubClient := codehub.NewClient(codeHostInfo.AccessKey, codeHostInfo.SecretKey, codeHostInfo.Region, config.ProxyHTTPSAddr(), codeHostInfo.EnableProxy)
-		if build.CommitID == "" && build.Branch != "" {
-			branchList, _ := codeHubClient.BranchList(build.RepoUUID)
-			for _, branchInfo := range branchList {
-				if branchInfo.Name == build.Branch {
-					build.CommitID = branchInfo.Commit.ID
-					build.CommitMessage = branchInfo.Commit.Message
-					build.AuthorName = branchInfo.Commit.AuthorName
-					return
-				}
+		// get gerrit submission_id
+		if codeHostInfo.Type == systemconfig.GerritProvider {
+			build.SubmissionID, err = getSubmissionID(build.CodehostID, build.CommitID)
+			log.Infof("get gerrit submissionID %s by commitID %s", build.SubmissionID, build.CommitID)
+			if err != nil {
+				log.Errorf("getSubmissionID failed, use build %+v %s", build, err)
 			}
 		}
 	} else if codeHostInfo.Type == systemconfig.GiteeProvider || codeHostInfo.Type == systemconfig.GiteeEEProvider {
@@ -388,7 +388,7 @@ func setBuildInfo(build *types.Repository, buildArgs []*types.Repository, log *z
 				build.CommitMessage = branch.Commit.Commit.Message
 				build.AuthorName = branch.Commit.Commit.Author.Name
 			} else if len(build.PRs) > 0 {
-				prCommits, err := gitCli.ListCommits(context.Background(), build.RepoOwner, build.RepoName, getlatestPrNum(build), nil)
+				prCommits, err := gitCli.ListCommitsForPR(context.Background(), build.RepoOwner, build.RepoName, getlatestPrNum(build), nil)
 				sort.SliceStable(prCommits, func(i, j int) bool {
 					return prCommits[i].Commit.Committer.Date.Unix() > prCommits[j].Commit.Committer.Date.Unix()
 				})
@@ -464,6 +464,20 @@ func setBuildInfo(build *types.Repository, buildArgs []*types.Repository, log *z
 		}
 		return
 	}
+}
+
+func getSubmissionID(codehostID int, commitID string) (string, error) {
+	ch, err := systemconfig.New().GetCodeHost(codehostID)
+	if err != nil {
+		return "", err
+	}
+
+	cli := gerrit.NewClient(ch.Address, ch.AccessToken, config.ProxyHTTPSAddr(), ch.EnableProxy)
+	changeInfo, err := cli.GetChangeDetail(commitID)
+	if err != nil {
+		return "", err
+	}
+	return changeInfo.SubmissionID, nil
 }
 
 func getlatestPrNum(build *types.Repository) int {
@@ -567,7 +581,6 @@ func prepareTaskEnvs(pt *task.Task, log *zap.SugaredLogger) []*commonmodels.KeyV
 		&commonmodels.KeyVal{Key: "IMAGE", Value: pt.TaskArgs.Deploy.Image},
 		&commonmodels.KeyVal{Key: "PKG_FILE", Value: pt.TaskArgs.Deploy.PackageFile},
 		&commonmodels.KeyVal{Key: "LOG_FILE", Value: "/tmp/user_script.log"},
-		&commonmodels.KeyVal{Key: "WORKSPACE", Value: "/workspace"},
 	)
 
 	// 设置编译模块参数化配置信息
@@ -626,7 +639,7 @@ func SetCandidateRegistry(payload *commonmodels.ConfigPayload, log *zap.SugaredL
 		return nil
 	}
 
-	reg, _, err := commonservice.FindDefaultRegistry(true, log)
+	reg, err := commonservice.FindDefaultRegistry(true, log)
 	if err != nil {
 		log.Errorf("can't find default candidate registry: %s", err)
 		return e.ErrFindRegistry.AddDesc(err.Error())
@@ -666,6 +679,17 @@ func getImageInfoFromWorkload(envName, productName, serviceName, container strin
 		return findCurrentlyUsingImage(product, serviceName, container)
 	}
 
+	clientset, err := kubeclient.GetClientset(config.HubServerAddress(), product.ClusterID)
+	if err != nil {
+		log.Errorf("get client set error: %v", err)
+		return "", err
+	}
+	versionInfo, err := clientset.Discovery().ServerVersion()
+	if err != nil {
+		log.Errorf("get server version error: %v", err)
+		return "", err
+	}
+
 	switch serviceInfo.WorkloadType {
 	case setting.StatefulSet:
 		var statefulSet *appsv1.StatefulSet
@@ -691,6 +715,26 @@ func getImageInfoFromWorkload(envName, productName, serviceName, container strin
 			}
 		}
 		return "", errors.New("no container in deployment found")
+	case setting.CronJob:
+		cronJob, cronJobBeta, _, err := getter.GetCronJob(product.Namespace, serviceName, kubeClient, kubeclient.VersionLessThan121(versionInfo))
+		if err != nil {
+			return "", err
+		}
+		if cronJob != nil {
+			for _, c := range cronJob.Spec.JobTemplate.Spec.Template.Spec.Containers {
+				if c.Name == container {
+					return c.Image, nil
+				}
+			}
+		}
+		if cronJobBeta != nil {
+			for _, c := range cronJobBeta.Spec.JobTemplate.Spec.Template.Spec.Containers {
+				if c.Name == container {
+					return c.Image, nil
+				}
+			}
+		}
+		return "", errors.New("no container in cronJob found")
 	default:
 		// since in some version of the service, there are no workload type, we need to do something with this
 		selector := labels.Set{setting.ProductLabel: product.ProductName, setting.ServiceLabel: serviceName}.AsSelector()
@@ -754,34 +798,6 @@ func findCurrentlyUsingImage(productInfo *commonmodels.Product, serviceName, con
 		}
 	}
 	return "", fmt.Errorf("failed to find image url")
-}
-
-// IsProductAuthed 查询指定产品是否授权给用户, 或者用户所在的组
-// TODO: REVERT Auth is diabled
-func IsProductAuthed(username, productOwner, productName string, perm config.ProductPermission, log *zap.SugaredLogger) bool {
-
-	//// 获取目标产品信息
-	//opt := &collection.ProductFindOptions{Name: productName, EnvName: productOwner}
-	//
-	//prod, err := s.Collections.Product.Find(opt)
-	//if err != nil {
-	//	log.Errorf("[%s][%s] error: %v", productOwner, productName, err)
-	//	return false
-	//}
-	//
-	//userTeams := make([]string, 0)
-	////userTeams, err := s.FindUserTeams(UserIDStr, log)
-	////if err != nil {
-	////	log.Errorf("FindUserTeams error: %v", err)
-	////	return false
-	////}
-	//
-	//// 如果是当前用户创建的产品或者当前用户已经被产品授权过，返回true
-	//if prod.EnvName == UserIDStr || prod.IsUserAuthed(UserIDStr, userTeams, perm) {
-	//	return true
-	//}
-
-	return true
 }
 
 // GetS3RelStorage find the default s3storage

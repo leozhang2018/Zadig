@@ -22,13 +22,13 @@ import (
 
 	"github.com/27149chen/afero"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/git"
-	githubservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/github"
-	gitlabservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/gitlab"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/git"
+	githubservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/github"
+	gitlabservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/gitlab"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 type DownloadFromSourceArgs struct {
@@ -128,8 +128,7 @@ func GetTreeGetter(codeHostID int) (TreeGetter, error) {
 	case setting.SourceFromGitlab:
 		return gitlabservice.NewClient(ch.ID, ch.Address, ch.AccessToken, config.ProxyHTTPSAddr(), ch.EnableProxy)
 	default:
-		// should not have happened here
-		log.DPanicf("invalid source: %s", ch.Type)
+		log.Errorf("GetTreeGetter invalid source: %s", ch.Type)
 		return nil, fmt.Errorf("invalid source: %s", ch.Type)
 	}
 }

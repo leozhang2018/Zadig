@@ -18,18 +18,34 @@ package handler
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"github.com/gin-gonic/gin"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/template"
-	templateservice "github.com/koderover/zadig/pkg/microservice/aslan/core/templatestore/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/template"
+	templateservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/templatestore/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
 )
 
+// @Summary Create yaml template
+// @Description Create yaml template
+// @Tags 	template
+// @Accept 	json
+// @Produce json
+// @Param 	body 	body 		template.YamlTemplate		true 	"body"
+// @Success 200
+// @Router /api/aslan/template/yaml [post]
 func CreateYamlTemplate(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	req := &template.YamlTemplate{}
 
@@ -41,12 +57,36 @@ func CreateYamlTemplate(c *gin.Context) {
 	bs, _ := json.Marshal(req)
 	internalhandler.InsertOperationLog(c, ctx.UserName, "", "创建", "模板-YAML", req.Name, string(bs), ctx.Logger)
 
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.Template.Create {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
 	ctx.Err = templateservice.CreateYamlTemplate(req, ctx.Logger)
 }
 
+// @Summary Update yaml template
+// @Description Update yaml template
+// @Tags 	template
+// @Accept 	json
+// @Produce json
+// @Param 	id		path		string						true	"template id"
+// @Param 	body 	body 		template.YamlTemplate		true 	"body"
+// @Success 200
+// @Router /api/aslan/template/yaml/{id} [put]
 func UpdateYamlTemplate(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	req := &template.YamlTemplate{}
 
@@ -61,9 +101,25 @@ func UpdateYamlTemplate(c *gin.Context) {
 	ctx.Err = templateservice.UpdateYamlTemplate(c.Param("id"), req, ctx.Logger)
 }
 
+// @Summary Update yaml template variable
+// @Description Update yaml template variable
+// @Tags 	template
+// @Accept 	json
+// @Produce json
+// @Param 	id		path		string						true	"template id"
+// @Param 	body 	body 		template.YamlTemplate		true 	"body"
+// @Success 200
+// @Router /api/aslan/template/yaml/{id}/variable [put]
 func UpdateYamlTemplateVariable(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	req := &template.YamlTemplate{}
 
@@ -74,6 +130,14 @@ func UpdateYamlTemplateVariable(c *gin.Context) {
 
 	bs, _ := json.Marshal(req)
 	internalhandler.InsertOperationLog(c, ctx.UserName, "", "更新", "模板-YAML-变量", req.Name, string(bs), ctx.Logger)
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.Template.Edit {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	ctx.Err = templateservice.UpdateYamlTemplateVariable(c.Param("id"), req, ctx.Logger)
 }
@@ -90,8 +154,27 @@ type ListYamlResp struct {
 }
 
 func ListYamlTemplate(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// TODO: Authorization leak
+	// comment: since currently there are multiple functionalities that wish to used this API without authorization,
+	// we temporarily disabled the permission checks for this API.
+
+	// authorization check
+	//if !ctx.Resources.IsSystemAdmin {
+	//	if !ctx.Resources.SystemActions.Template.View {
+	//		ctx.UnAuthorized = true
+	//		return
+	//	}
+	//}
 
 	// Query Verification
 	args := &listYamlQuery{}
@@ -111,18 +194,60 @@ func ListYamlTemplate(c *gin.Context) {
 	ctx.Err = err
 }
 
+// @Summary Get yaml template detail
+// @Description Get yaml template detail
+// @Tags 	template
+// @Accept 	json
+// @Produce json
+// @Param 	id		path		string						true	"template id"
+// @Success 200 	{object} 	template.YamlDetail
+// @Router /api/aslan/template/yaml/{id} [get]
 func GetYamlTemplateDetail(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	// TODO: Authorization leak
+	// comment: since currently there are multiple functionalities that wish to used this API without authorization,
+	// we temporarily disabled the permission checks for this API.
+
+	// authorization check
+	//if !ctx.Resources.IsSystemAdmin {
+	//	if !ctx.Resources.SystemActions.Template.View {
+	//		ctx.UnAuthorized = true
+	//		return
+	//	}
+	//}
 
 	ctx.Resp, ctx.Err = templateservice.GetYamlTemplateDetail(c.Param("id"), ctx.Logger)
 }
 
 func DeleteYamlTemplate(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
 	internalhandler.InsertOperationLog(c, ctx.UserName, "", "删除", "模板-YAML", c.Param("id"), "", ctx.Logger)
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.Template.Delete {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	ctx.Err = templateservice.DeleteYamlTemplate(c.Param("id"), ctx.Logger)
 }
@@ -135,19 +260,42 @@ func GetYamlTemplateReference(c *gin.Context) {
 }
 
 func SyncYamlTemplateReference(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
 	internalhandler.InsertOperationLog(c, ctx.UserName, "", "同步", "模板-YAML", c.Param("id"), "", ctx.Logger)
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if !ctx.Resources.SystemActions.Template.Edit {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	ctx.Err = templateservice.SyncYamlTemplateReference(ctx.UserName, c.Param("id"), ctx.Logger)
 }
 
 type getYamlTemplateVariablesReq struct {
-	Content      string `json:"content"`
-	VariableYaml string `json:"variable_yaml"`
+	Content      string `json:"content" binding:"required"`
+	VariableYaml string `json:"variable_yaml" binding:"required"`
 }
 
+// @Summary Validate template varaibles
+// @Description Validate template varaibles
+// @Tags service
+// @Accept json
+// @Produce json
+// @Param body body getYamlTemplateVariablesReq true "body"
+// @Success 200
+// @Router /api/aslan/template/yaml/validateVariable [post]
 func ValidateTemplateVariables(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
@@ -161,6 +309,7 @@ func ValidateTemplateVariables(c *gin.Context) {
 	ctx.Err = templateservice.ValidateVariable(req.Content, req.VariableYaml)
 }
 
+// DEPRECATED since 1.18, now we auto extract varialbes when save yaml content
 func ExtractTemplateVariables(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
@@ -174,6 +323,7 @@ func ExtractTemplateVariables(c *gin.Context) {
 	ctx.Resp, ctx.Err = templateservice.ExtractVariable(req.VariableYaml)
 }
 
+// DEPRECATED, since 1.18
 func GetFlatKvs(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()

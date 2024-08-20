@@ -16,11 +16,13 @@
 
 package apollo
 
-import (
-	"net/http"
-
-	"github.com/pkg/errors"
-)
+type BriefNamespace struct {
+	AppID         string `json:"appId"`
+	Env           string `json:"env"`
+	ClusterName   string `json:"clusterName"`
+	NamespaceName string `json:"namespaceName"`
+	Format        string `json:"format"`
+}
 
 type Namespace struct {
 	AppID                      string   `json:"appId"`
@@ -45,42 +47,53 @@ type Items struct {
 	DataChangeLastModifiedTime string `json:"dataChangeLastModifiedTime"`
 }
 
-func (c *Client) ListNamespace(appID, env, cluster string) (list []*Namespace, err error) {
-	resp, err := c.R().SetPathParams(map[string]string{
-		"env":         env,
-		"appId":       appID,
-		"clusterName": cluster,
-	}).Get(c.BaseURL + "/openapi/v1/envs/{env}/apps/{appId}/clusters/{clusterName}/namespaces")
-	if err != nil {
-		return nil, errors.Wrap(err, "send request")
-	}
-	if resp.GetStatusCode() != http.StatusOK {
-		return nil, errors.Errorf("unexpected status code %d, body: %s", resp.GetStatusCode(), resp.String())
-	}
-	if err = resp.UnmarshalJson(&list); err != nil {
-		return nil, errors.Wrap(err, "unmarshal")
-	}
+type AppInfo struct {
+	Name                       string `json:"name"`
+	AppID                      string `json:"appId"`
+	OrgID                      string `json:"orgId"`
+	OrgName                    string `json:"orgName"`
+	OwnerName                  string `json:"ownerName"`
+	OwnerEmail                 string `json:"ownerEmail"`
+	DataChangeCreatedBy        string `json:"dataChangeCreatedBy"`
+	DataChangeLastModifiedBy   string `json:"dataChangeLastModifiedBy"`
+	DataChangeCreatedTime      string `json:"dataChangeCreatedTime"`
+	DataChangeLastModifiedTime string `json:"dataChangeLastModifiedTime"`
+}
+
+type EnvAndCluster struct {
+	Env      string   `json:"env"`
+	Clusters []string `json:"clusters"`
+}
+
+func (c *Client) ListApp() (list []*AppInfo, err error) {
+	_, err = c.R().SetSuccessResult(&list).Get(c.BaseURL + "/openapi/v1/apps")
 	return
 }
 
-func (c *Client) GetNamespace(appID, env, cluster, namespace string) (*Namespace, error) {
-	resp, err := c.R().SetPathParams(map[string]string{
+func (c *Client) ListAppEnvsAndClusters(appID string) (envList []*EnvAndCluster, err error) {
+	_, err = c.R().SetPathParams(map[string]string{
+		"appId": appID,
+	}).SetSuccessResult(&envList).Get(c.BaseURL + "/openapi/v1/apps/{appId}/envclusters")
+	return
+}
+
+func (c *Client) ListAppNamespace(appID, env, cluster string) (list []*Namespace, err error) {
+	_, err = c.R().SetPathParams(map[string]string{
+		"env":         env,
+		"appId":       appID,
+		"clusterName": cluster,
+	}).SetSuccessResult(&list).Get(c.BaseURL + "/openapi/v1/envs/{env}/apps/{appId}/clusters/{clusterName}/namespaces")
+	return
+}
+
+func (c *Client) GetNamespace(appID, env, cluster, namespace string) (result *Namespace, err error) {
+	_, err = c.R().SetPathParams(map[string]string{
 		"env":           env,
 		"appId":         appID,
 		"clusterName":   cluster,
 		"namespaceName": namespace,
-	}).Get(c.BaseURL + "/openapi/v1/envs/{env}/apps/{appId}/clusters/{clusterName}/namespaces/{namespaceName}")
-	if err != nil {
-		return nil, errors.Wrap(err, "send request")
-	}
-	if resp.GetStatusCode() != http.StatusOK {
-		return nil, errors.Errorf("unexpected status code %d, body: %s", resp.GetStatusCode(), resp.String())
-	}
-	result := new(Namespace)
-	if err = resp.UnmarshalJson(result); err != nil {
-		return nil, errors.Wrap(err, "unmarshal")
-	}
-	return result, nil
+	}).SetSuccessResult(&result).Get(c.BaseURL + "/openapi/v1/envs/{env}/apps/{appId}/clusters/{clusterName}/namespaces/{namespaceName}")
+	return
 }
 
 func (c *Client) UpdateKeyVal(appID, env, cluster, namespace, key, val, updateUser string) error {
@@ -90,7 +103,7 @@ func (c *Client) UpdateKeyVal(appID, env, cluster, namespace, key, val, updateUs
 		ChangedBy string `json:"dataChangeLastModifiedBy"`
 		CreatedBy string `json:"dataChangeCreatedBy"`
 	}
-	resp, err := c.R().SetPathParams(map[string]string{
+	_, err := c.R().SetPathParams(map[string]string{
 		"env":           env,
 		"appId":         appID,
 		"clusterName":   cluster,
@@ -104,13 +117,7 @@ func (c *Client) UpdateKeyVal(appID, env, cluster, namespace, key, val, updateUs
 	}).SetQueryParam("createIfNotExists", "true").
 		Put(c.BaseURL + "/openapi/v1/envs/{env}/apps/{appId}/clusters/{clusterName}/namespaces/{namespaceName}/items/{key}")
 
-	if err != nil {
-		return errors.Wrap(err, "send request")
-	}
-	if resp.GetStatusCode() != http.StatusOK {
-		return errors.Errorf("unexpected status code %d, body: %s", resp.GetStatusCode(), resp.String())
-	}
-	return nil
+	return err
 }
 
 type ReleaseArgs struct {
@@ -120,7 +127,7 @@ type ReleaseArgs struct {
 }
 
 func (c *Client) Release(appID, env, cluster, namespace string, args *ReleaseArgs) error {
-	resp, err := c.R().SetPathParams(map[string]string{
+	_, err := c.R().SetPathParams(map[string]string{
 		"env":           env,
 		"appId":         appID,
 		"clusterName":   cluster,
@@ -128,11 +135,5 @@ func (c *Client) Release(appID, env, cluster, namespace string, args *ReleaseArg
 	}).SetBodyJsonMarshal(args).
 		SetQueryParam("createIfNotExists", "true").
 		Post(c.BaseURL + "/openapi/v1/envs/{env}/apps/{appId}/clusters/{clusterName}/namespaces/{namespaceName}/releases")
-	if err != nil {
-		return errors.Wrap(err, "send request")
-	}
-	if resp.GetStatusCode() != http.StatusOK {
-		return errors.Errorf("unexpected status code %d, body: %s", resp.GetStatusCode(), resp.String())
-	}
-	return nil
+	return err
 }

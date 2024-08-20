@@ -29,16 +29,17 @@ import (
 	"strings"
 	"time"
 
-	"github.com/koderover/zadig/pkg/tool/s3"
-	"github.com/koderover/zadig/pkg/tool/sonar"
 	"gopkg.in/yaml.v3"
 
-	"github.com/koderover/zadig/pkg/microservice/reaper/config"
-	"github.com/koderover/zadig/pkg/microservice/reaper/core/service/meta"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types"
-	"github.com/koderover/zadig/pkg/util/fs"
+	"github.com/koderover/zadig/v2/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/tool/sonar"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/core/service/meta"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/util/fs"
 )
 
 const (
@@ -248,6 +249,11 @@ func (r *Reaper) BeforeExec() error {
 	}
 
 	if r.Ctx.GinkgoTest != nil && len(r.Ctx.GinkgoTest.ResultPath) > 0 {
+		r.Ctx.GinkgoTest.ResultPath = r.replaceEnvWithValue(r.Ctx.GinkgoTest.ResultPath)
+		r.Ctx.GinkgoTest.TestReportPath = r.replaceEnvWithValue(r.Ctx.GinkgoTest.TestReportPath)
+		for i, artifactPath := range r.Ctx.GinkgoTest.ArtifactPaths {
+			r.Ctx.GinkgoTest.ArtifactPaths[i] = r.replaceEnvWithValue(artifactPath)
+		}
 		r.Ctx.GinkgoTest.ResultPath = filepath.Join(r.ActiveWorkspace, r.Ctx.GinkgoTest.ResultPath)
 		if err := os.RemoveAll(r.Ctx.GinkgoTest.ResultPath); err != nil {
 			log.Warning(err.Error())
@@ -294,6 +300,9 @@ func (r *Reaper) setProxy(ctx *meta.DockerBuildCtx, cfg *meta.Proxy) {
 
 func (r *Reaper) dockerCommands() []*exec.Cmd {
 	cmds := make([]*exec.Cmd, 0)
+	if r.Ctx.DockerBuildCtx.WorkDir == "" {
+		r.Ctx.DockerBuildCtx.WorkDir = "."
+	}
 	cmds = append(
 		cmds,
 		dockerBuildCmd(
@@ -313,6 +322,10 @@ func (r *Reaper) runDockerBuild() error {
 		return nil
 	}
 
+	r.Ctx.DockerBuildCtx.DockerFile = r.replaceEnvWithValue(r.Ctx.DockerBuildCtx.DockerFile)
+	r.Ctx.DockerBuildCtx.BuildArgs = r.replaceEnvWithValue(r.Ctx.DockerBuildCtx.BuildArgs)
+	r.Ctx.DockerBuildCtx.WorkDir = r.replaceEnvWithValue(r.Ctx.DockerBuildCtx.WorkDir)
+
 	log.Info("Preparing Dockerfile.")
 	startTimePrepareDockerfile := time.Now()
 	err := r.prepareDockerfile()
@@ -325,7 +338,7 @@ func (r *Reaper) runDockerBuild() error {
 		r.setProxy(r.Ctx.DockerBuildCtx, r.Ctx.Proxy)
 	}
 
-	log.Info("Runing Docker Build.")
+	log.Info("Running Docker Build.")
 	startTimeDockerBuild := time.Now()
 	envs := r.getUserEnvs()
 	for _, c := range r.dockerCommands() {
@@ -390,7 +403,7 @@ func (r *Reaper) Exec() (err error) {
 	}
 	log.Infof("Execution ended. Duration: %.2f seconds.", time.Since(startTimeRunBuildScript).Seconds())
 
-	if r.Ctx.ScannerFlag && r.Ctx.ScannerType == types.ScanningTypeSonar {
+	if r.Ctx.ScannerFlag && r.Ctx.ScannerType == types.ScanningTypeSonar && r.Ctx.SonarEnableScanner {
 		// for sonar type we write the sonar parameter into config file and go with sonar-scanner command
 		log.Info("Executing SonarQube Scanning process.")
 		startTimeRunSonar := time.Now()
@@ -502,6 +515,8 @@ func (r *Reaper) AfterExec() error {
 	}
 
 	if r.Ctx.UploadEnabled {
+		start := time.Now()
+
 		forcedPathStyle := true
 		if r.Ctx.UploadStorageInfo.Provider == setting.ProviderSourceAli {
 			forcedPathStyle = false
@@ -511,6 +526,10 @@ func (r *Reaper) AfterExec() error {
 			return fmt.Errorf("failed to create s3 client to upload file, err: %s", err)
 		}
 		for _, upload := range r.Ctx.UploadInfo {
+			upload.AbsFilePath = r.replaceEnvWithValue(upload.AbsFilePath)
+			upload.DestinationPath = r.replaceEnvWithValue(upload.DestinationPath)
+
+			log.Infof("Start archive %s.", upload.FilePath)
 			info, err := os.Stat(upload.AbsFilePath)
 			if err != nil {
 				return fmt.Errorf("failed to upload file path [%s] to destination [%s], the error is: %s", upload.AbsFilePath, upload.DestinationPath, err)
@@ -531,6 +550,7 @@ func (r *Reaper) AfterExec() error {
 				}
 			}
 		}
+		log.Infof("Archive ended. Duration: %.2f seconds", time.Since(start).Seconds())
 	}
 
 	if r.Ctx.ArtifactPath != "" {
@@ -598,14 +618,13 @@ func (r *Reaper) maskSecretEnvs(message string) string {
 }
 
 func (r *Reaper) getUserEnvs() []string {
-	envs := []string{
-		"CI=true",
-		"ZADIG=true",
+	envs := os.Environ()
+	envs = append(envs,
 		fmt.Sprintf("HOME=%s", config.Home()),
 		fmt.Sprintf("WORKSPACE=%s", r.ActiveWorkspace),
 		// TODO: readme文件可以使用别的方式代替
 		fmt.Sprintf("README=%s", ReadmeFile),
-	}
+	)
 
 	r.Ctx.Paths = strings.Replace(r.Ctx.Paths, "$HOME", config.Home(), -1)
 	envs = append(envs, fmt.Sprintf("PATH=%s", r.Ctx.Paths))
@@ -622,4 +641,18 @@ func (r *Reaper) renderUserEnv(raw string) string {
 	}
 
 	return os.Expand(raw, mapper)
+}
+
+func (r *Reaper) replaceEnvWithValue(str string) string {
+	ret := str
+	// Exec twice to render nested variables
+	for i := 0; i < 2; i++ {
+		for key, value := range r.UserEnvs {
+			strKey := fmt.Sprintf("$%s", key)
+			ret = strings.ReplaceAll(ret, strKey, value)
+			strKey = fmt.Sprintf("${%s}", key)
+			ret = strings.ReplaceAll(ret, strKey, value)
+		}
+	}
+	return ret
 }

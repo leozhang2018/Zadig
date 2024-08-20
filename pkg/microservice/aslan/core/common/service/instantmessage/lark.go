@@ -18,13 +18,11 @@ package instantmessage
 
 import (
 	"strings"
-	"sync"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
 )
 
 const (
-	feiShuType                    = "feishu"
 	feishuCardType                = "interactive"
 	feishuHeaderTemplateTurquoise = "turquoise"
 	feishuHeaderTemplateGreen     = "green"
@@ -142,9 +140,6 @@ func (lc *LarkCard) AddI18NElementsZhcnFeild(content string, isCreatefield bool)
 			Tag:     feishuTagMd,
 		},
 	}
-	var mutex sync.RWMutex
-	mutex.Lock()
-	defer mutex.Unlock()
 	lengthZhCn := len(lc.I18NElements.ZhCn)
 	if isCreatefield || lengthZhCn == 0 {
 		zhcnElem := &ZhCn{

@@ -17,14 +17,20 @@ limitations under the License.
 package models
 
 import (
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/types"
+	"fmt"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/plutusvendor"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/types"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 type PrivateKey struct {
 	ID           primitive.ObjectID   `bson:"_id,omitempty"          json:"id,omitempty"`
 	Name         string               `bson:"name"                   json:"name"`
+	Description  string               `bson:"description"            json:"description"`
 	UserName     string               `bson:"user_name"              json:"user_name"`
 	IP           string               `bson:"ip"                     json:"ip"`
 	Port         int64                `bson:"port"                   json:"port"`
@@ -39,8 +45,54 @@ type PrivateKey struct {
 	Probe        *types.Probe         `bson:"probe"                  json:"probe"`
 	ProjectName  string               `bson:"project_name,omitempty" json:"project_name"`
 	UpdateStatus bool                 `bson:"-"                      json:"update_status"`
+	// ScheduleWorkflow equals to true means this vm is agent type, false means this vm is ssh type
+	ScheduleWorkflow bool     `bson:"schedule_workflow"      json:"schedule_workflow"`
+	Error            string   `bson:"error"                  json:"error"`
+	Agent            *VMAgent `bson:"agent"                  json:"agent,omitempty"`
+	VMInfo           *VMInfo  `bson:"vm_info"                json:"vm_info,omitempty"`
+	Type             string   `bson:"type"                   json:"type"`
+}
+
+type VMInfo struct {
+	IP            string `bson:"ip"                   json:"ip"`
+	Platform      string `bson:"platform"             json:"platform"`
+	Architecture  string `bson:"architecture"         json:"architecture"`
+	MemeryTotal   uint64 `bson:"memery_total"         json:"memery_total"`
+	UsedMemery    uint64 `bson:"used_memery"          json:"used_memery"`
+	CpuNum        int    `bson:"cpu_num"              json:"cpu_num"`
+	DiskSpace     uint64 `bson:"disk_space"           json:"disk_space"`
+	FreeDiskSpace uint64 `bson:"free_disk_space"      json:"free_disk_space"`
+	HostName      string `bson:"host_name"            json:"host_name"`
+}
+
+type VMAgent struct {
+	Token             string `bson:"token"                json:"-"`
+	Workspace         string `bson:"workspace"            json:"workspace"`
+	TaskConcurrency   int    `bson:"task_concurrency"     json:"task_concurrency"`
+	CacheType         string `bson:"cache_type"           json:"cache_type"`
+	CachePath         string `bson:"cache_path"           json:"cache_path"`
+	ObjectID          string `bson:"object_id"            json:"object_id"`
+	NeedUpdate        bool   `bson:"need_update"          json:"need_update"`
+	AgentVersion      string `bson:"agent_version"        json:"agent_version"`
+	ZadigVersion      string `bson:"zadig_version"        json:"zadig_version"`
+	LastHeartbeatTime int64  `bson:"last_heartbeat_time"  json:"last_heartbeat_time"`
 }
 
 func (PrivateKey) TableName() string {
 	return "private_key"
+}
+
+func (args *PrivateKey) Validate() error {
+	licenseStatus, err := plutusvendor.New().CheckZadigXLicenseStatus()
+	if err != nil {
+		return fmt.Errorf("failed to validate zadig license status, error: %s", err)
+	}
+	if !((licenseStatus.Type == plutusvendor.ZadigSystemTypeProfessional ||
+		licenseStatus.Type == plutusvendor.ZadigSystemTypeEnterprise) &&
+		licenseStatus.Status == plutusvendor.ZadigXLicenseStatusNormal) {
+		if args.Provider == config.VMProviderAmazon {
+			return e.ErrLicenseInvalid.AddDesc("")
+		}
+	}
+	return nil
 }

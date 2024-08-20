@@ -20,15 +20,28 @@ import (
 	"errors"
 	"net/url"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
+var ClusterProviderValueNames map[int8]string = map[int8]string{
+	1: "阿里云 ACK",
+	2: "腾讯云 TKE",
+	3: "华为云 CCE",
+	4: "Amazon EKS",
+	5: "腾讯云 TKE Serverless",
+	6: "谷歌云 GCP",
+	7: "微软云 AKS",
+	0: "标准 Kubernetes 集群",
+}
+
 type ExternalSystemDetail struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	Server   string `json:"server"`
+	ID      string           `json:"id"`
+	Name    string           `json:"name"`
+	Server  string           `json:"server"`
+	Headers []*util.KeyValue `json:"headers,omitempty"`
+	// @2023-04-14 APIToken is deprecated after 1.4.0-ee
 	APIToken string `json:"api_token,omitempty"`
 }
 
@@ -38,9 +51,10 @@ type WorkflowConcurrencySettings struct {
 }
 
 type SonarIntegration struct {
-	ID            string `json:"id"`
-	ServerAddress string `json:"server_address"`
-	Token         string `json:"token"`
+	ID             string `json:"id"`
+	SystemIdentity string `json:"system_identity"`
+	ServerAddress  string `json:"server_address"`
+	Token          string `json:"token"`
 }
 
 type OpenAPICreateRegistryReq struct {
@@ -181,7 +195,66 @@ type MeegoTransitionResp struct {
 }
 
 type MeegoWorkItemStatusTransition struct {
-	SourceStateKey string `json:"source_state_key"`
-	TargetStateKey string `json:"target_state_key"`
-	TransitionID   int64  `json:"transition_id"`
+	SourceStateKey  string `json:"source_state_key"`
+	SourceStateName string `json:"source_state_name"`
+	TargetStateKey  string `json:"target_state_key"`
+	TargetStateName string `json:"target_state_name"`
+	TransitionID    int64  `json:"transition_id"`
+}
+
+type OpenAPIRegistry struct {
+	ID        string                  `json:"registry_id"`
+	Address   string                  `json:"address"`
+	Provider  config.RegistryProvider `json:"provider"`
+	Region    string                  `json:"region"`
+	Namespace string                  `json:"namespace"`
+	IsDefault bool                    `json:"is_default"`
+}
+
+type OpenAPICreateClusterRequest struct {
+	Name         string   `json:"name"`
+	Production   bool     `json:"production"`
+	Description  string   `json:"description"`
+	Provider     int8     `json:"provider"`
+	Type         string   `json:"type"`
+	KubeConfig   string   `json:"kube_config"`
+	ProjectNames []string `json:"project_names"`
+}
+
+type OpenAPICreateClusterResponse struct {
+	Cluster  *OpenAPICluster `json:"cluster"`
+	AgentCmd string          `json:"agent_cmd"`
+}
+
+type OpenAPICluster struct {
+	ID           string   `json:"cluster_id"`
+	Name         string   `json:"name"`
+	Production   bool     `json:"production"`
+	Description  string   `json:"description"`
+	Provider     int8     `json:"provider"`
+	ProviderName string   `json:"provider_name"`
+	CreatedBy    string   `json:"created_by"`
+	CreatedTime  int64    `json:"created_time"`
+	Local        bool     `json:"local"`
+	Status       string   `json:"status"`
+	Type         string   `json:"type"`
+	ProjectNames []string `json:"project_names"`
+}
+
+type SecurityAndPrivacySettings struct {
+	TokenExpirationTime int64 `json:"token_expiration_time"`
+	ImprovementPlan     bool  `json:"improvement_plan"`
+}
+
+type ApolloConfig struct {
+	ConfigType string                   `json:"type"`
+	Config     []*commonmodels.ApolloKV `json:"kv"`
+}
+
+type BriefNacosConfig struct {
+	DataID        string `json:"data_id"`
+	Format        string `json:"format"`
+	Group         string `json:"group"`
+	NamespaceID   string `json:"namespace_id"`
+	NamespaceName string `json:"namespace_name"`
 }

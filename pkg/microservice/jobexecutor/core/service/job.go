@@ -26,19 +26,23 @@ import (
 	"strings"
 	"time"
 
-	"github.com/koderover/zadig/pkg/microservice/jobexecutor/config"
-	"github.com/koderover/zadig/pkg/microservice/jobexecutor/core/service/meta"
-	"github.com/koderover/zadig/pkg/microservice/jobexecutor/core/service/step"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types/job"
 	"gopkg.in/yaml.v3"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/jobexecutor/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/jobexecutor/core/service/configmap"
+	"github.com/koderover/zadig/v2/pkg/microservice/jobexecutor/core/service/meta"
+	"github.com/koderover/zadig/v2/pkg/microservice/jobexecutor/core/service/step"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types/job"
 )
 
 type Job struct {
-	Ctx             *meta.JobContext
-	StartTime       time.Time
-	ActiveWorkspace string
-	UserEnvs        map[string]string
+	Ctx              *meta.JobContext
+	StartTime        time.Time
+	ActiveWorkspace  string
+	UserEnvs         map[string]string
+	OutputsJsonBytes []byte
+	ConfigMapUpdater configmap.Updater
 }
 
 const (
@@ -107,19 +111,20 @@ func (j *Job) EnsureActiveWorkspace(workspace string) error {
 }
 
 func (j *Job) getUserEnvs() []string {
-	envs := []string{
+	envs := os.Environ()
+	envs = append(envs,
 		"CI=true",
 		"ZADIG=true",
 		fmt.Sprintf("HOME=%s", config.Home()),
 		fmt.Sprintf("WORKSPACE=%s", j.ActiveWorkspace),
-	}
+	)
 
 	j.Ctx.Paths = strings.Replace(j.Ctx.Paths, "$HOME", config.Home(), -1)
 	envs = append(envs, fmt.Sprintf("PATH=%s", j.Ctx.Paths))
 	envs = append(envs, fmt.Sprintf("DOCKER_HOST=%s", config.DockerHost()))
 	envs = append(envs, j.Ctx.Envs...)
 	envs = append(envs, j.Ctx.SecretEnvs...)
-	// share output var between steps.
+	// @var share output var between steps.
 	outputs, err := j.getJobOutputVars(context.Background())
 	if err != nil {
 		log.Errorf("get job output vars error: %v", err)
@@ -141,7 +146,7 @@ func (j *Job) Run(ctx context.Context) error {
 		if hasFailed && !stepInfo.Onfailure {
 			continue
 		}
-		if err := step.RunStep(ctx, stepInfo, j.ActiveWorkspace, j.Ctx.Paths, j.getUserEnvs(), j.Ctx.SecretEnvs); err != nil {
+		if err := step.RunStep(ctx, stepInfo, j.ActiveWorkspace, j.Ctx.Paths, j.getUserEnvs(), j.Ctx.SecretEnvs, j.ConfigMapUpdater); err != nil {
 			hasFailed = true
 			respErr = err
 		}
@@ -153,6 +158,7 @@ func (j *Job) AfterRun(ctx context.Context) error {
 	return j.collectJobResult(ctx)
 }
 
+// @var collect job output vars, if step return error, job will not collect output vars.
 func (j *Job) collectJobResult(ctx context.Context) error {
 	outputs, err := j.getJobOutputVars(ctx)
 	if err != nil {
@@ -167,22 +173,15 @@ func (j *Job) collectJobResult(ctx context.Context) error {
 		return fmt.Errorf("termination message is above max allowed size 4096, caused by large task result")
 	}
 
-	f, err := os.OpenFile(job.JobTerminationFile, os.O_WRONLY|os.O_CREATE, 0666)
-	if err != nil {
-		return err
-	}
-	defer f.Close()
-
-	if _, err = f.Write(jsonOutput); err != nil {
-		return err
-	}
-	return f.Sync()
+	j.OutputsJsonBytes = jsonOutput
+	return nil
 }
 
+// @var read job output vars from file.
 func (j *Job) getJobOutputVars(ctx context.Context) ([]*job.JobOutput, error) {
 	outputs := []*job.JobOutput{}
 	for _, outputName := range j.Ctx.Outputs {
-		fileContents, err := ioutil.ReadFile(filepath.Join(job.JobOutputDir, outputName))
+		fileContents, err := os.ReadFile(filepath.Join(job.JobOutputDir, outputName))
 		if os.IsNotExist(err) {
 			continue
 		} else if err != nil {

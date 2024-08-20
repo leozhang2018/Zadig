@@ -1,6 +1,7 @@
 package step
 
 import (
+	"bufio"
 	"context"
 	"fmt"
 	"io/ioutil"
@@ -12,14 +13,14 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/koderover/zadig/pkg/microservice/reaper/config"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/httpclient"
-	"github.com/koderover/zadig/pkg/tool/log"
-
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	"github.com/koderover/zadig/pkg/types/step"
 	"gopkg.in/yaml.v2"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/config"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/types/step"
 )
 
 type ToolInstallStep struct {
@@ -102,14 +103,14 @@ func (s *ToolInstallStep) runIntallationScripts(tool *step.Tool) error {
 			if err != nil {
 				err := httpclient.Download(tool.Download, tmpPath)
 				if err != nil {
-					return err
+					return fmt.Errorf("download package %s error: %v", tool.Download, err)
 				}
 				s3client.Upload(
 					s.spec.S3Storage.Bucket,
 					tmpPath,
 					objectKey,
 				)
-				fmt.Printf("Package loaded from url: %s\n", tool.Download)
+				log.Infof("Package loaded from url: %s", tool.Download)
 			}
 		} else {
 			err := httpclient.Download(tool.Download, tmpPath)
@@ -130,15 +131,38 @@ func (s *ToolInstallStep) runIntallationScripts(tool *step.Tool) error {
 		scripts = append(scripts, disProxyScript)
 	}
 	uid, _ := uuid.NewUUID()
-	file := filepath.Join(os.TempDir(), fmt.Sprintf("install_script_%d.sh", uid))
+	file := filepath.Join(os.TempDir(), fmt.Sprintf("install_script_%d.sh", uid.ID()))
 	if err := ioutil.WriteFile(file, []byte(strings.Join(scripts, "\n")), 0700); err != nil {
 		return fmt.Errorf("write script file error: %v", err)
 	}
 
 	cmd := exec.Command("/bin/bash", file)
+
+	cmdOutReader, err := cmd.StdoutPipe()
+	if err != nil {
+		return err
+	}
+
+	outScanner := bufio.NewScanner(cmdOutReader)
+	go func() {
+		for outScanner.Scan() {
+			fmt.Printf("%s   %s\n", time.Now().Format(setting.WorkflowTimeFormat), outScanner.Text())
+		}
+	}()
+
+	cmdErrReader, err := cmd.StderrPipe()
+	if err != nil {
+		return err
+	}
+
+	errScanner := bufio.NewScanner(cmdErrReader)
+	go func() {
+		for errScanner.Scan() {
+			fmt.Printf("%s   %s\n", time.Now().Format(setting.WorkflowTimeFormat), errScanner.Text())
+		}
+	}()
+
 	cmd.Dir = s.workspace
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
 	cmd.Env = s.envs
 
 	if err := cmd.Run(); err != nil {

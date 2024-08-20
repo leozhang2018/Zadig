@@ -24,9 +24,9 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/types/job"
-	"github.com/koderover/zadig/pkg/types/step"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/types/job"
+	"github.com/koderover/zadig/v2/pkg/types/step"
 )
 
 type distributeImageCtl struct {
@@ -52,10 +52,11 @@ func NewDistributeCtl(stepTask *commonmodels.StepTask, workflowCtx *commonmodels
 
 func (s *distributeImageCtl) PreRun(ctx context.Context) error {
 	for _, target := range s.distributeImageSpec.DistributeTarget {
-		target.TargetImage = getImage(target.ServiceModule, target.TargetTag, s.distributeImageSpec.TargetRegistry)
-		if !target.UpdateTag {
-			target.TargetImage = getImage(target.ServiceModule, getImageTag(target.SoureImage), s.distributeImageSpec.TargetRegistry)
+		if target.SourceImage == "" {
+			return fmt.Errorf("source image is empty")
 		}
+
+		target.SetTargetImage(s.distributeImageSpec.TargetRegistry)
 	}
 	s.step.Spec = s.distributeImageSpec
 	return nil
@@ -67,19 +68,4 @@ func (s *distributeImageCtl) AfterRun(ctx context.Context) error {
 		s.workflowCtx.GlobalContextSet(job.GetJobOutputKey(targetKey, "IMAGE"), target.TargetImage)
 	}
 	return nil
-}
-
-func getImageTag(image string) string {
-	strs := strings.Split(image, ":")
-	return strs[len(strs)-1]
-}
-
-func getImage(name, tag string, reg *step.RegistryNamespace) string {
-	image := fmt.Sprintf("%s/%s:%s", reg.RegAddr, name, tag)
-	if len(reg.Namespace) > 0 {
-		image = fmt.Sprintf("%s/%s/%s:%s", reg.RegAddr, reg.Namespace, name, tag)
-	}
-	image = strings.TrimPrefix(image, "http://")
-	image = strings.TrimPrefix(image, "https://")
-	return image
 }

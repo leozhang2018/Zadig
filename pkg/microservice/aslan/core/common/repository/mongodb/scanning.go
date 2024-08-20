@@ -27,14 +27,15 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type ScanningListOption struct {
 	ProjectName   string
 	ScanningNames []string
+	TemplateID    string
 }
 
 type ScanningColl struct {
@@ -114,9 +115,16 @@ func (c *ScanningColl) List(listOption *ScanningListOption, pageNum, pageSize in
 	}
 
 	if listOption != nil {
-		query["project_name"] = listOption.ProjectName
+		if len(listOption.ProjectName) > 0 {
+			query["project_name"] = listOption.ProjectName
+		}
+
 		if len(listOption.ScanningNames) > 0 {
 			query["name"] = bson.M{"$in": listOption.ScanningNames}
+		}
+
+		if len(listOption.TemplateID) > 0 {
+			query["template_id"] = listOption.TemplateID
 		}
 	}
 
@@ -168,4 +176,28 @@ func (c *ScanningColl) DeleteByID(idstring string) error {
 
 	_, err = c.DeleteOne(context.TODO(), query)
 	return err
+}
+
+func (c *ScanningColl) GetScanningTemplateReference(templateID string) ([]*models.Scanning, error) {
+	query := bson.M{
+		"template_id": templateID,
+	}
+
+	cursor, err := c.Collection.Find(context.TODO(), query)
+	if err != nil {
+		return nil, err
+	}
+
+	ret := make([]*models.Scanning, 0)
+	err = cursor.All(context.TODO(), &ret)
+	if err != nil {
+		return nil, err
+	}
+	return ret, nil
+}
+
+func (c *ScanningColl) ListByCursor() (*mongo.Cursor, error) {
+	query := bson.M{}
+
+	return c.Collection.Find(context.TODO(), query)
 }

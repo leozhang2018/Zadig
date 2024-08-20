@@ -25,16 +25,16 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/types"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/scmnotify"
-	workflowservice "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	"github.com/koderover/zadig/pkg/tool/gitee"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/scmnotify"
+	workflowservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	"github.com/koderover/zadig/v2/pkg/tool/gitee"
 )
 
 type giteePullRequestDiffFunc func(event *gitee.PullRequestEvent, id int) ([]string, error)
@@ -168,17 +168,6 @@ func (gtem giteeTagEventMatcher) Match(hookRepo *commonmodels.MainHookRepo) (boo
 			return false, nil
 		}
 
-		isRegular := hookRepo.IsRegular
-		if !isRegular && hookRepo.Branch != ev.Repository.DefaultBranch {
-			return false, nil
-		}
-		if isRegular {
-			// Do not use regexp.MustCompile to avoid panic
-			matched, err := regexp.MatchString(hookRepo.Branch, ev.Repository.DefaultBranch)
-			if err != nil || !matched {
-				return false, nil
-			}
-		}
 		hookRepo.Tag = getTagFromRef(ev.Ref)
 		hookRepo.Committer = ev.Sender.Name
 
@@ -271,7 +260,7 @@ func TriggerWorkflowByGiteeEvent(event interface{}, baseURI, requestID string, l
 						continue
 					}
 
-					var mergeRequestID, commitID, ref string
+					var mergeRequestID, commitID, ref, eventType string
 					var prID int
 					var hookPayload *commonmodels.HookPayload
 					autoCancelOpt := &AutoCancelOpt{
@@ -281,12 +270,13 @@ func TriggerWorkflowByGiteeEvent(event interface{}, baseURI, requestID string, l
 					}
 					switch ev := event.(type) {
 					case *gitee.PullRequestEvent:
+						eventType = EventTypePR
 						if ev.PullRequest != nil && ev.PullRequest.Number != 0 && ev.PullRequest.Head != nil && ev.PullRequest.Head.Sha != "" {
 							mergeRequestID = strconv.Itoa(ev.PullRequest.Number)
 							commitID = ev.PullRequest.Head.Sha
 							autoCancelOpt.MergeRequestID = mergeRequestID
 							autoCancelOpt.CommitID = commitID
-							autoCancelOpt.Type = AutoCancelPR
+							autoCancelOpt.Type = eventType
 							prID = ev.PullRequest.Number
 						}
 						hookPayload = &commonmodels.HookPayload{
@@ -297,11 +287,12 @@ func TriggerWorkflowByGiteeEvent(event interface{}, baseURI, requestID string, l
 							IsPr:   true,
 						}
 					case *gitee.PushEvent:
+						eventType = EventTypePush
 						ref = ev.Ref
 						commitID = ev.After
 						autoCancelOpt.Ref = ref
 						autoCancelOpt.CommitID = commitID
-						autoCancelOpt.Type = AutoCancelPush
+						autoCancelOpt.Type = eventType
 						hookPayload = &commonmodels.HookPayload{
 							Owner:  ev.Repository.Owner.Login,
 							Repo:   ev.Repository.Name,
@@ -309,6 +300,8 @@ func TriggerWorkflowByGiteeEvent(event interface{}, baseURI, requestID string, l
 							Ref:    commitID,
 							IsPr:   true,
 						}
+					case *gitee.TagPushEvent:
+						eventType = EventTypeTag
 					}
 					if autoCancelOpt.Type != "" {
 						err := AutoCancelTask(autoCancelOpt, log)
@@ -317,7 +310,7 @@ func TriggerWorkflowByGiteeEvent(event interface{}, baseURI, requestID string, l
 							mErr = multierror.Append(mErr, err)
 						}
 
-						if autoCancelOpt.Type == AutoCancelPR && notification == nil {
+						if autoCancelOpt.Type == EventTypePR && notification == nil {
 							notification, err = scmnotify.NewService().SendInitWebhookComment(
 								item.MainRepo, prID, baseURI, false, false, false, false, log,
 							)
@@ -335,6 +328,7 @@ func TriggerWorkflowByGiteeEvent(event interface{}, baseURI, requestID string, l
 					args := matcher.UpdateTaskArgs(prod, item.WorkflowArgs, item.MainRepo, requestID)
 					args.MergeRequestID = mergeRequestID
 					args.Ref = ref
+					args.EventType = eventType
 					args.CommitID = commitID
 					args.Source = setting.SourceFromGitee
 					args.CodehostID = item.MainRepo.CodehostID

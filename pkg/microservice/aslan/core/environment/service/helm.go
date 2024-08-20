@@ -24,6 +24,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/repository"
+
 	"github.com/hashicorp/go-multierror"
 	"github.com/otiai10/copy"
 	"github.com/pkg/errors"
@@ -33,20 +35,21 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/yaml"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/template"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/kube"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	helmtool "github.com/koderover/zadig/pkg/tool/helmclient"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types"
-	"github.com/koderover/zadig/pkg/util"
-	"github.com/koderover/zadig/pkg/util/converter"
-	jsonutil "github.com/koderover/zadig/pkg/util/json"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/kube"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	helmtool "github.com/koderover/zadig/v2/pkg/tool/helmclient"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/util/converter"
+	jsonutil "github.com/koderover/zadig/v2/pkg/util/json"
 )
 
 type HelmReleaseQueryArgs struct {
@@ -60,14 +63,19 @@ type ReleaseFilter struct {
 }
 
 type HelmReleaseResp struct {
-	ReleaseName string        `json:"releaseName"`
-	ServiceName string        `json:"serviceName"`
-	Revision    int           `json:"revision"`
-	Chart       string        `json:"chart"`
-	AppVersion  string        `json:"appVersion"`
-	Status      ReleaseStatus `json:"status"`
-	Updatable   bool          `json:"updatable"`
-	Error       string        `json:"error"`
+	ReleaseName       string        `json:"releaseName"`
+	ServiceName       string        `json:"serviceName"`
+	Revision          int           `json:"revision"`
+	ChartRepo         string        `json:"chartRepo"`
+	Chart             string        `json:"chart"`
+	AppVersion        string        `json:"appVersion"`
+	OverrideValues    string        `json:"overrideValues"`
+	OverrideYaml      string        `json:"overrideYaml"`
+	Status            ReleaseStatus `json:"status"`
+	Updatable         bool          `json:"updatable"`
+	IsHelmChartDeploy bool          `json:"isHelmChartDeploy"`
+	DeployStrategy    string        `json:"deployStrategy"`
+	Error             string        `json:"error"`
 }
 
 type ChartInfo struct {
@@ -78,10 +86,6 @@ type ChartInfo struct {
 type HelmChartsResp struct {
 	ChartInfos []*ChartInfo      `json:"chartInfos"`
 	FileInfos  []*types.FileInfo `json:"fileInfos"`
-}
-
-type ValuesResp struct {
-	ValuesYaml string `json:"valuesYaml"`
 }
 
 type SvcDataSet struct {
@@ -131,6 +135,7 @@ func getReleaseStatus(re *release.Release) ReleaseStatus {
 }
 
 type ImageData struct {
+	Image     string `json:"image"`
 	ImageName string `json:"imageName"`
 	ImageTag  string `json:"imageTag"`
 	Selected  bool   `json:"selected"`
@@ -145,57 +150,9 @@ type ChartImagesResp struct {
 	ServiceImages []*ServiceImages `json:"serviceImages"`
 }
 
-func GetChartValues(projectName, envName, serviceName string) (*ValuesResp, error) {
-	opt := &commonrepo.ProductFindOptions{Name: projectName, EnvName: envName}
-	prod, err := commonrepo.NewProductColl().Find(opt)
-	if err != nil {
-		return nil, fmt.Errorf("failed to find project: %s, err: %s", projectName, err)
-	}
-
-	restConfig, err := kube.GetRESTConfig(prod.ClusterID)
-	if err != nil {
-		log.Errorf("GetRESTConfig error: %s", err)
-		return nil, fmt.Errorf("failed to get k8s rest config, err: %s", err)
-	}
-	helmClient, err := helmtool.NewClientFromRestConf(restConfig, prod.Namespace)
-	if err != nil {
-		log.Errorf("[%s][%s] NewClientFromRestConf error: %s", envName, projectName, err)
-		return nil, fmt.Errorf("failed to init helm client, err: %s", err)
-	}
-
-	serviceMap := prod.GetServiceMap()
-	prodSvc, ok := serviceMap[serviceName]
-	if !ok {
-		return nil, fmt.Errorf("failed to find sercice: %s in env: %s", serviceName, envName)
-	}
-
-	revisionSvc, err := commonrepo.NewServiceColl().Find(&commonrepo.ServiceFindOption{
-		ServiceName: serviceName,
-		Revision:    prodSvc.Revision,
-		ProductName: prodSvc.ProductName,
-	})
-	if err != nil {
-		return nil, err
-	}
-
-	releaseName := util.GeneReleaseName(revisionSvc.GetReleaseNaming(), prodSvc.ProductName, prod.Namespace, prod.EnvName, prodSvc.ServiceName)
-	valuesMap, err := helmClient.GetReleaseValues(releaseName, true)
-	if err != nil {
-		log.Errorf("failed to get values map data, err: %s", err)
-		return nil, err
-	}
-
-	currentValuesYaml, err := yaml.Marshal(valuesMap)
-	if err != nil {
-		return nil, err
-	}
-
-	return &ValuesResp{ValuesYaml: string(currentValuesYaml)}, nil
-}
-
-func ListReleases(args *HelmReleaseQueryArgs, envName string, log *zap.SugaredLogger) ([]*HelmReleaseResp, error) {
+func ListReleases(args *HelmReleaseQueryArgs, envName string, production bool, log *zap.SugaredLogger) ([]*HelmReleaseResp, error) {
 	projectName, filterStr := args.ProjectName, args.Filter
-	opt := &commonrepo.ProductFindOptions{Name: projectName, EnvName: envName}
+	opt := &commonrepo.ProductFindOptions{Name: projectName, EnvName: envName, Production: util.GetBoolPointer(production)}
 	prod, err := commonrepo.NewProductColl().Find(opt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find project: %s, err: %s", projectName, err)
@@ -235,29 +192,38 @@ func ListReleases(args *HelmReleaseQueryArgs, envName string, log *zap.SugaredLo
 		releaseMap[re.Name] = re
 	}
 
-	releaseNameMap, err := commonservice.GetServiceNameToReleaseNameMap(prod)
+	svcToReleaseNameMap, err := commonutil.GetServiceNameToReleaseNameMap(prod)
 	if err != nil {
 		return nil, fmt.Errorf("failed to build release-service map: %s", err)
 	}
-
 	svcDatSetMap := make(map[string]*SvcDataSet)
 	svcDataList := make([]*SvcDataSet, 0)
 
-	for _, svcGroup := range prod.Services {
-		for _, prodSvc := range svcGroup {
-			serviceName := prodSvc.ServiceName
-			releaseName := releaseNameMap[serviceName]
-			svcDataSet := &SvcDataSet{
-				ProdSvc:    prodSvc,
-				SvcRelease: releaseMap[releaseName],
-			}
-			svcDatSetMap[serviceName] = svcDataSet
-			svcDataList = append(svcDataList, svcDataSet)
+	for _, prodSvc := range prod.GetServiceMap() {
+		serviceName := prodSvc.ServiceName
+		releaseName := svcToReleaseNameMap[serviceName]
+		svcDataSet := &SvcDataSet{
+			ProdSvc:    prodSvc,
+			SvcRelease: releaseMap[releaseName],
 		}
+
+		svcDatSetMap[serviceName] = svcDataSet
+		svcDataList = append(svcDataList, svcDataSet)
+	}
+	for _, prodSvc := range prod.GetChartServiceMap() {
+		serviceName := prodSvc.ServiceName
+		releaseName := prodSvc.ReleaseName
+		svcDataSet := &SvcDataSet{
+			ProdSvc:    prodSvc,
+			SvcRelease: releaseMap[releaseName],
+		}
+
+		svcDatSetMap[serviceName] = svcDataSet
+		svcDataList = append(svcDataList, svcDataSet)
 	}
 
 	// set service template data
-	serviceTmpls, err := commonrepo.NewServiceColl().ListMaxRevisionsByProduct(projectName)
+	serviceTmpls, err := repository.ListMaxRevisionsServices(projectName, production)
 	if err != nil {
 		return nil, errors.Errorf("failed to list service templates for project: %s", projectName)
 	}
@@ -299,6 +265,8 @@ func ListReleases(args *HelmReleaseQueryArgs, envName string, log *zap.SugaredLo
 
 	ret := make([]*HelmReleaseResp, 0)
 
+	chartInfoMap := prod.GetChartRenderMap()
+	chartDeployInfoMap := prod.GetChartDeployRenderMap()
 	for _, svcDataSet := range svcDataList {
 		if !filterFunc(svcDataSet) {
 			continue
@@ -306,17 +274,19 @@ func ListReleases(args *HelmReleaseQueryArgs, envName string, log *zap.SugaredLo
 
 		updatable := false
 		if svcDataSet.TmplSvc != nil {
-			if svcDataSet.ProdSvc.Revision != svcDataSet.TmplSvc.Revision {
+			if svcDataSet.ProdSvc.FromZadig() && svcDataSet.ProdSvc.Revision != svcDataSet.TmplSvc.Revision {
 				updatable = true
 			}
 		}
 
 		respObj := &HelmReleaseResp{
-			ServiceName: svcDataSet.ProdSvc.ServiceName,
-			Status:      HelmReleaseStatusNotDeployed,
-			Updatable:   updatable,
-			Error:       svcDataSet.ProdSvc.Error,
+			ServiceName:    svcDataSet.ProdSvc.ServiceName,
+			Status:         HelmReleaseStatusNotDeployed,
+			Updatable:      updatable,
+			DeployStrategy: prod.ServiceDeployStrategy[svcDataSet.ProdSvc.ServiceName],
+			Error:          svcDataSet.ProdSvc.Error,
 		}
+		respObj.Updatable = updatable
 
 		if svcDataSet.SvcRelease != nil {
 			respObj.ReleaseName = svcDataSet.SvcRelease.Name
@@ -324,6 +294,30 @@ func ListReleases(args *HelmReleaseQueryArgs, envName string, log *zap.SugaredLo
 			respObj.Chart = svcDataSet.SvcRelease.Chart.Name()
 			respObj.AppVersion = svcDataSet.SvcRelease.Chart.AppVersion()
 			respObj.Status = getReleaseStatus(svcDataSet.SvcRelease)
+		} else if svcDataSet.TmplSvc != nil {
+			// service template deploy
+			respObj.ReleaseName = util.GeneReleaseName(svcDataSet.TmplSvc.GetReleaseNaming(), svcDataSet.TmplSvc.ProductName, prod.Namespace, prod.EnvName, svcDataSet.TmplSvc.ServiceName)
+			respObj.ChartRepo = svcDataSet.TmplSvc.HelmChart.Repo
+			respObj.Chart = svcDataSet.TmplSvc.HelmChart.Name
+			respObj.AppVersion = svcDataSet.TmplSvc.HelmChart.Version
+		} else if svcDataSet.ProdSvc != nil {
+			// chart deploy
+			respObj.ReleaseName = svcDataSet.ProdSvc.ReleaseName
+		}
+
+		if svcDataSet.ProdSvc.FromZadig() {
+			if chartInfo, ok := chartInfoMap[respObj.ReleaseName]; ok {
+				respObj.OverrideYaml = chartInfo.GetOverrideYaml()
+				respObj.OverrideValues = chartInfo.OverrideValues
+			}
+		} else {
+			if chartDeployInfo, ok := chartDeployInfoMap[respObj.ReleaseName]; ok {
+				respObj.ChartRepo = chartDeployInfo.ChartRepo
+				respObj.OverrideYaml = chartDeployInfo.GetOverrideYaml()
+				respObj.OverrideValues = chartDeployInfo.OverrideValues
+			}
+			respObj.IsHelmChartDeploy = true
+			respObj.DeployStrategy = prod.ServiceDeployStrategy[commonutil.GetReleaseDeployStrategyKey(svcDataSet.ProdSvc.ReleaseName)]
 		}
 
 		if svcDataSet.ProdSvc.Error != "" {
@@ -337,13 +331,13 @@ func ListReleases(args *HelmReleaseQueryArgs, envName string, log *zap.SugaredLo
 }
 
 func loadChartFilesInfo(productName, serviceName string, revision int64, dir string) ([]*types.FileInfo, error) {
-	base := config.LocalServicePathWithRevision(productName, serviceName, revision)
+	base := config.LocalTestServicePathWithRevision(productName, serviceName, fmt.Sprint(revision))
 
 	var fis []*types.FileInfo
 	files, err := os.ReadDir(filepath.Join(base, serviceName, dir))
 	if err != nil {
 		log.Warnf("failed to read chart info for service %s with revision %d", serviceName, revision)
-		base = config.LocalServicePath(productName, serviceName)
+		base = config.LocalTestServicePath(productName, serviceName)
 		files, err = os.ReadDir(filepath.Join(base, serviceName, dir))
 		if err != nil {
 			return nil, err
@@ -373,12 +367,12 @@ func loadChartFilesInfo(productName, serviceName string, revision int64, dir str
 func prepareChartVersionData(prod *models.Product, serviceObj *models.Service) error {
 	productName := prod.ProductName
 	serviceName, revision := serviceObj.ServiceName, serviceObj.Revision
-	base := config.LocalServicePathWithRevision(productName, serviceName, revision)
-	if err := commonservice.PreloadServiceManifestsByRevision(base, serviceObj); err != nil {
+	base := config.LocalTestServicePathWithRevision(productName, serviceName, fmt.Sprint(revision))
+	if err := commonutil.PreloadServiceManifestsByRevision(base, serviceObj, prod.Production); err != nil {
 		log.Warnf("failed to get chart of revision: %d for service: %s, use latest version", revision, serviceName)
 		// use the latest version when it fails to download the specific version
-		base = config.LocalServicePath(productName, serviceName)
-		if err = commonservice.PreLoadServiceManifests(base, serviceObj); err != nil {
+		base = config.LocalTestServicePath(productName, serviceName)
+		if err = commonutil.PreLoadServiceManifests(base, serviceObj, prod.Production); err != nil {
 			log.Errorf("failed to load chart info for service %v", serviceObj.ServiceName)
 			return err
 		}
@@ -422,21 +416,11 @@ func prepareChartVersionData(prod *models.Product, serviceObj *models.Service) e
 	return nil
 }
 
-func GetChartInfos(productName, envName, serviceName string, log *zap.SugaredLogger) (*HelmChartsResp, error) {
-	opt := &commonrepo.ProductFindOptions{Name: productName, EnvName: envName}
+func GetChartInfos(productName, envName, serviceName string, production bool, log *zap.SugaredLogger) (*HelmChartsResp, error) {
+	opt := &commonrepo.ProductFindOptions{Name: productName, EnvName: envName, Production: &production}
 	prod, err := commonrepo.NewProductColl().Find(opt)
 	if err != nil {
 		return nil, e.ErrGetHelmCharts.AddErr(err)
-	}
-	renderSet, err := FindProductRenderSet(productName, prod.Render.Name, prod.EnvName, log)
-	if err != nil {
-		log.Errorf("[%s][P:%s] find product renderset error: %v", envName, productName, err)
-		return nil, e.ErrGetHelmCharts.AddErr(err)
-	}
-
-	chartMap := make(map[string]*template.ServiceRender)
-	for _, chart := range renderSet.ChartInfos {
-		chartMap[chart.ServiceName] = chart
 	}
 
 	allServiceMap := prod.GetServiceMap()
@@ -477,12 +461,12 @@ func GetChartInfos(productName, envName, serviceName string, log *zap.SugaredLog
 		// download chart info with particular version
 		go func(serviceName string, revision int64) {
 			defer wg.Done()
-			serviceObj, err := commonrepo.NewServiceColl().Find(&commonrepo.ServiceFindOption{
+			serviceObj, err := repository.QueryTemplateService(&commonrepo.ServiceFindOption{
 				ProductName: productName,
 				ServiceName: serviceName,
 				Revision:    revision,
 				Type:        setting.HelmDeployType,
-			})
+			}, prod.Production)
 			if err != nil {
 				log.Errorf("failed to query services name: %s, revision: %d, error: %s", serviceName, revision, err)
 				errList = multierror.Append(errList, fmt.Errorf("failed to query service, serviceName: %s, revision: %d", serviceName, revision))
@@ -513,8 +497,8 @@ func GetChartInfos(productName, envName, serviceName string, log *zap.SugaredLog
 	return ret, nil
 }
 
-func GetImageInfos(productName, envName, serviceNames string, log *zap.SugaredLogger) (*ChartImagesResp, error) {
-	opt := &commonrepo.ProductFindOptions{Name: productName, EnvName: envName}
+func GetImageInfos(productName, envName, serviceNames string, production bool, log *zap.SugaredLogger) (*ChartImagesResp, error) {
+	opt := &commonrepo.ProductFindOptions{Name: productName, EnvName: envName, Production: &production}
 	prod, err := commonrepo.NewProductColl().Find(opt)
 	if err != nil {
 		return nil, fmt.Errorf("failed to find product: %s:%s to get image infos, err: %s", productName, envName, err)
@@ -531,7 +515,7 @@ func GetImageInfos(productName, envName, serviceNames string, log *zap.SugaredLo
 
 	// filter releases, only list releases deployed by zadig
 	serviceMap := prod.GetServiceMap()
-	templateSvcs, err := commonservice.GetProductUsedTemplateSvcs(prod)
+	templateSvcs, err := commonutil.GetProductUsedTemplateSvcs(prod)
 	if err != nil {
 		return nil, fmt.Errorf("failed to get service tempaltes,  err: %s", err)
 	}
@@ -590,17 +574,19 @@ func GetImageInfos(productName, envName, serviceNames string, log *zap.SugaredLo
 			}
 
 			imageSearchRule := &template.ImageSearchingRule{
-				Repo:  container.ImagePath.Repo,
-				Image: container.ImagePath.Image,
-				Tag:   container.ImagePath.Tag,
+				Repo:      container.ImagePath.Repo,
+				Namespace: container.ImagePath.Namespace,
+				Image:     container.ImagePath.Image,
+				Tag:       container.ImagePath.Tag,
 			}
 			pattern := imageSearchRule.GetSearchingPattern()
-			imageUrl, err := commonservice.GeneImageURI(pattern, flatMap)
+			imageUrl, err := commonutil.GeneImageURI(pattern, flatMap)
 			if err != nil {
 				return nil, fmt.Errorf("failed to get image url for container:%s", container.Image)
 			}
 
 			svcImage.Images = append(svcImage.Images, &ImageData{
+				imageUrl,
 				util.GetImageNameFromContainerInfo(container.ImageName, container.Name),
 				commonservice.ExtractImageTag(imageUrl),
 				containerNameSet.Has(container.ImageName),

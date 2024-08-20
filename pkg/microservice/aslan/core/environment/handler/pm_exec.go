@@ -17,23 +17,32 @@ limitations under the License.
 package handler
 
 import (
+	"fmt"
 	"strconv"
 
 	"github.com/gin-gonic/gin"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/environment/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/environment/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 func ConnectSshPmExec(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	projectName := c.Query("projectName")
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
 	ip := c.Query("ip")
 	hostId := c.Query("hostId")
 	name := c.Param("name")
-	if projectName == "" || ip == "" || name == "" || hostId == "" {
+	if projectKey == "" || ip == "" || name == "" || hostId == "" {
 		ctx.Err = e.ErrInvalidParam.AddDesc("param projectName or ip or name or hostId is empty")
 	}
 	colsStr := c.DefaultQuery("cols", "135")
@@ -47,5 +56,77 @@ func ConnectSshPmExec(c *gin.Context) {
 		ctx.Err = e.ErrInvalidParam.AddErr(err)
 	}
 
-	ctx.Err = service.ConnectSshPmExec(c, ctx.UserName, name, projectName, ip, hostId, cols, rows, ctx.Logger)
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Env.SSH {
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, name, types.EnvActionSSH)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	ctx.Err = service.ConnectSshPmExec(c, ctx.UserName, name, projectKey, ip, hostId, cols, rows, ctx.Logger)
+}
+
+// @summary Exec VM Service Command
+// @description Exec VM Service Command
+// @Tags 	environment
+// @accept 	json
+// @produce json
+// @Param 	projectName		query		string									true	"project name"
+// @Param 	hostId			query		string									true	"host id"
+// @Param 	commandType		query		service.VmServiceCommandType			true	"vm service command type"
+// @Param 	name 			path		string									true	"env name"
+// @Param 	serviceName 	path		string									true	"serivce name"
+// @success 200 			{object} 	service.ExecVmServiceCommandResponse
+// @Router /api/aslan/environment/environments/{name}/services/{serviceName}/execmd [post]
+func ExecVmServiceCommand(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	hostId := c.Query("hostId")
+	commandType := c.Query("commandType")
+	name := c.Param("name")
+	serviceName := c.Param("serviceName")
+	if projectKey == "" || name == "" || hostId == "" || commandType == "" {
+		ctx.Err = e.ErrInvalidParam.AddDesc("param projectName or name or hostId or commandType is empty")
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Env.ManagePods {
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, name, types.EnvActionManagePod)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	err = commonutil.CheckZadigProfessionalLicense()
+	if err != nil {
+		ctx.Err = err
+		return
+	}
+
+	ctx.Resp, ctx.Err = service.ExecVmServiceCommand(projectKey, name, serviceName, hostId, service.VmServiceCommandType(commandType), ctx.Logger)
 }

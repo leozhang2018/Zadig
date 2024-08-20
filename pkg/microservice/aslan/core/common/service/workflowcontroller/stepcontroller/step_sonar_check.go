@@ -23,17 +23,18 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/types/step"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/types/step"
 )
 
 type sonarCheckCtl struct {
 	step           *commonmodels.StepTask
 	sonarCheckSpec *step.StepSonarCheckSpec
 	log            *zap.SugaredLogger
+	workflowCtx    *commonmodels.WorkflowTaskCtx
 }
 
-func NewSonarCheckCtl(stepTask *commonmodels.StepTask, log *zap.SugaredLogger) (*sonarCheckCtl, error) {
+func NewSonarCheckCtl(stepTask *commonmodels.StepTask, workflowCtx *commonmodels.WorkflowTaskCtx, log *zap.SugaredLogger) (*sonarCheckCtl, error) {
 	yamlString, err := yaml.Marshal(stepTask.Spec)
 	if err != nil {
 		return nil, fmt.Errorf("marshal sonar check spec error: %v", err)
@@ -43,7 +44,7 @@ func NewSonarCheckCtl(stepTask *commonmodels.StepTask, log *zap.SugaredLogger) (
 		return nil, fmt.Errorf("unmarshal sonar check error: %v", err)
 	}
 	stepTask.Spec = sonarCheckSpec
-	return &sonarCheckCtl{sonarCheckSpec: sonarCheckSpec, log: log, step: stepTask}, nil
+	return &sonarCheckCtl{sonarCheckSpec: sonarCheckSpec, log: log, step: stepTask, workflowCtx: workflowCtx}, nil
 }
 
 func (s *sonarCheckCtl) PreRun(ctx context.Context) error {

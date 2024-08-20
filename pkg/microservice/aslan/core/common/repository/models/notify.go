@@ -19,7 +19,7 @@ package models
 import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
 )
 
 type Notify struct {
@@ -47,6 +47,15 @@ type PipelineStatusCtx struct {
 	Status       config.Status       `bson:"status"                    json:"status,omitempty"`
 	TeamName     string              `bson:"team"                      json:"team"`
 	Stages       []*Stage            `bson:"-"                         json:"stages"`
+}
+
+type WorkflowTaskStatusCtx struct {
+	TaskID              int64         `bson:"task_id"                   json:"task_id"`
+	Executor            string        `bson:"executor"                  json:"executor"`
+	ProductName         string        `bson:"product_name"              json:"product_name"`
+	WorkflowName        string        `bson:"workflow_name"             json:"workflow_name"`
+	WorkflowDisplayName string        `bson:"workflow_display_name"     json:"workflow_display_name"`
+	Status              config.Status `bson:"status"                    json:"status,omitempty"`
 }
 
 type MessageCtx struct {

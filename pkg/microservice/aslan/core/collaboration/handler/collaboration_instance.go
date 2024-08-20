@@ -21,10 +21,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/collaboration/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/collaboration/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func GetCollaborationNew(c *gin.Context) {
@@ -38,6 +38,15 @@ func GetCollaborationNew(c *gin.Context) {
 	ctx.Resp, ctx.Err = service.GetCollaborationNew(projectName, ctx.UserID, ctx.IdentityType, ctx.Account, ctx.Logger)
 }
 
+// @Summary Sync Collaboration Instance
+// @Description Sync Collaboration Instance
+// @Tags 	collaboration
+// @Accept 	json
+// @Produce json
+// @Param 	projectName		query		string									true	"project name"
+// @Param 	body 			body 		service.SyncCollaborationInstanceArgs 	true 	"body"
+// @Success 200
+// @Router /api/aslan/collaboration/collaborations/sync [post]
 func SyncCollaborationInstance(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()

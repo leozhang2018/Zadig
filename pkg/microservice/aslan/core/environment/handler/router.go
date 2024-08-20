@@ -28,32 +28,30 @@ func (*Router) Inject(router *gin.RouterGroup) {
 	// ---------------------------------------------------------------------------------------
 	configmaps := router.Group("configmaps")
 	{
-		configmaps.GET("/:envName", ListConfigMaps)
+		configmaps.GET("/:name", ListConfigMaps)
 		configmaps.POST("", RollBackConfigMap)
 		configmaps.GET("/migrate", MigrateHistoryConfigMaps)
 	}
-
 	secrets := router.Group("secrets")
 	{
-		secrets.GET("/:envName", ListSecrets)
+		secrets.GET("/:name", ListSecrets)
 	}
 	ingresses := router.Group("ingresses")
 	{
-		ingresses.GET("/:envName", ListIngresses)
+		ingresses.GET("/:name", ListIngresses)
 	}
 	pvcs := router.Group("pvcs")
 	{
-		pvcs.GET("/:envName", ListPvcs)
+		pvcs.GET("/:name", ListPvcs)
 	}
-
 	commonEnvCfgs := router.Group("envcfgs")
 	{
-		commonEnvCfgs.GET("/:envName/cfg/:objectName", ListCommonEnvCfgHistory)
+		commonEnvCfgs.GET("/:name/cfg/:objectName", ListCommonEnvCfgHistory)
 		commonEnvCfgs.GET("", ListLatestEnvCfg)
-		commonEnvCfgs.PUT("/:envName/:type/:objectName/sync", SyncEnvResource)
-		commonEnvCfgs.PUT("/:envName", UpdateCommonEnvCfg)
-		commonEnvCfgs.POST("/:envName", CreateCommonEnvCfg)
-		commonEnvCfgs.DELETE("/:envName/cfg/:objectName", DeleteCommonEnvCfg)
+		commonEnvCfgs.PUT("/:name/:type/:objectName/sync", SyncEnvResource)
+		commonEnvCfgs.PUT("/:name", UpdateCommonEnvCfg)
+		commonEnvCfgs.POST("/:name", CreateCommonEnvCfg)
+		commonEnvCfgs.DELETE("/:name/cfg/:objectName", DeleteCommonEnvCfg)
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -69,7 +67,6 @@ func (*Router) Inject(router *gin.RouterGroup) {
 	// ---------------------------------------------------------------------------------------
 	productDiff := router.Group("diff")
 	{
-		// productDiff.GET("/products/:productName/services/:serviceName/configs/:configName", ConfigDiff)
 		productDiff.GET("/products/:productName/service/:serviceName", ServiceDiff)
 	}
 
@@ -88,6 +85,7 @@ func (*Router) Inject(router *gin.RouterGroup) {
 	{
 		image.POST("/deployment/:envName", UpdateDeploymentContainerImage)
 		image.POST("/statefulset/:envName", UpdateStatefulSetContainerImage)
+		image.POST("/cronjob/:envName", UpdateCronJobContainerImage)
 	}
 
 	// 查询环境创建时的服务和变量信息
@@ -102,14 +100,16 @@ func (*Router) Inject(router *gin.RouterGroup) {
 		kube.GET("/available_namespaces", ListAvailableNamespaces)
 		kube.GET("/events", ListKubeEvents)
 
-		kube.POST("/pods", ListServicePods)
-		kube.DELETE("/:env/pods/:podName", DeletePod)
-		kube.GET("/pods/:podName/events", ListPodEvents)
 		kube.GET("/workloads", ListWorkloads)
 		kube.GET("/nodes", ListNodes)
+		kube.GET("/pods", ListPodsInfo)
+		kube.GET("/pods/:podName", GetPodsDetailInfo)
+		kube.DELETE("/:env/pods/:podName", DeletePod)
+		kube.GET("/pods/:podName/events", ListPodEvents)
 
 		kube.POST("/k8s/resources", GetResourceDeployStatus)
 		kube.POST("/helm/releases", GetReleaseDeployStatus)
+		kube.POST("/helm/releaseInstances", GetReleaseInstanceDeployStatus)
 
 		kube.POST("/:env/pods/:podName/debugcontainer", PatchDebugContainer)
 
@@ -143,56 +143,90 @@ func (*Router) Inject(router *gin.RouterGroup) {
 		environments.PUT("", UpdateMultiProducts)
 		environments.POST("", CreateProduct)
 
-		environments.GET("/:name", GetProduct)
+		environments.GET("/:name", GetEnvironment)
 		environments.PUT("/:name/envRecycle", UpdateProductRecycleDay)
 		environments.PUT("/:name/alias", UpdateProductAlias)
 		environments.POST("/:name/affectedservices", AffectedServices)
 		environments.POST("/:name/estimated-values", EstimatedValues)
-		environments.PUT("/:name/renderset", UpdateHelmProductRenderset)
+
 		environments.PUT("/:name/helm/default-values", UpdateHelmProductDefaultValues)
-		environments.PUT("/:name/k8s/default-values", UpdateK8sProductDefaultValues)
+		environments.POST("/:name/helm/default-values/preview", PreviewHelmProductDefaultValues)
+
+		environments.PUT("/:name/k8s/globalVariables", UpdateK8sProductGlobalVariables)
+		environments.POST("/:name/k8s/globalVariables/preview", PreviewGlobalVariables)
+
+		environments.GET("/:name/globalVariableCandidates", GetGlobalVariableCandidates)
 		environments.PUT("/:name/helm/charts", UpdateHelmProductCharts)
 		environments.PUT("/:name/syncVariables", SyncHelmProductRenderset)
-		environments.GET("/:name/helmChartVersions", GetHelmChartVersions)
-		environments.GET("/:name/productInfo", GetProductInfo)
 		environments.DELETE("/:name", DeleteProduct)
 		environments.GET("/:name/groups", ListGroups)
 		environments.GET("/:name/workloads", ListWorkloadsInEnv)
 
 		environments.GET("/:name/helm/releases", ListReleases)
+		environments.DELETE("/:name/helm/releases", DeleteHelmReleases)
 		environments.GET("/:name/helm/values", GetChartValues)
 		environments.GET("/:name/helm/charts", GetChartInfos)
 		environments.GET("/:name/helm/images", GetImageInfos)
 
+		environments.GET("/:name/services", ListSvcsInEnv)
 		environments.PUT("/:name/services", DeleteProductServices)
 		environments.GET("/:name/services/:serviceName", GetService)
 		environments.PUT("/:name/services/:serviceName", UpdateService)
+		environments.GET("/:name/services/:serviceName/yaml", FetchServiceYaml)
+		environments.POST("/:name/services/:serviceName/preview", PreviewService)
+		environments.POST("/:name/services/preview/batch", BatchPreviewServices)
 		environments.POST("/:name/services/:serviceName/restart", RestartService)
 		environments.POST("/:name/services/:serviceName/restartNew", RestartWorkload)
 		environments.POST("/:name/services/:serviceName/scaleNew", ScaleNewService)
-		environments.GET("/:name/services/:serviceName/containers/:container", GetServiceContainer)
 
-		environments.GET("/:name/estimated-renderchart", GetEstimatedRenderCharts)
+		environments.POST("/:name/estimated-renderchart", GetEstimatedRenderCharts)
 
 		environments.GET("/:name/check/workloads/k8services", CheckWorkloadsK8sServices)
 		environments.POST("/:name/share/enable", EnableBaseEnv)
 		environments.DELETE("/:name/share/enable", DisableBaseEnv)
 		environments.GET("/:name/check/sharenv/:op/ready", CheckShareEnvReady)
+		environments.GET("/:name/share/portal/:serviceName", GetPortalService)
+		environments.POST("/:name/share/portal/:serviceName", SetupPortalService)
+
+		environments.POST("/:name/istioGrayscale/enable", EnableIstioGrayscale)
+		environments.DELETE("/:name/istioGrayscale/enable", DisableIstioGrayscale)
+		environments.GET("/:name/check/istioGrayscale/:op/ready", CheckIstioGrayscaleReady)
+		environments.GET("/:name/istioGrayscale/config", GetIstioGrayscaleConfig)
+		environments.POST("/:name/istioGrayscale/config", SetIstioGrayscaleConfig)
+		environments.GET("/:name/istioGrayscale/portal/:serviceName", GetIstioGrayscalePortalService)
+		environments.POST("/:name/istioGrayscale/portal/:serviceName", SetupIstioGrayscalePortalService)
 
 		environments.GET("/:name/services/:serviceName/pmexec", ConnectSshPmExec)
+		environments.POST("/:name/services/:serviceName/execmd", ExecVmServiceCommand)
 
-		environments.POST("/:name/services/:serviceName/devmode/patch", PatchWorkload)
-		environments.POST("/:name/services/:serviceName/devmode/recover", RecoverWorkload)
+		// environments.POST("/:name/services/:serviceName/devmode/patch", PatchWorkload)
+		// environments.POST("/:name/services/:serviceName/devmode/recover", RecoverWorkload)
 
+		environments.GET("/:name/configs", GetEnvConfigs)
+		environments.PUT("/:name/configs", UpdateEnvConfigs)
+		environments.POST("/:name/analysis", RunAnalysis)
+		environments.GET("/:name/analysis/cron", GetEnvAnalysisCron)
+		environments.PUT("/:name/analysis/cron", UpsertEnvAnalysisCron)
+		environments.GET("/analysis/history", GetEnvAnalysisHistory)
+
+		environments.POST("/:name/sleep", EnvSleep)
+		environments.GET("/:name/sleep/cron", GetEnvSleepCron)
+		environments.PUT("/:name/sleep/cron", UpsertEnvSleepCron)
+
+		environments.GET("/:name/version/:serviceName", ListEnvServiceVersions)
+		environments.GET("/:name/version/:serviceName/revision/:revision", GetEnvServiceVersionYaml)
+		environments.GET("/:name/version/:serviceName/diff", DiffEnvServiceVersions)
+		environments.POST("/:name/version/:serviceName/rollback", RollbackEnvServiceVersion)
 	}
 
 	// ---------------------------------------------------------------------------------------
-	// renderset相关接口
+	// renderset apis
 	// ---------------------------------------------------------------------------------------
 	rendersets := router.Group("rendersets")
 	{
-		rendersets.GET("/renderchart", GetServiceRenderCharts)
+		rendersets.POST("/renderchart", GetServiceRenderCharts)
 		rendersets.GET("/default-values", GetProductDefaultValues)
+		rendersets.GET("/globalVariables", GetGlobalVariables)
 		rendersets.GET("/yamlContent", GetYamlContent)
 		rendersets.GET("/variables", GetServiceVariables)
 	}
@@ -203,10 +237,92 @@ func (*Router) Inject(router *gin.RouterGroup) {
 	revision := router.Group("revision")
 	{
 		revision.GET("/products", ListProductsRevision)
+		revision.GET("/productsnaps", ListProductsRevisionSnaps)
 	}
 
 	bundles := router.Group("bundle-resources")
 	{
 		bundles.GET("", GetBundleResources)
+	}
+
+	initialize := router.Group("init")
+	{
+		initialize.POST("/type/:envType", InitializeEnv)
+	}
+}
+
+type OpenAPIRouter struct{}
+
+func (*OpenAPIRouter) Inject(router *gin.RouterGroup) {
+	image := router.Group("image")
+	{
+		image.POST("/deployment/:envName", OpenAPIUpdateDeploymentContainerImage)
+		image.POST("/statefulset/:envName", OpenAPIUpdateStatefulSetContainerImage)
+		image.POST("/cronjob/:envName", OpenAPIUpdateCronJobContainerImage)
+	}
+
+	common := router.Group("")
+	{
+		common.GET("", OpenAPIListEnvs)
+
+		common.POST("", OpenAPICreateK8sEnv)
+		common.DELETE("/:name", OpenAPIDeleteEnv)
+		common.GET("/:name", OpenAPIGetEnvDetail)
+		common.PUT("/:name", OpenAPIUpdateEnvBasicInfo)
+
+		common.POST("/scale", OpenAPIScaleWorkloads)
+		common.POST("/service/yaml", OpenAPIApplyYamlService)
+		common.DELETE("/service/yaml", OpenAPIDeleteYamlServiceFromEnv)
+
+		common.PUT("/envcfgs", OpenAPIUpdateCommonEnvCfg)
+		common.POST("/:name/envcfgs", OpenAPICreateCommonEnvCfg)
+		common.GET("/:name/envcfgs", OpenAPIListCommonEnvCfg)
+		common.GET("/:name/envcfg/:cfgName", OpenAPIGetCommonEnvCfg)
+		common.DELETE("/:name/envcfg/:cfgName", OpenAPIDeleteCommonEnvCfg)
+
+		common.PUT("/:name/services", OpenAPIUpdateYamlServices)
+		common.GET("/:name/variable", OpenAPIGetEnvGlobalVariables)
+		common.PUT("/:name/variable", OpenAPIUpdateGlobalVariables)
+
+		common.GET("/:name/services/:serviceName", OpenAPIGetService)
+		common.POST("/:name/service/:serviceName/restart", OpenAPIRestartService)
+
+		common.GET("/:name/check/workloads/k8services", OpenAPICheckWorkloadsK8sServices)
+		common.POST("/:name/share/enable", OpenAPIEnableBaseEnv)
+		common.DELETE("/:name/share/enable", OpenAPIDsiableBaseEnv)
+		common.GET("/:name/check/sharenv/:op/ready", OpenAPICheckShareEnvReady)
+		common.GET("/:name/share/portal/:serviceName", OpenAPIGetPortalService)
+		common.POST("/:name/share/portal/:serviceName", OpenAPISetPortalService)
+	}
+
+	production := router.Group("production")
+	{
+		production.GET("", OpenAPIListProductionEnvs)
+
+		production.DELETE("/:name", OpenAPIDeleteProductionEnv)
+		production.POST("", OpenAPICreateProductionEnv)
+		production.GET("/:name", OpenAPIGetProductionEnvDetail)
+		production.PUT("/:name", OpenAPIUpdateProductionEnvBasicInfo)
+
+		production.POST("/service/yaml", OpenAPIApplyProductionYamlService)
+		production.DELETE("/service/yaml", OpenAPIDeleteProductionYamlServiceFromEnv)
+
+		production.PUT("/envcfgs", OpenAPIUpdateProductionCommonEnvCfg)
+		production.POST("/:name/envcfgs", OpenAPICreateCommonEnvCfg)
+		production.GET("/:name/envcfgs", OpenAPIListProductionCommonEnvCfg)
+		production.GET("/:name/envcfg/:cfgName", OpenAPIGetProductionCommonEnvCfg)
+		production.DELETE("/:name/envcfg/:cfgName", OpenAPIDeleteProductionEnvCommonEnvCfg)
+
+		production.PUT("/:name/services", OpenAPIUpdateProductionYamlServices)
+		production.GET("/:name/variable", OpenAPIGetProductionEnvGlobalVariables)
+		production.PUT("/:name/variable", OpenAPIUpdateProductionGlobalVariables)
+
+		production.GET("/:name/services/:serviceName", OpenAPIGetProductionService)
+		production.POST("/:name/service/:serviceName/restart", OpenAPIProductionRestartService)
+	}
+
+	kube := router.Group("kube")
+	{
+		kube.GET("/events", OpenAPIListKubeEvents)
 	}
 }

@@ -30,14 +30,14 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/koderover/zadig/pkg/microservice/reaper/config"
-	"github.com/koderover/zadig/pkg/microservice/reaper/internal/s3"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/httpclient"
-	"github.com/koderover/zadig/pkg/tool/log"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	"github.com/koderover/zadig/pkg/types"
-	"github.com/koderover/zadig/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/internal/s3"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 func (r *Reaper) runIntallationScripts() error {
@@ -264,8 +264,12 @@ func (r *Reaper) runScripts() error {
 func (r *Reaper) runSonarScanner() error {
 	// first we write the sonar scanner config to the config file
 	for _, repo := range r.Ctx.Repos {
-		log.Infof("Writing sonar-project.properties for repo: %s", repo.Name)
-		repoConfigPath := filepath.Join("/workspace", repo.Name, "sonar-project.properties")
+		repoPath := repo.Name
+		if repo.CheckoutPath != "" {
+			repoPath = repo.CheckoutPath
+		}
+		log.Infof("Writing sonar-project.properties for repo: %s under relative path %s", repo.Name, repoPath)
+		repoConfigPath := filepath.Join("/workspace", repoPath, "sonar-project.properties")
 		// renders the scanned repository branch information to the user configuration
 		r.Ctx.SonarParameter = strings.ReplaceAll(r.Ctx.SonarParameter, "$BRANCH", repo.Branch)
 		configContent := fmt.Sprintf("sonar.login=%s\nsonar.host.url=%s\n%s", r.Ctx.SonarLogin, r.Ctx.SonarServer, r.Ctx.SonarParameter)
@@ -275,10 +279,14 @@ func (r *Reaper) runSonarScanner() error {
 			return err
 		}
 	}
+	scanPath := r.Ctx.Repos[0].Name
+	if r.Ctx.Repos[0].CheckoutPath != "" {
+		scanPath = r.Ctx.Repos[0].CheckoutPath
+	}
 	// then we simply run the sonar-scanner command to commence the scan
 	cmd := exec.Command("sonar-scanner")
 	// since currently only one codehost is supported, we will just use the first repository
-	cmd.Dir = filepath.Join("/workspace", r.Ctx.Repos[0].Name)
+	cmd.Dir = filepath.Join("/workspace", scanPath)
 	fileName := filepath.Join(os.TempDir(), "sonar.log")
 	util.WriteFile(fileName, []byte{}, 0700)
 	var wg sync.WaitGroup
@@ -376,6 +384,7 @@ func (r *Reaper) RunPostScripts() error {
 	return cmd.Run()
 }
 
+// @note run pm deploy scripts
 func (r *Reaper) RunPMDeployScripts() error {
 	if len(r.Ctx.PMDeployScripts) == 0 {
 		return nil
@@ -439,7 +448,7 @@ func (r *Reaper) RunPMDeployScripts() error {
 func (r *Reaper) downloadArtifactFile() error {
 	var err error
 	var store *s3.S3
-	if store, err = s3.NewS3StorageFromEncryptedURI(r.Ctx.ArtifactInfo.URL, r.Ctx.AesKey); err != nil {
+	if store, err = s3.UnmarshalNewS3StorageFromEncrypted(r.Ctx.ArtifactInfo.URL, r.Ctx.AesKey); err != nil {
 		log.Errorf("Archive failed to create s3 storage %s", r.Ctx.ArtifactInfo.URL)
 		return err
 	}

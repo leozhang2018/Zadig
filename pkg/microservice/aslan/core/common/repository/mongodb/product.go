@@ -28,16 +28,19 @@ import (
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/setting"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/types"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type ProductFindOptions struct {
-	Name      string
-	EnvName   string
-	Namespace string
+	Name              string
+	EnvName           string
+	Namespace         string
+	Production        *bool
+	IgnoreNotFoundErr bool
 }
 
 // ClusterId is a primitive.ObjectID{}.Hex()
@@ -61,6 +64,11 @@ type ProductListOptions struct {
 	ShareEnvIsBase  *bool
 	ShareEnvBaseEnv *string
 
+	// New Since v2.1.0
+	IstioGrayscaleEnable  *bool
+	IstioGrayscaleIsBase  *bool
+	IstioGrayscaleBaseEnv *string
+
 	Production *bool
 }
 
@@ -76,6 +84,7 @@ type projectID struct {
 
 type ProductColl struct {
 	*mongo.Collection
+	mongo.Session
 
 	coll string
 }
@@ -83,6 +92,15 @@ type ProductColl struct {
 func NewProductColl() *ProductColl {
 	name := models.Product{}.TableName()
 	return &ProductColl{Collection: mongotool.Database(config.MongoDatabase()).Collection(name), coll: name}
+}
+
+func NewProductCollWithSession(session mongo.Session) *ProductColl {
+	name := models.Product{}.TableName()
+	return &ProductColl{
+		Collection: mongotool.Database(config.MongoDatabase()).Collection(name),
+		Session:    session,
+		coll:       name,
+	}
 }
 
 func (c *ProductColl) GetCollectionName() string {
@@ -118,21 +136,6 @@ type ProductEnvFindOptions struct {
 	Namespace string
 }
 
-func (c *ProductColl) FindEnv(opt *ProductEnvFindOptions) (*models.Product, error) {
-	query := bson.M{}
-	if opt.Name != "" {
-		query["product_name"] = opt.Name
-	}
-
-	if opt.Namespace != "" {
-		query["namespace"] = opt.Namespace
-	}
-
-	ret := new(models.Product)
-	err := c.FindOne(context.TODO(), query).Decode(ret)
-	return ret, err
-}
-
 func (c *ProductColl) Find(opt *ProductFindOptions) (*models.Product, error) {
 	res := &models.Product{}
 	query := bson.M{}
@@ -145,8 +148,18 @@ func (c *ProductColl) Find(opt *ProductFindOptions) (*models.Product, error) {
 	if opt.Namespace != "" {
 		query["namespace"] = opt.Namespace
 	}
+	if opt.Production != nil {
+		if *opt.Production {
+			query["production"] = true
+		} else {
+			query["$or"] = []bson.M{{"production": bson.M{"$eq": false}}, {"production": bson.M{"$exists": false}}}
+		}
+	}
 
-	err := c.FindOne(context.TODO(), query).Decode(res)
+	err := c.FindOne(mongotool.SessionContext(context.TODO(), c.Session), query).Decode(res)
+	if err != nil && mongo.ErrNoDocuments == err && opt.IgnoreNotFoundErr {
+		return nil, nil
+	}
 	return res, err
 }
 
@@ -254,8 +267,21 @@ func (c *ProductColl) List(opt *ProductListOptions) ([]*models.Product, error) {
 	if opt.ShareEnvBaseEnv != nil {
 		query["share_env.base_env"] = *opt.ShareEnvBaseEnv
 	}
+	if opt.IstioGrayscaleEnable != nil {
+		query["istio_grayscale.enable"] = *opt.IstioGrayscaleEnable
+	}
+	if opt.IstioGrayscaleIsBase != nil {
+		query["istio_grayscale.is_base"] = *opt.IstioGrayscaleIsBase
+	}
+	if opt.IstioGrayscaleBaseEnv != nil {
+		query["istio_grayscale.base_env"] = *opt.IstioGrayscaleBaseEnv
+	}
 	if opt.Production != nil {
-		query["$or"] = []bson.M{{"production": bson.M{"$eq": false}}, {"production": bson.M{"$exists": false}}}
+		if *opt.Production {
+			query["production"] = true
+		} else {
+			query["$or"] = []bson.M{{"production": bson.M{"$eq": false}}, {"production": bson.M{"$exists": false}}}
+		}
 	}
 
 	ctx := context.Background()
@@ -316,7 +342,9 @@ func (c *ProductColl) UpdateStatusAndError(envName, projectName, status, errorMs
 		"status": status,
 		"error":  errorMsg,
 	}}
-	_, err := c.UpdateOne(context.TODO(), query, change)
+	ctx := context.TODO()
+
+	_, err := c.UpdateOne(ctx, query, change)
 	return err
 }
 
@@ -326,7 +354,6 @@ func (c *ProductColl) UpdateStatus(owner, productName, status string) error {
 		"status": status,
 	}}
 	_, err := c.UpdateOne(context.TODO(), query, change)
-
 	return err
 }
 
@@ -345,18 +372,12 @@ func (c *ProductColl) UpdateRegistry(envName, productName, registryId string) er
 	change := bson.M{"$set": bson.M{
 		"registry_id": registryId,
 	}}
-	_, err := c.UpdateOne(context.TODO(), query, change)
 
-	return err
-}
-
-func (c *ProductColl) UpdateRender(envName, productName string, render *models.RenderInfo) error {
-	query := bson.M{"env_name": envName, "product_name": productName}
-	change := bson.M{"$set": bson.M{
-		"render": render,
-	}}
-	_, err := c.UpdateOne(context.TODO(), query, change)
-
+	ctx := context.TODO()
+	if c.Session != nil {
+		ctx = mongo.NewSessionContext(ctx, c.Session)
+	}
+	_, err := c.UpdateOne(ctx, query, change)
 	return err
 }
 
@@ -367,26 +388,43 @@ func (c *ProductColl) Delete(owner, productName string) error {
 	return err
 }
 
+func (c *ProductColl) UpdateGlobalVariable(args *models.Product) error {
+	query := bson.M{"env_name": args.EnvName, "product_name": args.ProductName}
+	changePayload := bson.M{
+		"update_time":      time.Now().Unix(),
+		"global_variables": args.GlobalVariables,
+	}
+	change := bson.M{"$set": changePayload}
+	_, err := c.UpdateOne(mongotool.SessionContext(context.TODO(), c.Session), query, change)
+	return err
+}
+
 // Update  Cannot update owner & product name
 func (c *ProductColl) Update(args *models.Product) error {
 	query := bson.M{"env_name": args.EnvName, "product_name": args.ProductName}
 	changePayload := bson.M{
-		"update_time": time.Now().Unix(),
-		"services":    args.Services,
-		"status":      args.Status,
-		"revision":    args.Revision,
-		"render":      args.Render,
-		"error":       args.Error,
-		"share_env":   args.ShareEnv,
+		"update_time":      time.Now().Unix(),
+		"services":         args.Services,
+		"status":           args.Status,
+		"revision":         args.Revision,
+		"error":            args.Error,
+		"share_env":        args.ShareEnv,
+		"istio_grayscale":  args.IstioGrayscale,
+		"global_variables": args.GlobalVariables,
+		"default_values":   args.DefaultValues,
+		"yaml_data":        args.YamlData,
 	}
 	if len(args.Source) > 0 {
 		changePayload["source"] = args.Source
 	}
-	if len(args.ServiceDeployStrategy) > 0 {
+	if args.ServiceDeployStrategy != nil {
 		changePayload["service_deploy_strategy"] = args.ServiceDeployStrategy
 	}
+	if args.PreSleepStatus != nil {
+		changePayload["pre_sleep_status"] = args.PreSleepStatus
+	}
 	change := bson.M{"$set": changePayload}
-	_, err := c.UpdateOne(context.TODO(), query, change)
+	_, err := c.UpdateOne(mongotool.SessionContext(context.TODO(), c.Session), query, change)
 	return err
 }
 
@@ -399,7 +437,7 @@ func (c *ProductColl) Create(args *models.Product) error {
 	now := time.Now().Unix()
 	args.CreateTime = now
 	args.UpdateTime = now
-	_, err := c.InsertOne(context.TODO(), args)
+	_, err := c.InsertOne(mongotool.SessionContext(context.TODO(), c.Session), args)
 
 	return err
 }
@@ -417,6 +455,22 @@ func (c *ProductColl) UpdateGroup(envName, productName string, groupIndex int, g
 		serviceGroup:  group,
 	}
 
+	_, err := c.UpdateOne(mongotool.SessionContext(context.TODO(), c.Session), query, bson.M{"$set": change})
+
+	return err
+}
+
+func (c *ProductColl) UpdateDeployStrategyAndGlobalVariable(envName, productName string, deployStrategy map[string]string, globalVariables []*types.GlobalVariableKV) error {
+	query := bson.M{
+		"env_name":     envName,
+		"product_name": productName,
+	}
+	change := bson.M{
+		"update_time":             time.Now().Unix(),
+		"global_variables":        globalVariables,
+		"service_deploy_strategy": deployStrategy,
+	}
+
 	_, err := c.UpdateOne(context.TODO(), query, bson.M{"$set": change})
 
 	return err
@@ -432,8 +486,20 @@ func (c *ProductColl) UpdateDeployStrategy(envName, productName string, deploySt
 		"service_deploy_strategy": deployStrategy,
 	}
 
-	_, err := c.UpdateOne(context.TODO(), query, bson.M{"$set": change})
+	_, err := c.UpdateOne(mongotool.SessionContext(context.TODO(), c.Session), query, bson.M{"$set": change})
 
+	return err
+}
+
+func (c *ProductColl) UpdateProductVariables(product *models.Product) error {
+	query := bson.M{"env_name": product.EnvName, "product_name": product.ProductName}
+
+	change := bson.M{"$set": bson.M{
+		"default_values":   product.DefaultValues,
+		"yaml_data":        product.YamlData,
+		"global_variables": product.GlobalVariables,
+	}}
+	_, err := c.UpdateOne(context.TODO(), query, change)
 	return err
 }
 
@@ -464,6 +530,17 @@ func (c *ProductColl) UpdateIsPublic(envName, productName string, isPublic bool)
 	change := bson.M{"$set": bson.M{
 		"update_time": time.Now().Unix(),
 		"is_public":   isPublic,
+	}}
+	_, err := c.UpdateOne(context.TODO(), query, change)
+
+	return err
+}
+
+func (c *ProductColl) UpdateIstioGrayscale(envName, productName string, istioGrayscale models.IstioGrayscale) error {
+	query := bson.M{"env_name": envName, "product_name": productName}
+	change := bson.M{"$set": bson.M{
+		"update_time":     time.Now().Unix(),
+		"istio_grayscale": istioGrayscale,
 	}}
 	_, err := c.UpdateOne(context.TODO(), query, change)
 
@@ -503,13 +580,16 @@ type nsObject struct {
 	Namespace string             `bson:"namespace"`
 }
 
-func (c *ProductColl) ListExistedNamespace() ([]string, error) {
+func (c *ProductColl) ListExistedNamespace(clusterID string) ([]string, error) {
 	nsList := make([]*nsObject, 0)
 	resp := sets.NewString()
 	selector := bson.D{
 		{"namespace", 1},
 	}
 	query := bson.M{"is_existed": true}
+	if clusterID != "" {
+		query["cluster_id"] = clusterID
+	}
 	opt := options.Find()
 	opt.SetProjection(selector)
 	cursor, err := c.Collection.Find(context.TODO(), query, opt)
@@ -524,4 +604,77 @@ func (c *ProductColl) ListExistedNamespace() ([]string, error) {
 		resp.Insert(obj.Namespace)
 	}
 	return resp.List(), nil
+}
+
+func (c *ProductColl) ListProductionNamespace(clusterID string) ([]string, error) {
+	nsList := make([]*nsObject, 0)
+	resp := sets.NewString()
+	selector := bson.D{
+		{"namespace", 1},
+	}
+	query := bson.M{"production": true, "cluster_id": clusterID}
+	opt := options.Find()
+	opt.SetProjection(selector)
+	cursor, err := c.Collection.Find(context.TODO(), query, opt)
+	if err != nil {
+		return nil, err
+	}
+	err = cursor.All(context.TODO(), &nsList)
+	if err != nil {
+		return nil, err
+	}
+	for _, obj := range nsList {
+		resp.Insert(obj.Namespace)
+	}
+	return resp.List(), nil
+}
+
+func (c *ProductColl) ListNamespace(clusterID string) ([]string, error) {
+	nsList := make([]*nsObject, 0)
+	resp := sets.NewString()
+	selector := bson.D{
+		{"namespace", 1},
+	}
+	query := bson.M{"cluster_id": clusterID}
+	opt := options.Find()
+	opt.SetProjection(selector)
+	cursor, err := c.Collection.Find(context.TODO(), query, opt)
+	if err != nil {
+		return nil, err
+	}
+	err = cursor.All(context.TODO(), &nsList)
+	if err != nil {
+		return nil, err
+	}
+	for _, obj := range nsList {
+		resp.Insert(obj.Namespace)
+	}
+	return resp.List(), nil
+}
+
+func (c *ProductColl) ListEnvByNamespace(clusterID, namespace string) ([]*models.Product, error) {
+	var resp []*models.Product
+	query := bson.M{"namespace": namespace, "cluster_id": clusterID}
+	cursor, err := c.Collection.Find(context.Background(), query)
+	if err != nil {
+		return nil, err
+	}
+	err = cursor.All(context.Background(), &resp)
+	if err != nil {
+		return nil, err
+	}
+	return resp, nil
+}
+
+func (c *ProductColl) UpdateConfigs(envName, productName string, analysisConfig *models.AnalysisConfig, notificationConfigs []*models.NotificationConfig) error {
+	query := bson.M{"env_name": envName, "product_name": productName}
+
+	change := bson.M{"$set": bson.M{
+		"analysis_config":      analysisConfig,
+		"notification_configs": notificationConfigs,
+		"update_time":          time.Now().Unix(),
+	}}
+	_, err := c.UpdateOne(context.TODO(), query, change)
+
+	return err
 }

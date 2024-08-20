@@ -20,8 +20,10 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 type CanaryReleaseJob struct {
@@ -48,7 +50,19 @@ func (j *CanaryReleaseJob) SetPreset() error {
 	return nil
 }
 
+func (j *CanaryReleaseJob) SetOptions() error {
+	return nil
+}
+
+func (j *CanaryReleaseJob) ClearSelectionField() error {
+	return nil
+}
+
 func (j *CanaryReleaseJob) MergeArgs(args *commonmodels.Job) error {
+	return nil
+}
+
+func (j *CanaryReleaseJob) UpdateWithLatestSetting() error {
 	return nil
 }
 
@@ -82,8 +96,12 @@ func (j *CanaryReleaseJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, error)
 			continue
 		}
 		task := &commonmodels.JobTask{
-			Name:    jobNameFormat(j.job.Name + "-" + target.K8sServiceName),
-			Key:     strings.Join([]string{j.job.Name, target.K8sServiceName}, "."),
+			Name: jobNameFormat(j.job.Name + "-" + target.K8sServiceName),
+			Key:  strings.Join([]string{j.job.Name, target.K8sServiceName}, "."),
+			JobInfo: map[string]string{
+				JobNameKey:         j.job.Name,
+				"k8s_service_name": target.K8sServiceName,
+			},
 			JobType: string(config.JobK8sCanaryRelease),
 			Spec: &commonmodels.JobTaskCanaryReleaseSpec{
 				Namespace:      deployJobSpec.Namespace,
@@ -95,6 +113,7 @@ func (j *CanaryReleaseJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, error)
 				ContainerName:  target.ContainerName,
 				Image:          target.Image,
 			},
+			ErrorPolicy: j.job.ErrorPolicy,
 		}
 		resp = append(resp, task)
 	}
@@ -104,6 +123,11 @@ func (j *CanaryReleaseJob) ToJobs(taskID int64) ([]*commonmodels.JobTask, error)
 
 func (j *CanaryReleaseJob) LintJob() error {
 	j.spec = &commonmodels.CanaryReleaseJobSpec{}
+
+	if err := util.CheckZadigProfessionalLicense(); err != nil {
+		return e.ErrLicenseInvalid.AddDesc("")
+	}
+
 	if err := commonmodels.IToiYaml(j.job.Spec, j.spec); err != nil {
 		return err
 	}

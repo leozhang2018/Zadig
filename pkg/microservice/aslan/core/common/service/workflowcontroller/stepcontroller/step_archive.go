@@ -23,18 +23,19 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/types/step"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/types/step"
 )
 
 type archiveCtl struct {
 	step        *commonmodels.StepTask
 	archiveSpec *step.StepArchiveSpec
+	workflowCtx *commonmodels.WorkflowTaskCtx
 	log         *zap.SugaredLogger
 }
 
-func NewArchiveCtl(stepTask *commonmodels.StepTask, log *zap.SugaredLogger) (*archiveCtl, error) {
+func NewArchiveCtl(stepTask *commonmodels.StepTask, workflowCtx *commonmodels.WorkflowTaskCtx, log *zap.SugaredLogger) (*archiveCtl, error) {
 	yamlString, err := yaml.Marshal(stepTask.Spec)
 	if err != nil {
 		return nil, fmt.Errorf("marshal archive spec error: %v", err)
@@ -44,7 +45,7 @@ func NewArchiveCtl(stepTask *commonmodels.StepTask, log *zap.SugaredLogger) (*ar
 		return nil, fmt.Errorf("unmarshal archive spec error: %v", err)
 	}
 	stepTask.Spec = archiveSpec
-	return &archiveCtl{archiveSpec: archiveSpec, log: log, step: stepTask}, nil
+	return &archiveCtl{archiveSpec: archiveSpec, workflowCtx: workflowCtx, log: log, step: stepTask}, nil
 }
 
 func (s *archiveCtl) PreRun(ctx context.Context) error {

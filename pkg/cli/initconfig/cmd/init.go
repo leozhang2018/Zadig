@@ -17,22 +17,32 @@ limitations under the License.
 package cmd
 
 import (
+	"context"
 	_ "embed"
-	"encoding/base64"
-	"encoding/json"
+	"fmt"
+	"sync"
 	"time"
 
+	workflowservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow"
 	"github.com/spf13/cobra"
 
-	"github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/aslan"
-	"github.com/koderover/zadig/pkg/shared/client/policy"
-	"github.com/koderover/zadig/pkg/shared/client/user"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	"github.com/koderover/zadig/pkg/tool/httpclient"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/config"
+	modeMongodb "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/collaboration/repository/mongodb"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/ai"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	vmcommonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/vm"
+	labelMongodb "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/label/repository/mongodb"
+	statrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/stat/repository/mongodb"
+	systemrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/repository/mongodb"
+	systemservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/service"
+	templateservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/templatestore/service"
+	configmongodb "github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/email/repository/mongodb"
+	userdb "github.com/koderover/zadig/v2/pkg/microservice/user/core/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/shared/client/aslan"
+	gormtool "github.com/koderover/zadig/v2/pkg/tool/gorm"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 func init() {
@@ -53,35 +63,186 @@ var initCmd = &cobra.Command{
 	},
 }
 
+type indexer interface {
+	EnsureIndex(ctx context.Context) error
+	GetCollectionName() string
+}
+
 func run() error {
-	for {
-		err := Healthz()
-		if err == nil {
-			break
-		}
-		log.Error(err)
-		time.Sleep(10 * time.Second)
+	// initialize connection to both databases
+	err := gormtool.Open(config.MysqlUser(),
+		config.MysqlPassword(),
+		config.MysqlHost(),
+		config.MysqlDexDB(),
+	)
+	if err != nil {
+		log.Panicf("Failed to open database %s", config.MysqlDexDB())
 	}
-	err := initSystemConfig()
+
+	err = gormtool.Open(config.MysqlUser(),
+		config.MysqlPassword(),
+		config.MysqlHost(),
+		config.MysqlUserDB(),
+	)
+	if err != nil {
+		log.Panicf("Failed to open database %s", config.MysqlUserDB())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	defer cancel()
+
+	// mongodb initialization
+	mongotool.Init(ctx, config.MongoURI())
+	if err := mongotool.Ping(ctx); err != nil {
+		panic(fmt.Errorf("failed to connect to mongo, error: %s", err))
+	}
+
+	createOrUpdateMongodbIndex(ctx)
+
+	err = initSystemData()
 	if err == nil {
 		log.Info("zadig init success")
 	}
+
 	return err
 }
 
-func initSystemConfig() error {
-	email := config.AdminEmail()
-	password := config.AdminPassword()
-	domain := config.SystemAddress()
+func createOrUpdateMongodbIndex(ctx context.Context) {
+	var wg sync.WaitGroup
+	for _, r := range []indexer{
+		// aslan related db index
+		template.NewProductColl(),
+		commonrepo.NewBasicImageColl(),
+		commonrepo.NewBuildColl(),
+		commonrepo.NewCallbackRequestColl(),
+		commonrepo.NewCICDToolColl(),
+		commonrepo.NewConfigurationManagementColl(),
+		commonrepo.NewCounterColl(),
+		commonrepo.NewCronjobColl(),
+		commonrepo.NewCustomWorkflowTestReportColl(),
+		commonrepo.NewDeliveryActivityColl(),
+		commonrepo.NewDeliveryArtifactColl(),
+		commonrepo.NewDeliveryBuildColl(),
+		commonrepo.NewDeliveryDeployColl(),
+		commonrepo.NewDeliveryDistributeColl(),
+		commonrepo.NewDeliverySecurityColl(),
+		commonrepo.NewDeliveryTestColl(),
+		commonrepo.NewDeliveryVersionColl(),
+		commonrepo.NewDiffNoteColl(),
+		commonrepo.NewDindCleanColl(),
+		commonrepo.NewIMAppColl(),
+		commonrepo.NewObservabilityColl(),
+		commonrepo.NewFavoriteColl(),
+		commonrepo.NewGithubAppColl(),
+		commonrepo.NewHelmRepoColl(),
+		commonrepo.NewInstallColl(),
+		commonrepo.NewItReportColl(),
+		commonrepo.NewK8SClusterColl(),
+		commonrepo.NewNotificationColl(),
+		commonrepo.NewNotifyColl(),
+		commonrepo.NewPipelineColl(),
+		commonrepo.NewPrivateKeyColl(),
+		commonrepo.NewProductColl(),
+		commonrepo.NewProxyColl(),
+		commonrepo.NewQueueColl(),
+		commonrepo.NewRegistryNamespaceColl(),
+		commonrepo.NewS3StorageColl(),
+		commonrepo.NewServiceColl(),
+		commonrepo.NewProductionServiceColl(),
+		commonrepo.NewStrategyColl(),
+		commonrepo.NewStatsColl(),
+		commonrepo.NewSubscriptionColl(),
+		commonrepo.NewSystemSettingColl(),
+		commonrepo.NewTaskColl(),
+		commonrepo.NewTestTaskStatColl(),
+		commonrepo.NewTestingColl(),
+		commonrepo.NewWebHookColl(),
+		commonrepo.NewWebHookUserColl(),
+		commonrepo.NewWorkflowColl(),
+		commonrepo.NewWorkflowStatColl(),
+		commonrepo.NewExternalLinkColl(),
+		commonrepo.NewChartColl(),
+		commonrepo.NewDockerfileTemplateColl(),
+		commonrepo.NewProjectClusterRelationColl(),
+		commonrepo.NewEnvResourceColl(),
+		commonrepo.NewEnvSvcDependColl(),
+		commonrepo.NewBuildTemplateColl(),
+		commonrepo.NewScanningColl(),
+		commonrepo.NewWorkflowV4Coll(),
+		commonrepo.NewworkflowTaskv4Coll(),
+		commonrepo.NewWorkflowQueueColl(),
+		commonrepo.NewPluginRepoColl(),
+		commonrepo.NewWorkflowViewColl(),
+		commonrepo.NewWorkflowV4TemplateColl(),
+		commonrepo.NewVariableSetColl(),
+		commonrepo.NewJobInfoColl(),
+		commonrepo.NewStatDashboardConfigColl(),
+		commonrepo.NewProjectManagementColl(),
+		commonrepo.NewImageTagsCollColl(),
+		commonrepo.NewLLMIntegrationColl(),
+		commonrepo.NewReleasePlanColl(),
+		commonrepo.NewReleasePlanLogColl(),
+		commonrepo.NewEnvServiceVersionColl(),
 
-	uid, err := presetSystemAdmin(email, password, domain)
-	if err != nil {
-		log.Errorf("presetSystemAdmin err:%s", err)
+		// msg queue
+		commonrepo.NewMsgQueueCommonColl(),
+		commonrepo.NewMsgQueuePipelineTaskColl(),
+
+		systemrepo.NewAnnouncementColl(),
+		systemrepo.NewOperationLogColl(),
+		labelMongodb.NewLabelColl(),
+		labelMongodb.NewLabelBindingColl(),
+		modeMongodb.NewCollaborationModeColl(),
+		modeMongodb.NewCollaborationInstanceColl(),
+
+		// config related db index
+		configmongodb.NewEmailHostColl(),
+
+		// user related db index
+		userdb.NewUserSettingColl(),
+
+		// env AI analysis related db index
+		ai.NewEnvAIAnalysisColl(),
+
+		// project group related db index
+		commonrepo.NewProjectGroupColl(),
+
+		// db instances
+		commonrepo.NewDBInstanceColl(),
+
+		// vm job related db index
+		vmcommonrepo.NewVMJobColl(),
+
+		statrepo.NewWeeklyDeployStatColl(),
+		statrepo.NewMonthlyDeployStatColl(),
+		statrepo.NewMonthlyReleaseStatColl(),
+	} {
+		wg.Add(1)
+		go func(r indexer) {
+			defer wg.Done()
+			if err := r.EnsureIndex(ctx); err != nil {
+				panic(fmt.Errorf("failed to create index for %s, error: %s", r.GetCollectionName(), err))
+			}
+		}(r)
+	}
+
+	wg.Wait()
+}
+
+func initSystemData() error {
+	if err := commonrepo.NewSystemSettingColl().InitSystemSettings(); err != nil {
+		log.Errorf("initialize system settings err:%s", err)
 		return err
 	}
 
-	if err := presetRoleBinding(uid); err != nil {
-		log.Errorf("presetRoleBinding err:%s", err)
+	if err := commonrepo.NewS3StorageColl().InitData(); err != nil {
+		log.Warnf("Failed to init S3 data: %s", err)
+	}
+
+	commonrepo.NewBasicImageColl().InitBasicImageData(systemservice.InitbasicImageInfos())
+
+	if err := commonrepo.NewInstallColl().InitInstallData(systemservice.InitInstallMap()); err != nil {
+		log.Errorf("initialize Install Data err:%s", err)
 		return err
 	}
 
@@ -90,93 +251,15 @@ func initSystemConfig() error {
 		return err
 	}
 
-	if err := scaleWarpdrive(); err != nil {
-		log.Errorf("scale warpdrive err: %s", err)
-		return err
-	}
+	templateservice.InitWorkflowTemplate()
 
+	// update offical plugins
+	workflowservice.UpdateOfficalPluginRepository(log.SugaredLogger())
+
+	if err := clearSharedStorage(); err != nil {
+		log.Errorf("failed to clear aslan shared storage, error: %s", err)
+	}
 	return nil
-}
-
-func scaleWarpdrive() error {
-	cfg, err := aslan.New(config.AslanServiceAddress()).GetWorkflowConcurrencySetting()
-	if err == nil {
-		client, err := kubeclient.GetKubeClient(config.HubServerServiceAddress(), setting.LocalClusterID)
-		if err != nil {
-			return err
-		}
-		return updater.ScaleDeployment(config.Namespace(), config.WarpDriveServiceName(), int(cfg.WorkflowConcurrency), client)
-	}
-
-	log.Errorf("Failed to get workflow concurrency settings, error: %s", err)
-	return err
-}
-
-func presetSystemAdmin(email string, password, domain string) (string, error) {
-	r, err := user.New().SearchUser(&user.SearchUserArgs{Account: setting.PresetAccount})
-	if err != nil {
-		log.Errorf("SearchUser err:%s", err)
-		return "", err
-	}
-	if len(r.Users) > 0 {
-		log.Infof("User admin exists, skip it.")
-		return r.Users[0].UID, nil
-	}
-	user, err := user.New().CreateUser(&user.CreateUserArgs{
-		Name:     setting.PresetAccount,
-		Password: password,
-		Account:  setting.PresetAccount,
-		Email:    email,
-	})
-	if err != nil {
-		log.Errorf("created  admin err:%s", err)
-		return "", err
-	}
-	// report register
-	err = reportRegister(domain, email)
-	if err != nil {
-		log.Errorf("reportRegister err: %s", err)
-	}
-	return user.Uid, nil
-}
-
-type Operation struct {
-	Data string `json:"data"`
-}
-type Register struct {
-	Domain    string `json:"domain"`
-	Username  string `json:"username"`
-	Email     string `json:"email"`
-	CreatedAt int64  `json:"created_at"`
-}
-
-func reportRegister(domain, email string) error {
-	register := Register{
-		Domain:    domain,
-		Username:  "admin",
-		Email:     email,
-		CreatedAt: time.Now().Unix(),
-	}
-	registerByte, _ := json.Marshal(register)
-	encrypt, err := RSAEncrypt([]byte(registerByte))
-	if err != nil {
-		log.Errorf("RSAEncrypt err: %s", err)
-		return err
-	}
-	encodeString := base64.StdEncoding.EncodeToString(encrypt)
-	reqBody := Operation{Data: encodeString}
-	_, err = httpclient.Post("https://api.koderover.com/api/operation/admin/user", httpclient.SetBody(reqBody))
-	return err
-}
-
-func presetRoleBinding(uid string) error {
-	return policy.NewDefault().CreateOrUpdateSystemRoleBinding(&policy.RoleBinding{
-		Name: config.RoleBindingNameFromUIDAndRole(uid, setting.SystemAdmin, "*"),
-		UID:  uid,
-		Role: string(setting.SystemAdmin),
-		Type: setting.ResourceTypeSystem,
-	})
-
 }
 
 func createLocalCluster() error {
@@ -188,4 +271,8 @@ func createLocalCluster() error {
 		return nil
 	}
 	return aslan.New(config.AslanServiceAddress()).AddLocalCluster()
+}
+
+func clearSharedStorage() error {
+	return aslan.New(config.AslanServiceAddress()).ClearSharedStorage()
 }

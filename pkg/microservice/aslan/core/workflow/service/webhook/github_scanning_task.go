@@ -17,20 +17,21 @@ limitations under the License.
 package webhook
 
 import (
+	"regexp"
 	"strconv"
 
 	"github.com/google/go-github/v35/github"
 	"github.com/hashicorp/go-multierror"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	scanningservice "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/testing/service"
-	"github.com/koderover/zadig/pkg/types"
 	"go.uber.org/zap"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	scanningservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/testing/service"
 )
 
 type gitEventMatcherForScanning interface {
-	Match(repository *types.ScanningHook) (bool, error)
+	Match(repository *commonmodels.ScanningHook) (bool, error)
 }
 
 func TriggerScanningByGithubEvent(event interface{}, requestID string, log *zap.SugaredLogger) error {
@@ -64,7 +65,20 @@ func TriggerScanningByGithubEvent(event interface{}, requestID string, log *zap.
 						mergeRequestID = strconv.Itoa(*ev.PullRequest.Number)
 					}
 					triggerRepoInfo := make([]*scanningservice.ScanningRepoInfo, 0)
-					// for now only one repo is supported
+					for _, scanningRepo := range scanning.Repos {
+						// if this is the triggering repo, we simply skip it and add it later with correct info
+						if scanningRepo.CodehostID == item.CodehostID && scanningRepo.RepoOwner == item.RepoOwner && scanningRepo.RepoName == item.RepoName {
+							continue
+						}
+						triggerRepoInfo = append(triggerRepoInfo, &scanningservice.ScanningRepoInfo{
+							CodehostID: scanningRepo.CodehostID,
+							Source:     scanningRepo.Source,
+							RepoOwner:  scanningRepo.RepoOwner,
+							RepoName:   scanningRepo.RepoName,
+							Branch:     scanningRepo.Branch,
+						})
+					}
+
 					repoInfo := &scanningservice.ScanningRepoInfo{
 						CodehostID: item.CodehostID,
 						Source:     item.Source,
@@ -84,7 +98,9 @@ func TriggerScanningByGithubEvent(event interface{}, requestID string, log *zap.
 
 					triggerRepoInfo = append(triggerRepoInfo, repoInfo)
 
-					if resp, err := scanningservice.CreateScanningTask(scanning.ID.Hex(), triggerRepoInfo, "", "webhook", log); err != nil {
+					if resp, err := scanningservice.CreateScanningTaskV2(scanning.ID.Hex(), "webhook", "", "", &scanningservice.CreateScanningTaskReq{
+						Repos: triggerRepoInfo,
+					}, "", log); err != nil {
 						log.Errorf("failed to create testing task when receive event %v due to %v ", event, err)
 						mErr = multierror.Append(mErr, err)
 					} else {
@@ -105,7 +121,7 @@ type githubPushEventMatcherForScanning struct {
 	event    *github.PushEvent
 }
 
-func (gpem githubPushEventMatcherForScanning) Match(hookRepo *types.ScanningHook) (bool, error) {
+func (gpem githubPushEventMatcherForScanning) Match(hookRepo *commonmodels.ScanningHook) (bool, error) {
 	ev := gpem.event
 	if hookRepo == nil {
 		return false, nil
@@ -142,7 +158,7 @@ type githubMergeEventMatcherForScanning struct {
 	event    *github.PullRequestEvent
 }
 
-func (gmem githubMergeEventMatcherForScanning) Match(hookRepo *types.ScanningHook) (bool, error) {
+func (gmem githubMergeEventMatcherForScanning) Match(hookRepo *commonmodels.ScanningHook) (bool, error) {
 	ev := gmem.event
 	if hookRepo == nil {
 		return false, nil
@@ -155,6 +171,18 @@ func (gmem githubMergeEventMatcherForScanning) Match(hookRepo *types.ScanningHoo
 		}
 
 		hookRepo.Branch = *ev.PullRequest.Base.Ref
+
+		isRegExp := matchRepo.IsRegular
+
+		if !isRegExp {
+			if *ev.PullRequest.Base.Ref != hookRepo.Branch {
+				return false, nil
+			}
+		} else {
+			if matched, _ := regexp.MatchString(hookRepo.Branch, *ev.PullRequest.Base.Ref); !matched {
+				return false, nil
+			}
+		}
 
 		if *ev.PullRequest.State == "open" {
 			var changedFiles []string
@@ -178,7 +206,7 @@ type githubTagEventMatcherForScanning struct {
 	event    *github.CreateEvent
 }
 
-func (gtem githubTagEventMatcherForScanning) Match(hookRepo *types.ScanningHook) (bool, error) {
+func (gtem githubTagEventMatcherForScanning) Match(hookRepo *commonmodels.ScanningHook) (bool, error) {
 	ev := gtem.event
 	if (hookRepo.RepoOwner + "/" + hookRepo.RepoName) == *ev.Repo.FullName {
 		hookInfo := ConvertScanningHookToMainHookRepo(hookRepo)

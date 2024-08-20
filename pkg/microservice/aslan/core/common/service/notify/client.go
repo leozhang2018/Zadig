@@ -25,15 +25,15 @@ import (
 
 	"github.com/pkg/errors"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/task"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/base"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/instantmessage"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/scmnotify"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/task"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/base"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/instantmessage"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/scmnotify"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 const sevendays int64 = 60 * 60 * 24 * 7
@@ -64,6 +64,22 @@ func NewNotifyClient() *client {
 	}
 }
 
+func (c *client) checkWorkflowNotifySubscribed(receiver string) bool {
+	resp, err := c.ListSubscriptions(receiver)
+	if err != nil {
+		log.Errorf("failed to check workflow notify switch, err: %s", err)
+		return false
+	}
+	for _, r := range resp {
+		if r.Type == config.PipelineStatus || r.Type == config.WorkflowTaskStatus {
+			if r.PipelineStatus == "*" {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 func (c *client) CreateNotify(sender string, nf *models.Notify) error {
 	b, err := json.Marshal(nf.Content)
 	if err != nil {
@@ -82,6 +98,15 @@ func (c *client) CreateNotify(sender string, nf *models.Notify) error {
 			return fmt.Errorf("[%s] convert message error: %v", sender, err)
 		}
 
+		nf.Content = content
+	case config.WorkflowTaskStatus:
+		if !c.checkWorkflowNotifySubscribed(sender) {
+			return nil
+		}
+		var content *models.WorkflowTaskStatusCtx
+		if err = json.Unmarshal(b, &content); err != nil {
+			return fmt.Errorf("[%s] convert workflowtaskstatus error: %v", sender, err)
+		}
 		nf.Content = content
 	default:
 		return fmt.Errorf("notify type not found")
@@ -175,6 +200,7 @@ func (c *client) ListSubscriptions(user string) ([]*models.Subscription, error) 
 	return subs, nil
 }
 
+// @note pipeline notification, deprecated
 func (c *client) ProccessNotify(notify *models.Notify) error {
 	switch notify.Type {
 	case config.PipelineStatus:
@@ -197,7 +223,7 @@ func (c *client) ProccessNotify(notify *models.Notify) error {
 		receivers := []string{notify.Receiver}
 		logger := log.SugaredLogger()
 		task.Status = ctx.Status
-		testTaskStatusChanged := false
+		testTaskStatusChanged, scanningTaskStatusChanged := false, false
 		if ctx.Type == config.SingleType {
 			pipline, err := c.pipelineColl.Find(&mongodb.PipelineFindOption{Name: ctx.PipelineName})
 			if err != nil {
@@ -246,13 +272,13 @@ func (c *client) ProccessNotify(notify *models.Notify) error {
 					return fmt.Errorf("get test previous task #%d notify, status: %s,err:%s", ctx.TaskID-1, ctx.Status, err)
 				}
 				if scanningPreTask.Status != task.Status && task.Status != config.StatusRunning {
-					testTaskStatusChanged = true
+					scanningTaskStatusChanged = true
 				}
 			}
 			task.Stages = ctx.Stages
 		}
 
-		err = c.InstantmessageService.SendInstantMessage(task, testTaskStatusChanged)
+		err = c.InstantmessageService.SendInstantMessage(task, testTaskStatusChanged, scanningTaskStatusChanged)
 		if err != nil {
 			return fmt.Errorf("SendInstantMessage err : %s", err)
 		}
@@ -289,7 +315,6 @@ func (c *client) ProccessNotify(notify *models.Notify) error {
 		if err := c.sendSubscribedNotify(notify); err != nil {
 			return fmt.Errorf("[%s] send notify error: %v", notify.Receiver, err)
 		}
-
 	default:
 		return fmt.Errorf("notifytype match error")
 	}

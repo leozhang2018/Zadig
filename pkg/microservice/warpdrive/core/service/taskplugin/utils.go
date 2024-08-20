@@ -32,11 +32,14 @@ import (
 	"k8s.io/client-go/rest"
 	crClient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kodo"
+	configbase "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
+	"github.com/koderover/zadig/v2/pkg/tool/kodo"
 )
 
 func int32Ptr(i int32) *int32 { return &i }
@@ -234,39 +237,89 @@ func ToExtensionTask(sb map[string]interface{}) (*task.Extension, error) {
 	return extension, nil
 }
 
-func GetK8sClients(hubServerAddr, clusterID string) (crClient.Client, kubernetes.Interface, *rest.Config, error) {
+func GetK8sClients(hubServerAddr, clusterID string) (crClient.Client, kubernetes.Interface, *rest.Config, crClient.Reader, error) {
 	controllerRuntimeClient, err := kubeclient.GetKubeClient(hubServerAddr, clusterID)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to get controller runtime client: %s", err)
+		return nil, nil, nil, nil, fmt.Errorf("failed to get controller runtime client: %s", err)
 	}
 
 	clientset, err := kubeclient.GetKubeClientSet(hubServerAddr, clusterID)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to get clientset: %s", err)
+		return nil, nil, nil, nil, fmt.Errorf("failed to get clientset: %s", err)
 	}
 
 	restConfig, err := kubeclient.GetRESTConfig(hubServerAddr, clusterID)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("failed to get rest config: %s", err)
+		return nil, nil, nil, nil, fmt.Errorf("failed to get rest config: %s", err)
+	}
+	kubeClientReader, err := kubeclient.GetKubeAPIReader(hubServerAddr, clusterID)
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("failed to get api reader: %s", err)
 	}
 
-	return controllerRuntimeClient, clientset, restConfig, nil
+	return controllerRuntimeClient, clientset, restConfig, kubeClientReader, nil
 }
 
-// InstantiateBuildSysVariables instantiate system variables for build module
-func InstantiateBuildSysVariables(jobCtx *task.JobCtx) []*task.KeyVal {
+// getReaperImage generates the image used to run reaper
+// depends on the setting on page 'Build'
+func getReaperImage(reaperImage, buildOS, imageFrom string) string {
+	// for built-in image, reaperImage and buildOs can generate a complete image
+	// reaperImage: koderover.tencentcloudcr.com/koderover-public/build-base:${BuildOS}-amd64
+	// buildOS: focal xenial bionic
+	jobImage := strings.ReplaceAll(reaperImage, "${BuildOS}", buildOS)
+	// for custom image, buildOS represents the exact custom image
+	if imageFrom == setting.ImageFromCustom {
+		jobImage = buildOS
+	}
+	return jobImage
+}
+
+func GetProductInfo(ctx context.Context, args *EnvArgs) (*types.Product, error) {
+	httpClient := httpclient.New(
+		httpclient.SetHostURL(configbase.AslanServiceAddress()),
+	)
+	url := fmt.Sprintf("/api/environment/environments/%s/productInfo", args.EnvName)
+	prod := &types.Product{}
+	_, err := httpClient.Get(url, httpclient.SetResult(prod), httpclient.SetQueryParam("projectName", args.ProductName), httpclient.SetQueryParam("ifPassFilter", "true"))
+	if err != nil {
+		return nil, err
+	}
+	return prod, nil
+}
+
+// System level default environment variables (every workflow type will have it)
+func PrepareDefaultWorkflowTaskEnvs(t *task.Task) []*task.KeyVal {
+	envs := make([]*task.KeyVal, 0)
+
+	envs = append(envs,
+		&task.KeyVal{Key: "WORKSPACE", Value: "/workspace"},
+		&task.KeyVal{Key: "CI", Value: "true"},
+		&task.KeyVal{Key: "ZADIG", Value: "true"},
+		&task.KeyVal{Key: "PROJECT", Value: t.ProductName},
+	)
+
+	url := GetLink(t, configbase.SystemAddress(), t.Type)
+
+	envs = append(envs, &task.KeyVal{Key: "TASK_URL", Value: url})
+	envs = append(envs, &task.KeyVal{Key: "TASK_ID", Value: strconv.FormatInt(t.TaskID, 10)})
+
+	return envs
+}
+
+func CreateEnvsFromRepoInfo(repos []*task.Repository) []*task.KeyVal {
 	ret := make([]*task.KeyVal, 0)
-	for index, repo := range jobCtx.Builds {
+
+	for index, repo := range repos {
 
 		repoNameIndex := fmt.Sprintf("REPONAME_%d", index)
 		ret = append(ret, &task.KeyVal{Key: fmt.Sprintf(repoNameIndex), Value: repo.RepoName, IsCredential: false})
 
 		repoName := strings.Replace(repo.RepoName, "-", "_", -1)
-		repoName = strings.Replace(repo.RepoName, ".", "_", -1)
+		repoName = strings.Replace(repoName, ".", "_", -1)
 
 		repoIndex := fmt.Sprintf("REPO_%d", index)
 		ret = append(ret, &task.KeyVal{Key: fmt.Sprintf(repoIndex), Value: repoName, IsCredential: false})
-
+		ret = append(ret, &task.KeyVal{Key: fmt.Sprintf("%s_ORG", repoName), Value: repo.RepoOwner, IsCredential: false})
 		if len(repo.Branch) > 0 {
 			ret = append(ret, &task.KeyVal{Key: fmt.Sprintf("%s_BRANCH", repoName), Value: repo.Branch, IsCredential: false})
 		}
@@ -294,16 +347,23 @@ func InstantiateBuildSysVariables(jobCtx *task.JobCtx) []*task.KeyVal {
 	return ret
 }
 
-// getReaperImage generates the image used to run reaper
-// depends on the setting on page 'Build'
-func getReaperImage(reaperImage, buildOS, imageFrom string) string {
-	// for built-in image, reaperImage and buildOs can generate a complete image
-	// reaperImage: koderover.tencentcloudcr.com/koderover-public/build-base:${BuildOS}-amd64
-	// buildOS: focal xenial bionic
-	jobImage := strings.ReplaceAll(reaperImage, "${BuildOS}", buildOS)
-	// for custom image, buildOS represents the exact custom image
-	if imageFrom == setting.ImageFromCustom {
-		jobImage = buildOS
+func GetLink(p *task.Task, baseURI string, taskType config.PipelineType) string {
+	url := ""
+	switch taskType {
+	case config.WorkflowType:
+		url = fmt.Sprintf("%s/v1/projects/detail/%s/pipelines/%s/%s/%d", baseURI, p.ProductName, UIType(p.Type), p.PipelineName, p.TaskID)
+	case config.TestType:
+		url = fmt.Sprintf("%s/v1/projects/detail/%s/test/detail/function/%s/%d", baseURI, p.ProductName, p.PipelineName, p.TaskID)
+	case config.ScanningType:
+		url = fmt.Sprintf("%s/v1/projects/detail/%s/scanner/detail/%s/task/%d?id=%s", baseURI, p.ProductName, p.ScanningArgs.ScanningName, p.TaskID, p.ScanningArgs.ScanningID)
 	}
-	return jobImage
+	return url
+}
+
+// UIType is a legacy logic copied from other part of the system
+func UIType(pipelineType config.PipelineType) string {
+	if pipelineType == config.SingleType {
+		return "single"
+	}
+	return "multi"
 }

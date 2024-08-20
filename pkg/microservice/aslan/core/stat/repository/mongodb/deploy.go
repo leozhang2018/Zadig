@@ -24,15 +24,20 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	models "github.com/koderover/zadig/pkg/microservice/aslan/core/stat/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/stat/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type DeployTotalPipeResp struct {
 	ID           DeployTotalItem `bson:"_id"                      json:"_id"`
 	TotalSuccess int             `bson:"total_deploy_success"     json:"total_deploy_success"`
 	TotalFailure int             `bson:"total_deploy_failure"     json:"total_deploy_failure"`
+}
+
+type DeployStat struct {
+	TotalSuccess int `bson:"total_deploy_success"     json:"total_deploy_success"`
+	TotalFailure int `bson:"total_deploy_failure"     json:"total_deploy_failure"`
 }
 
 type DeployTotalItem struct {
@@ -78,6 +83,8 @@ type DeployStatColl struct {
 	coll string
 }
 
+// Deprecated: this table is removed in 3.1.0, replaced by deploy_stat_weekly. deploy_stat_weekly removed unnecessary field
+// and change the time segment to weekly.
 func NewDeployStatColl() *DeployStatColl {
 	name := models.DeployStat{}.TableName()
 	return &DeployStatColl{Collection: mongotool.Database(config.MongoDatabase()).Collection(name), coll: name}
@@ -181,6 +188,46 @@ func (c *DeployStatColl) GetDeployTotalAndSuccess() ([]*DeployTotalItem, error) 
 	return resp, nil
 }
 
+func (c *DeployStatColl) GetDeployTotalAndSuccessByTime(startTime, endTime int64) (int64, int64, error) {
+	var result []*DeployStat
+	pipeline := []bson.M{
+		{
+			"$match": bson.M{
+				"create_time": bson.M{
+					"$gte": startTime,
+					"$lte": endTime,
+				},
+			},
+		},
+		{
+			"$group": bson.M{
+				"_id": "null",
+				"total_deploy_success": bson.M{
+					"$sum": "$total_deploy_success",
+				},
+				"total_deploy_failure": bson.M{
+					"$sum": "$total_deploy_failure",
+				},
+			},
+		},
+	}
+
+	cursor, err := c.Aggregate(context.TODO(), pipeline)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := cursor.All(context.TODO(), &result); err != nil {
+		return 0, 0, err
+	}
+
+	var totalSuccess, totalFailure int64
+	for _, res := range result {
+		totalSuccess += int64(res.TotalSuccess)
+		totalFailure += int64(res.TotalFailure)
+	}
+	return totalSuccess, totalFailure, nil
+}
+
 func (c *DeployStatColl) GetDeployStats(args *models.DeployStatOption) ([]*DeployTotalItem, error) {
 	var result []*DeployTotalPipeResp
 	var resp []*DeployTotalItem
@@ -188,6 +235,9 @@ func (c *DeployStatColl) GetDeployStats(args *models.DeployStatOption) ([]*Deplo
 	filter := bson.M{}
 	if args.StartDate > 0 {
 		filter["create_time"] = bson.M{"$gte": args.StartDate, "$lte": args.EndDate}
+	}
+	if len(args.ProductNames) > 0 {
+		filter["product_name"] = bson.M{"$in": args.ProductNames}
 	}
 
 	pipeline := []bson.M{

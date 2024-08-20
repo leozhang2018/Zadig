@@ -31,22 +31,22 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
-	"github.com/koderover/zadig/pkg/tool/log"
-	zadigtypes "github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	zadigtypes "github.com/koderover/zadig/v2/pkg/types"
 )
 
 var registrySecretSuffix = "-registry-secret"
 
-func CreateNamespace(namespace string, customLabels map[string]string, enableShare bool, kubeClient client.Client) error {
+func CreateNamespace(namespace string, customLabels map[string]string, enableIstioInjection bool, kubeClient client.Client) error {
 	nsLabels := map[string]string{
 		setting.EnvCreatedBy: setting.EnvCreator,
 	}
-	if enableShare {
+	if enableIstioInjection {
 		nsLabels[zadigtypes.IstioLabelKeyInjection] = zadigtypes.IstioLabelValueInjection
 	}
 
@@ -54,11 +54,12 @@ func CreateNamespace(namespace string, customLabels map[string]string, enableSha
 		customLabels = map[string]string{}
 	}
 	mergedLabels := labels.Merge(customLabels, nsLabels)
-	err := updater.CreateNamespaceByName(namespace, mergedLabels, kubeClient)
-	if err != nil && !apierrors.IsAlreadyExists(err) {
-		return err
+	createErr := updater.CreateNamespaceByName(namespace, mergedLabels, kubeClient)
+	if createErr != nil && !apierrors.IsAlreadyExists(createErr) {
+		return createErr
 	}
 
+	var err error
 	nsObj := &corev1.Namespace{}
 	// It may fail to obtain the namespace immediately after it is created due to synchronization delay.
 	// Try twice.
@@ -74,6 +75,13 @@ func CreateNamespace(namespace string, customLabels map[string]string, enableSha
 	}
 	if err != nil {
 		return err
+	}
+	if enableIstioInjection && createErr != nil && apierrors.IsAlreadyExists(createErr) {
+		nsObj.Labels[zadigtypes.IstioLabelKeyInjection] = zadigtypes.IstioLabelValueInjection
+		err = updater.UpdateNamespace(nsObj, kubeClient)
+		if err != nil {
+			return fmt.Errorf("failed to add istio-injection label and update namespace %s: %s", namespace, err)
+		}
 	}
 
 	if nsObj.Status.Phase == corev1.NamespaceTerminating {
@@ -181,7 +189,8 @@ func GenRegistrySecretName(reg *commonmodels.RegistryNamespace) (string, error) 
 }
 
 // Note: The name of a Secret object must be a valid DNS subdomain name:
-//   https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#dns-subdomain-names
+//
+//	https://kubernetes.io/docs/concepts/overview/working-with-objects/names/#dns-subdomain-names
 func formatRegistryName(namespaceInRegistry string) (string, error) {
 	reg, err := regexp.Compile("[^a-zA-Z0-9\\.-]+")
 	if err != nil {

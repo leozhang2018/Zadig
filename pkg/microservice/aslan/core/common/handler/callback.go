@@ -21,10 +21,10 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	"github.com/koderover/zadig/pkg/tool/log"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func HandleCallback(c *gin.Context) {
@@ -41,4 +41,49 @@ func HandleCallback(c *gin.Context) {
 
 	ctx.Err = commonservice.HandleCallback(req)
 
+}
+
+// @summary Webhook Notify
+// @description Webhook Notify
+// @tags 	webhook
+// @accept 	json
+// @produce json
+// @Param 	body 			body 		webhooknotify.WebHookNotify         true 	"body"
+// @success 200
+// @router /api/aslan/webhook/test [post]
+func WebhookNotifyTest(c *gin.Context) {
+	// ctx := internalhandler.NewContext(c)
+	// defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	// // 读取请求体
+	// bodyBytes, err := ioutil.ReadAll(c.Request.Body)
+	// if err != nil {
+	// 	ctx.Err = fmt.Errorf("Failed to read request body")
+	// 	return
+	// }
+
+	// log.Debugf("Request Header: %+v", c.Request.Header)
+	// log.Debugf("Request Body: %v", string(bodyBytes))
+}
+
+// @summary Workflow Webhook Notify Build Job Spec
+// @description Workflow Webhook Build Job Spec
+// @tags 	webhook
+// @accept 	json
+// @produce json
+// @Param 	body 			body 		webhooknotify.WorkflowNotifyJobTaskBuildSpec 		true 	"body"
+// @success 200
+// @router /api/aslan/webhook/notify/buildJobSpec [post]
+func WebhookNotifyBuildJobSpec(c *gin.Context) {
+}
+
+// @summary Workflow Webhook Notify Deploy Job Spec
+// @description Workflow Webhook Deploy Job Spec
+// @tags 	webhook
+// @accept 	json
+// @produce json
+// @Param 	body 			body 		webhooknotify.WorkflowNotifyJobTaskDeploySpec 		true 	"body"
+// @success 200
+// @router /api/aslan/webhook/notify/deployJobSpec [post]
+func WebhookNotifyDeployJobSpec(c *gin.Context) {
 }

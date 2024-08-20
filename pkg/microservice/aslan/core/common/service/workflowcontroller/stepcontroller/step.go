@@ -22,8 +22,8 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
 )
 
 type StepCtl interface {
@@ -75,20 +75,30 @@ func instantiateStepCtl(step *commonmodels.StepTask, workflowCtx *commonmodels.W
 		stepCtl, err = NewGitCtl(step, logger)
 	case config.StepShell:
 		stepCtl, err = NewShellCtl(step, logger)
+	case config.StepPowerShell:
+		stepCtl, err = NewPowerShellCtl(step, logger)
+	case config.StepBatchFile:
+		stepCtl, err = NewBatchFileCtl(step, logger)
 	case config.StepDockerBuild:
-		stepCtl, err = NewDockerBuildCtl(step, logger)
+		stepCtl, err = NewDockerBuildCtl(step, workflowCtx, logger)
 	case config.StepTools:
 		stepCtl, err = NewToolInstallCtl(step, jobPath, logger)
 	case config.StepArchive:
-		stepCtl, err = NewArchiveCtl(step, logger)
+		stepCtl, err = NewArchiveCtl(step, workflowCtx, logger)
+	case config.StepDownloadArchive:
+		stepCtl, err = NewDownloadArchiveCtl(step, logger)
 	case config.StepJunitReport:
 		stepCtl, err = NewJunitReportCtl(step, logger)
 	case config.StepTarArchive:
 		stepCtl, err = NewTarArchiveCtl(step, logger)
 	case config.StepSonarCheck:
-		stepCtl, err = NewSonarCheckCtl(step, logger)
+		stepCtl, err = NewSonarCheckCtl(step, workflowCtx, logger)
+	case config.StepSonarGetMetrics:
+		stepCtl, err = NewSonarGetMetricsCtl(step, workflowCtx, logger)
 	case config.StepDistributeImage:
 		stepCtl, err = NewDistributeCtl(step, workflowCtx, jobName, logger)
+	case config.StepDebugBefore, config.StepDebugAfter:
+		stepCtl, err = NewDebugCtl()
 	default:
 		logger.Errorf("unknown step type: %s", step.StepType)
 		return stepCtl, fmt.Errorf("unknown step type: %s", step.StepType)

@@ -23,19 +23,22 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
-	"github.com/koderover/zadig/pkg/microservice/jobexecutor/config"
-	"github.com/koderover/zadig/pkg/microservice/jobexecutor/core/service/cmd"
-	"github.com/koderover/zadig/pkg/microservice/jobexecutor/core/service/meta"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/jobexecutor/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/jobexecutor/core/service/cmd"
+	"github.com/koderover/zadig/v2/pkg/microservice/jobexecutor/core/service/configmap"
+	"github.com/koderover/zadig/v2/pkg/microservice/jobexecutor/core/service/meta"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 type Step interface {
 	Run(ctx context.Context) error
 }
 
-func RunStep(ctx context.Context, step *meta.Step, workspace, paths string, envs, secretEnvs []string) error {
+func RunStep(ctx context.Context, step *meta.Step, workspace, paths string, envs, secretEnvs []string, updater configmap.Updater) error {
 	var stepInstance Step
 	var err error
 
@@ -65,13 +68,18 @@ func RunStep(ctx context.Context, step *meta.Step, workspace, paths string, envs
 		if err != nil {
 			return err
 		}
+	case "download_archive":
+		stepInstance, err = NewDownloadArchiveStep(step.Spec, workspace, envs, secretEnvs)
+		if err != nil {
+			return err
+		}
 	case "junit_report":
 		stepInstance, err = NewJunitReportStep(step.Spec, workspace, envs, secretEnvs)
 		if err != nil {
 			return err
 		}
 	case "tar_archive":
-		stepInstance, err = NewTararchiveStep(step.Spec, workspace, envs, secretEnvs)
+		stepInstance, err = NewTarArchiveStep(step.Spec, workspace, envs, secretEnvs)
 		if err != nil {
 			return err
 		}
@@ -80,8 +88,23 @@ func RunStep(ctx context.Context, step *meta.Step, workspace, paths string, envs
 		if err != nil {
 			return err
 		}
+	case "sonar_get_metrics":
+		stepInstance, err = NewSonarGetMetricsStep(step.Spec, workspace, envs, secretEnvs)
+		if err != nil {
+			return err
+		}
 	case "distribute_image":
 		stepInstance, err = NewDistributeImageStep(step.Spec, workspace, envs, secretEnvs)
+		if err != nil {
+			return err
+		}
+	case "debug_before":
+		stepInstance, err = NewDebugStep("before", workspace, envs, secretEnvs, updater)
+		if err != nil {
+			return err
+		}
+	case "debug_after":
+		stepInstance, err = NewDebugStep("after", workspace, envs, secretEnvs, updater)
 		if err != nil {
 			return err
 		}
@@ -124,7 +147,7 @@ func handleCmdOutput(pipe io.ReadCloser, needPersistentLog bool, logFile string,
 			break
 		}
 
-		fmt.Printf("%s", maskSecretEnvs(string(lineBytes), secretEnvs))
+		fmt.Printf("%s   %s", time.Now().Format(setting.WorkflowTimeFormat), maskSecretEnvs(string(lineBytes), secretEnvs))
 
 		if needPersistentLog {
 			err := util.WriteFile(logFile, lineBytes, 0700)
@@ -188,4 +211,18 @@ func setCmdsWorkDir(dir string, cmds []*cmd.Command) {
 	for _, c := range cmds {
 		c.Cmd.Dir = dir
 	}
+}
+
+func makeEnvMap(envs ...[]string) map[string]string {
+	envMap := map[string]string{}
+	for _, env := range envs {
+		for _, env := range env {
+			sl := strings.Split(env, "=")
+			if len(sl) != 2 {
+				continue
+			}
+			envMap[sl[0]] = sl[1]
+		}
+	}
+	return envMap
 }

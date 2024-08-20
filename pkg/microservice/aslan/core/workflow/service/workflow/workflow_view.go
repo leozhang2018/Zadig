@@ -21,11 +21,11 @@ import (
 
 	"go.uber.org/zap"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func CreateWorkflowView(name, projectName string, workflowList []*commonmodels.WorkflowViewDetail, username string, logger *zap.SugaredLogger) error {
@@ -54,6 +54,53 @@ func UpdateWorkflowView(input *commonmodels.WorkflowView, userName string, logge
 	input.UpdateBy = userName
 	if err := commonrepo.NewWorkflowViewColl().Update(input); err != nil {
 		msg := fmt.Sprintf("update workflow view error: %v", err)
+		log.Error(msg)
+		return e.ErrUpdateView.AddDesc(msg)
+	}
+	return nil
+}
+
+func AddWorkflowToView(projectName, viewName string, workflowList []*commonmodels.WorkflowViewDetail, logger *zap.SugaredLogger) error {
+	if projectName == "" || viewName == "" {
+		msg := ("add workflow to view error: invalid params")
+		log.Error(msg)
+		return e.ErrUpdateView.AddDesc(msg)
+	}
+
+	view, err := commonrepo.NewWorkflowViewColl().Find(projectName, viewName)
+	if err != nil {
+		msg := fmt.Sprintf("find workflow view error: %v", err)
+		log.Error(msg)
+		return e.ErrUpdateView.AddDesc(msg)
+	}
+
+	type workflowKey struct {
+		Name string
+		Type string
+	}
+
+	viewWorkflowMap := make(map[workflowKey]*commonmodels.WorkflowViewDetail)
+	for _, workflow := range view.Workflows {
+		viewWorkflowMap[workflowKey{
+			Name: workflow.WorkflowName,
+			Type: workflow.WorkflowType,
+		}] = workflow
+	}
+	// check if workflow already exist
+	for _, workflow := range workflowList {
+		if w, ok := viewWorkflowMap[workflowKey{
+			Name: workflow.WorkflowName,
+			Type: workflow.WorkflowType,
+		}]; ok {
+			w.Enabled = true
+		} else {
+			workflow.Enabled = true
+			view.Workflows = append(view.Workflows, workflow)
+		}
+	}
+
+	if err := commonrepo.NewWorkflowViewColl().Update(view); err != nil {
+		msg := fmt.Sprintf("add workflow to view error: %v", err)
 		log.Error(msg)
 		return e.ErrUpdateView.AddDesc(msg)
 	}

@@ -23,10 +23,10 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/koderover/zadig/pkg/microservice/reaper/internal/s3"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/internal/s3"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
 )
 
 // 上传用户文件到s3
@@ -34,7 +34,7 @@ func (r *Reaper) archiveS3Files() (err error) {
 	if r.Ctx.FileArchiveCtx != nil && r.Ctx.StorageURI != "" {
 		var store *s3.S3
 
-		if store, err = s3.NewS3StorageFromEncryptedURI(r.Ctx.StorageURI, r.Ctx.AesKey); err != nil {
+		if store, err = s3.UnmarshalNewS3StorageFromEncrypted(r.Ctx.StorageURI, r.Ctx.AesKey); err != nil {
 			log.Errorf("failed to create s3 storage %s", r.Ctx.StorageURI)
 			return
 		}
@@ -54,6 +54,8 @@ func (r *Reaper) archiveS3Files() (err error) {
 		}
 		objectKey := store.GetObjectPath(r.Ctx.FileArchiveCtx.FileName)
 
+		r.Ctx.FileArchiveCtx.FileLocation = r.replaceEnvWithValue(r.Ctx.FileArchiveCtx.FileLocation)
+		r.Ctx.FileArchiveCtx.FileLocation = r.replaceEnvWithValue(r.Ctx.FileArchiveCtx.FileLocation)
 		src := filepath.Join(r.ActiveWorkspace, r.Ctx.FileArchiveCtx.FileLocation, r.Ctx.FileArchiveCtx.FileName)
 		err = s3client.Upload(
 			store.Bucket,
@@ -77,7 +79,7 @@ func (r *Reaper) archiveTestFiles() error {
 		return nil
 	}
 
-	store, err := s3.NewS3StorageFromEncryptedURI(r.Ctx.StorageURI, r.Ctx.AesKey)
+	store, err := s3.UnmarshalNewS3StorageFromEncrypted(r.Ctx.StorageURI, r.Ctx.AesKey)
 	if err != nil {
 		log.Errorf("failed to create s3 storage %s, err: %s", r.Ctx.StorageURI, err)
 		return err
@@ -130,7 +132,7 @@ func (r *Reaper) archiveHTMLTestReportFile() error {
 		return nil
 	}
 
-	store, err := s3.NewS3StorageFromEncryptedURI(r.Ctx.StorageURI, r.Ctx.AesKey)
+	store, err := s3.UnmarshalNewS3StorageFromEncrypted(r.Ctx.StorageURI, r.Ctx.AesKey)
 	if err != nil {
 		log.Errorf("failed to create s3 storage %s, err: %s", r.Ctx.StorageURI, err)
 		return err

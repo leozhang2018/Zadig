@@ -19,13 +19,15 @@ package server
 import (
 	"context"
 	"net/http"
+	"net/http/pprof"
 	_ "net/http/pprof"
 	"time"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core"
-	"github.com/koderover/zadig/pkg/microservice/aslan/server/rest"
-	"github.com/koderover/zadig/pkg/tool/kube/client"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/gorilla/mux"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/server/rest"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func Serve(ctx context.Context) error {
@@ -65,7 +67,14 @@ func Serve(ctx context.Context) error {
 
 	// pprof service, you can access it by {your_ip}:8888/debug/pprof
 	go func() {
-		err := http.ListenAndServe("0.0.0.0:8888", nil)
+		router := mux.NewRouter()
+		router.Handle("/debug/pprof", http.HandlerFunc(pprof.Index))
+		router.Handle("/debug/pprof/cmdline", http.HandlerFunc(pprof.Cmdline))
+		router.Handle("/debug/pprof/profile", http.HandlerFunc(pprof.Profile))
+		router.Handle("/debug/pprof/symbol", http.HandlerFunc(pprof.Symbol))
+		router.Handle("/debug/pprof/trace", http.HandlerFunc(pprof.Trace))
+		router.Handle("/debug/pprof/{cmd}", http.HandlerFunc(pprof.Index))
+		err := http.ListenAndServe("0.0.0.0:8888", router)
 		if err != nil {
 			log.Fatal(err)
 		}

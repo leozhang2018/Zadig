@@ -26,9 +26,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type BuildTemplateQueryOption struct {
@@ -112,9 +112,11 @@ func (c *BuildTemplateColl) List(pageNum, pageSize int) ([]*models.BuildTemplate
 	if err != nil {
 		return nil, 0, err
 	}
-	opt := options.Find().
-		SetSkip(int64((pageNum - 1) * pageSize)).
-		SetLimit(int64(pageSize))
+
+	opt := options.Find()
+	if pageNum != 0 && pageSize != 0 {
+		opt.SetSkip(int64((pageNum - 1) * pageSize)).SetLimit(int64(pageSize))
+	}
 
 	cursor, err := c.Collection.Find(context.TODO(), query, opt)
 	if err != nil {
@@ -141,4 +143,14 @@ func (c *BuildTemplateColl) DeleteByID(idStr string) error {
 	query := bson.M{"_id": id}
 	_, err = c.DeleteOne(context.TODO(), query)
 	return err
+}
+
+type ListBuildTemplateOption struct {
+	Infrastructure string
+}
+
+func (c *BuildTemplateColl) ListByCursor(opts *ListBuildTemplateOption) (*mongo.Cursor, error) {
+	query := bson.M{}
+
+	return c.Collection.Find(context.Background(), query)
 }

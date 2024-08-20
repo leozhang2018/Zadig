@@ -22,7 +22,6 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/hashicorp/go-multierror"
@@ -30,20 +29,21 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/scmnotify"
-	environmentservice "github.com/koderover/zadig/pkg/microservice/aslan/core/environment/service"
-	workflowservice "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	gitlabtool "github.com/koderover/zadig/pkg/tool/git/gitlab"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types"
-	"github.com/koderover/zadig/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/scmnotify"
+	environmentservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/environment/service"
+	workflowservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	cache2 "github.com/koderover/zadig/v2/pkg/tool/cache"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	gitlabtool "github.com/koderover/zadig/v2/pkg/tool/git/gitlab"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 type gitlabMergeRequestDiffFunc func(event *gitlab.MergeEvent, id int) ([]string, error)
@@ -231,15 +231,25 @@ func (gpem *gitlabPushEventMatcher) Match(hookRepo *commonmodels.MainHookRepo) (
 		return false, err
 	}
 
-	// compare接口获取两个commit之间的最终的改动
-	diffs, err := client.Compare(ev.ProjectID, ev.Before, ev.After)
-	if err != nil {
-		gpem.log.Errorf("Failed to get push event diffs, error: %s", err)
-		return false, err
-	}
-	for _, diff := range diffs {
-		changedFiles = append(changedFiles, diff.NewPath)
-		changedFiles = append(changedFiles, diff.OldPath)
+	// When push a new branch, ev.Before will be a lot of "0"
+	// So we should not use Compare
+	if strings.Count(ev.Before, "0") == len(ev.Before) {
+		for _, commit := range ev.Commits {
+			changedFiles = append(changedFiles, commit.Added...)
+			changedFiles = append(changedFiles, commit.Removed...)
+			changedFiles = append(changedFiles, commit.Modified...)
+		}
+	} else {
+		// compare接口获取两个commit之间的最终的改动
+		diffs, err := client.Compare(ev.ProjectID, ev.Before, ev.After)
+		if err != nil {
+			gpem.log.Errorf("Failed to get push event diffs, error: %s", err)
+			return false, err
+		}
+		for _, diff := range diffs {
+			changedFiles = append(changedFiles, diff.NewPath)
+			changedFiles = append(changedFiles, diff.OldPath)
+		}
 	}
 	if gpem.isYaml {
 		serviceChangeds := ServicesMatchChangesFiles(gpem.trigger.Rules.MatchFolders, changedFiles)
@@ -299,28 +309,6 @@ func (gtem gitlabTagEventMatcher) Match(hookRepo *commonmodels.MainHookRepo) (bo
 
 	if !EventConfigured(hookRepo, config.HookEventTag) {
 		return false, nil
-	}
-	if gtem.isYaml {
-		refFlag := false
-		for _, ref := range gtem.trigger.Rules.Branchs {
-			if matched, _ := regexp.MatchString(ref, ev.Project.DefaultBranch); matched {
-				refFlag = true
-				break
-			}
-		}
-		if !refFlag {
-			return false, nil
-		}
-	} else {
-		isRegular := hookRepo.IsRegular
-		if !isRegular && hookRepo.Branch != ev.Project.DefaultBranch {
-			return false, nil
-		}
-		if isRegular {
-			if matched, _ := regexp.MatchString(hookRepo.Branch, ev.Project.DefaultBranch); !matched {
-				return false, nil
-			}
-		}
 	}
 
 	hookRepo.Committer = ev.UserName
@@ -605,7 +593,7 @@ func TriggerWorkflowByGitlabEvent(event interface{}, baseURI, requestID string, 
 			}
 
 			isMergeRequest := false
-			var mergeRequestID, commitID, ref string
+			var mergeRequestID, commitID, ref, eventType string
 			autoCancelOpt := &AutoCancelOpt{
 				TaskType:     config.WorkflowType,
 				MainRepo:     item.MainRepo,
@@ -616,29 +604,30 @@ func TriggerWorkflowByGitlabEvent(event interface{}, baseURI, requestID string, 
 			}
 			switch ev := event.(type) {
 			case *gitlab.MergeEvent:
+				isMergeRequest = true
+				eventType = EventTypePR
 				mergeRequestID = strconv.Itoa(ev.ObjectAttributes.IID)
 				commitID = ev.ObjectAttributes.LastCommit.ID
 				autoCancelOpt.MergeRequestID = mergeRequestID
 				autoCancelOpt.CommitID = commitID
-				autoCancelOpt.Type = AutoCancelPR
+				autoCancelOpt.Type = eventType
 			case *gitlab.PushEvent:
+				eventType = EventTypePush
 				ref = ev.Ref
-				log.Infof("gitlab ref")
-				b, _ := json.MarshalIndent(ev, "", "  ")
-				log.Infof(string(b))
 				commitID = ev.After
 				autoCancelOpt.Ref = ref
 				autoCancelOpt.CommitID = commitID
-				autoCancelOpt.Type = AutoCancelPush
+				autoCancelOpt.Type = eventType
+			case *gitlab.TagEvent:
+				eventType = EventTypeTag
 			}
-			log.Infof("debug gitlab1")
 			if autoCancelOpt.Type != "" {
 				err := AutoCancelTask(autoCancelOpt, log)
 				if err != nil {
 					log.Errorf("failed to auto cancel workflow task when receive event %v due to %v ", event, err)
 					mErr = multierror.Append(mErr, err)
 				}
-				if autoCancelOpt.Type == AutoCancelPR && notification == nil {
+				if autoCancelOpt.Type == EventTypePR && notification == nil {
 					notification, _ = scmnotify.NewService().SendInitWebhookComment(
 						item.MainRepo, prID, baseURI, false, false, false, false, log,
 					)
@@ -652,6 +641,7 @@ func TriggerWorkflowByGitlabEvent(event interface{}, baseURI, requestID string, 
 			args := matcher.UpdateTaskArgs(prod, workFlowArgs, item.MainRepo, requestID)
 			args.MergeRequestID = mergeRequestID
 			args.Ref = ref
+			args.EventType = eventType
 			args.CommitID = commitID
 			args.Source = setting.SourceFromGitlab
 			args.CodehostID = item.MainRepo.CodehostID
@@ -702,8 +692,6 @@ func findChangedFilesOfMergeRequest(event *gitlab.MergeEvent, codehostID int) ([
 	return client.ListChangedFiles(event)
 }
 
-var mutex sync.Mutex
-
 // CreateEnvAndTaskByPR 根据pr触发创建环境、使用工作流更新该创建的环境、根据环境删除策略删除环境
 func CreateEnvAndTaskByPR(workflowArgs *commonmodels.WorkflowTaskArgs, prID int, requestID string, log *zap.SugaredLogger) error {
 	//获取基准环境的详细信息
@@ -712,24 +700,13 @@ func CreateEnvAndTaskByPR(workflowArgs *commonmodels.WorkflowTaskArgs, prID int,
 	if err != nil {
 		return fmt.Errorf("CreateEnvAndTaskByPR Product Find err:%v", err)
 	}
-	baseRenderset, err := commonrepo.NewRenderSetColl().Find(&commonrepo.RenderSetFindOption{
-		Name:      baseProduct.Render.Name,
-		Revision:  baseProduct.Render.Revision,
-		IsDefault: false,
-	})
-	if err != nil {
-		return fmt.Errorf("CreateEnvAndTaskByPR renderset Find err:%v", err)
-	}
+
+	mutex := cache2.NewRedisLock(fmt.Sprintf("pr_create_env:%s:%d", workflowArgs.ProductTmplName, prID))
 
 	mutex.Lock()
 	defer func() {
 		mutex.Unlock()
 	}()
-	//if baseProduct.Render != nil {
-	//	if renderSet, _ := commonrepo.NewRenderSetColl().Find(&commonrepo.RenderSetFindOption{Name: baseProduct.Render.Name, Revision: baseProduct.Render.Revision, ProductTmpl: baseProduct.ProductName}); renderSet != nil {
-	//		baseProduct.Vars = renderSet.KVs
-	//	}
-	//}
 
 	envName := fmt.Sprintf("%s-%d-%s%s", "pr", prID, util.GetRandomNumString(3), util.GetRandomString(3))
 	util.Clear(&baseProduct.ID)
@@ -738,20 +715,7 @@ func CreateEnvAndTaskByPR(workflowArgs *commonmodels.WorkflowTaskArgs, prID int,
 	baseProduct.EnvName = envName
 
 	// set renderset info
-	baseRenderset.Revision = 0
-	baseRenderset.EnvName = envName
-	baseRenderset.Name = baseProduct.Namespace
-	err = commonservice.ForceCreateReaderSet(baseRenderset, log)
-	if err != nil {
-		return fmt.Errorf("CreateEnvAndTaskByPR renderset create err:%v", err)
-	}
-	baseProduct.Render = &commonmodels.RenderInfo{
-		Name:        baseRenderset.Name,
-		Revision:    baseRenderset.Revision,
-		ProductTmpl: baseRenderset.ProductTmpl,
-	}
-
-	err = environmentservice.CreateProduct(setting.SystemUser, requestID, baseProduct, log)
+	err = environmentservice.CreateProduct(setting.SystemUser, requestID, &environmentservice.ProductCreateArg{baseProduct, nil}, log)
 	if err != nil {
 		return fmt.Errorf("CreateEnvAndTaskByPR CreateProduct err:%v", err)
 	}

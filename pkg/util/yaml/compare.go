@@ -22,7 +22,7 @@ import (
 	"k8s.io/apimachinery/pkg/util/sets"
 	"sigs.k8s.io/yaml"
 
-	"github.com/koderover/zadig/pkg/util/converter"
+	"github.com/koderover/zadig/v2/pkg/util/converter"
 )
 
 func Equal(source, target string) (bool, error) {
@@ -79,14 +79,18 @@ func DiffFlatKeys(source, target string) ([]string, error) {
 	return diffFlatKeys.List(), nil
 }
 
-func ContainsFlatKey(source string, keys []string) (bool, error) {
+func ContainsFlatKey(source string, excludedKeys []string, keys []string) (bool, error) {
 	sourceFlatMap, err := converter.YamlToFlatMap([]byte(source))
 	if err != nil {
 		return false, err
 	}
 
 	keySet := sets.NewString(keys...)
+	excludedKeySet := sets.NewString(excludedKeys...)
 	for k := range sourceFlatMap {
+		if excludedKeySet.Has(k) {
+			continue
+		}
 		if keySet.Has(k) {
 			return true, nil
 		}

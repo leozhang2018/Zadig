@@ -34,10 +34,14 @@ type Repository struct {
 	PR            int    `bson:"pr,omitempty"              json:"pr,omitempty"             yaml:"pr,omitempty"`
 	PRs           []int  `bson:"prs,omitempty"             json:"prs,omitempty"            yaml:"prs,omitempty"`
 	Tag           string `bson:"tag,omitempty"             json:"tag,omitempty"            yaml:"tag,omitempty"`
+	// EnableCommit marks if the pull uses a commit instead of branch/pr
+	EnableCommit  bool   `bson:"enable_commit"          json:"enable_commit"         yaml:"enable_commit"`
 	CommitID      string `bson:"commit_id,omitempty"       json:"commit_id,omitempty"      yaml:"commit_id,omitempty"`
 	CommitMessage string `bson:"commit_message,omitempty"  json:"commit_message,omitempty" yaml:"commit_message,omitempty"`
 	CheckoutPath  string `bson:"checkout_path,omitempty"   json:"checkout_path,omitempty"  yaml:"checkout_path,omitempty"`
 	SubModules    bool   `bson:"submodules,omitempty"      json:"submodules,omitempty"     yaml:"submodules,omitempty"`
+	// Hidden defines whether the frontend needs to hide this repo
+	Hidden bool `bson:"hidden" json:"hidden" yaml:"hidden"`
 	// UseDefault defines if the repo can be configured in start pipeline task page
 	UseDefault bool `bson:"use_default,omitempty"          json:"use_default,omitempty"    yaml:"use_default,omitempty"`
 	// IsPrimary used to generated image and package name, each build has one primary repo
@@ -48,20 +52,33 @@ type Repository struct {
 	Address     string `bson:"address"                      json:"address"                 yaml:"address"`
 	AuthorName  string `bson:"author_name,omitempty"        json:"author_name,omitempty"   yaml:"author_name,omitempty"`
 	CheckoutRef string `bson:"checkout_ref,omitempty"       json:"checkout_ref,omitempty"  yaml:"checkout_ref,omitempty"`
-	// codehub
-	ProjectUUID string `bson:"project_uuid,omitempty"       json:"project_uuid,omitempty"  yaml:"project_uuid,omitempty"`
-	RepoUUID    string `bson:"repo_uuid,omitempty"          json:"repo_uuid,omitempty"     yaml:"repo_uuid,omitempty"`
-	RepoID      string `bson:"repo_id,omitempty"            json:"repo_id,omitempty"       yaml:"repo_id,omitempty"`
-	Username    string `bson:"username,omitempty"           json:"username,omitempty"      yaml:"username,omitempty"`
-	Password    string `bson:"password,omitempty"           json:"password,omitempty"      yaml:"password,omitempty"`
+	// username/password authorization
+	Username string `bson:"username,omitempty"           json:"username,omitempty"      yaml:"username,omitempty"`
+	Password string `bson:"password,omitempty"           json:"password,omitempty"      yaml:"password,omitempty"`
 	// Now EnableProxy is not something we store. We decide this on runtime
 	EnableProxy bool `bson:"-"       json:"enable_proxy,omitempty"                         yaml:"enable_proxy,omitempty"`
 	// FilterRegexp is the regular expression filter for the branches and tags
-	FilterRegexp string `bson:"-"    json:"filter_regexp,omitempty"                        yaml:"filter_regexp,omitempty"`
+	FilterRegexp string `bson:"filter_regexp,omitempty"    json:"filter_regexp,omitempty"                        yaml:"filter_regexp,omitempty"`
 	// The address of the code base input of the other type
 	AuthType           AuthType `bson:"auth_type,omitempty"             json:"auth_type,omitempty"               yaml:"auth_type,omitempty"`
 	SSHKey             string   `bson:"ssh_key,omitempty"               json:"ssh_key,omitempty"                 yaml:"ssh_key,omitempty"`
 	PrivateAccessToken string   `bson:"private_access_token,omitempty"  json:"private_access_token,omitempty"    yaml:"private_access_token,omitempty"`
+	/*
+		repo can come from params or other job, introduced in 1.3.1
+	*/
+	SourceFrom      RepoSource `bson:"source_from"               json:"source_from"                 yaml:"source_from"`
+	GlobalParamName string     `bson:"param_name"    json:"param_name"    yaml:"param_name"`
+	JobName         string     `bson:"job_name"      json:"job_name"      yaml:"job_name"`
+	ServiceName     string     `bson:"service_name"  json:"service_name"  yaml:"service_name"`
+	ServiceModule   string     `bson:"service_module" json:"service_module" yaml:"service_module"`
+	JobRepoIndex    int        `bson:"repo_index" json:"repo_index" yaml:"repo_index"`
+	SubmissionID    string     `bson:"submission_id" json:"submission_id" yaml:"submission_id"`
+}
+
+// repo source, repo can come from params or other job
+type SourceFrom struct {
+	Enabled    bool       `bson:"enabled"       json:"enabled"       yaml:"enabled"`
+	SourceType RepoSource `bson:"source_type"   json:"source_type"   yaml:"source_type"`
 }
 
 type BranchFilterInfo struct {
@@ -122,6 +139,14 @@ func (repo *Repository) GetRepoNamespace() string {
 	return repo.RepoOwner
 }
 
+type RepoSource string
+
+const (
+	RepoSourceRuntime RepoSource = ""
+	RepoSourceParam   RepoSource = "param"
+	RepoSourceJob     RepoSource = "job"
+)
+
 const (
 	// ProviderGithub ...
 	ProviderGithub = "github"
@@ -130,9 +155,6 @@ const (
 
 	// ProviderGerrit
 	ProviderGerrit = "gerrit"
-
-	// ProviderCodehub
-	ProviderCodehub = "codehub"
 
 	// ProviderGitee
 	ProviderGitee = "gitee"
@@ -150,7 +172,7 @@ const (
 // e.g. github returns refs/pull/1/head
 // e.g. gitlab returns merge-requests/1/head
 func (r *Repository) PRRef() string {
-	if strings.ToLower(r.Source) == ProviderGitlab || strings.ToLower(r.Source) == ProviderCodehub {
+	if strings.ToLower(r.Source) == ProviderGitlab {
 		return fmt.Sprintf("merge-requests/%d/head", r.PR)
 	} else if strings.ToLower(r.Source) == ProviderGerrit {
 		return r.CheckoutRef
@@ -159,7 +181,7 @@ func (r *Repository) PRRef() string {
 }
 
 func (r *Repository) PRRefByPRID(pr int) string {
-	if strings.ToLower(r.Source) == ProviderGitlab || strings.ToLower(r.Source) == ProviderCodehub {
+	if strings.ToLower(r.Source) == ProviderGitlab {
 		return fmt.Sprintf("merge-requests/%d/head", pr)
 	} else if strings.ToLower(r.Source) == ProviderGerrit {
 		return r.CheckoutRef
@@ -186,6 +208,8 @@ func (r *Repository) TagRef() string {
 func (r *Repository) Ref() string {
 	if len(r.Tag) > 0 {
 		return r.TagRef()
+	} else if r.EnableCommit {
+		return r.CommitID
 	} else if len(r.Branch) > 0 {
 		return r.BranchRef()
 	} else if r.PR > 0 {

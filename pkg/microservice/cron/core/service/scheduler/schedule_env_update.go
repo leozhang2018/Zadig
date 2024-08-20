@@ -20,23 +20,25 @@ import (
 	"github.com/jasonlvhit/gocron"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/cron/core/service"
-	"github.com/koderover/zadig/pkg/microservice/cron/core/service/client"
-	"github.com/koderover/zadig/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/microservice/cron/core/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/cron/core/service/client"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 // EnvUpdateInterval TODO interval will be set on product in future
 const EnvUpdateInterval = 30
 
-func needCreateSchedule(rendersetObj *service.ProductRenderset) bool {
-	if rendersetObj.YamlData != nil {
-		if rendersetObj.YamlData.Source == setting.SourceFromGitRepo || rendersetObj.YamlData.Source == setting.SourceFromVariableSet {
+func needCreateProdSchedule(env *service.ProductResp) bool {
+	if env.YamlData != nil {
+		if env.YamlData.Source == setting.SourceFromGitRepo || env.YamlData.Source == setting.SourceFromVariableSet {
 			return true
 		}
 	}
-	for _, chartData := range rendersetObj.ChartInfos {
-		if chartData.OverrideYaml != nil && chartData.OverrideYaml.Source == setting.SourceFromGitRepo {
-			return true
+	for _, svcGroup := range env.Services {
+		for _, svc := range svcGroup {
+			if svc.GetServiceRender().OverrideYaml != nil && svc.GetServiceRender().OverrideYaml.Source == setting.SourceFromGitRepo {
+				return true
+			}
 		}
 	}
 	return false
@@ -52,49 +54,55 @@ func (c *CronClient) UpsertEnvValueSyncScheduler(log *zap.SugaredLogger) {
 	//compare to last revision, delete related schedulers when env is deleted
 	c.compareHelmProductEnvRevision(envs, log)
 
-	log.Info("start init env values sync scheduler..")
+	log.Infof("start init env values sync scheduler... env count: %v", len(envs))
 	for _, env := range envs {
+		log.Infof("schedule_env_update handle single helm env: %s/%s", env.ProductName, env.EnvName)
 		envObj, err := c.AslanCli.GetEnvService(env.ProductName, env.EnvName, log)
 		if err != nil {
 			log.Errorf("failed to get env data, productName:%s envName:%s err:%v", env.ProductName, env.EnvName, err)
 			continue
 		}
-		if envObj.Render == nil {
-			log.Errorf("render info of product: %s:%s is nil", env.ProductName, env.EnvName)
-			continue
-		}
-
-		rendersetObj, err := c.AslanCli.GetRenderset(envObj.Render.Name, envObj.Render.Revision, log)
-		if err != nil {
-			log.Errorf("failed to get renderset data: %s, err:%s", envObj.Render.Name, err)
-			continue
-		}
 
 		envKey := buildEnvNameKey(env)
+		c.lastEnvSchedulerDataRWMutex.Lock()
 		if lastEnvData, ok := c.lastEnvSchedulerData[envKey]; ok {
 			// render not changed, no need to update scheduler
-			if lastEnvData.Render.Revision == rendersetObj.Revision {
+			if lastEnvData.UpdateTime == envObj.UpdateTime {
+				c.lastEnvSchedulerDataRWMutex.Unlock()
 				continue
 			}
 		}
 		c.lastEnvSchedulerData[envKey] = envObj
-		if _, ok := c.SchedulerController[envKey]; ok {
-			c.SchedulerController[envKey] <- true
+		c.lastEnvSchedulerDataRWMutex.Unlock()
+
+		c.SchedulerControllerRWMutex.Lock()
+		sc, ok := c.SchedulerController[envKey]
+		c.SchedulerControllerRWMutex.Unlock()
+		if ok {
+			sc <- true
 		}
+
+		c.SchedulersRWMutex.Lock()
 		if _, ok := c.Schedulers[envKey]; ok {
 			c.Schedulers[envKey].Clear()
 			delete(c.Schedulers, envKey)
 		}
+		c.SchedulersRWMutex.Unlock()
 
-		if !needCreateSchedule(rendersetObj) {
+		if !needCreateProdSchedule(envObj) {
 			continue
 		}
 
 		newScheduler := gocron.NewScheduler()
 		newScheduler.Every(EnvUpdateInterval).Seconds().Do(c.RunScheduledEnvUpdate, env.ProductName, env.EnvName, log)
+		c.SchedulersRWMutex.Lock()
 		c.Schedulers[envKey] = newScheduler
+		c.SchedulersRWMutex.Unlock()
+
 		log.Infof("[%s] add schedulers..", envKey)
+		c.SchedulerControllerRWMutex.Lock()
 		c.SchedulerController[envKey] = c.Schedulers[envKey].Start()
+		c.SchedulerControllerRWMutex.Unlock()
 	}
 }
 

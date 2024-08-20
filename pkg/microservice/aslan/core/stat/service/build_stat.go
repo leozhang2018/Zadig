@@ -25,16 +25,17 @@ import (
 
 	"github.com/jinzhu/now"
 	"github.com/pkg/errors"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	taskmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/task"
-	commonmongodb "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	templaterepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/base"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/stat/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/stat/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	taskmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/task"
+	commonmongodb "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	templaterepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/base"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/stat/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/stat/repository/mongodb"
 )
 
 func GetAllPipelineTask(log *zap.SugaredLogger) error {
@@ -98,40 +99,6 @@ func GetBuildStatByProdutName(productName string, startTimestamp int64, log *zap
 		//循环task任务获取需要的数据
 		for _, taskPreview := range taskDateMap[taskDate] {
 			switch taskP := taskPreview.(type) {
-			case *taskmodels.Task:
-				stages := taskP.Stages
-				for _, subStage := range stages {
-					taskType := subStage.TaskType
-					switch taskType {
-					case config.TaskBuild:
-						// 获取构建时长
-						for _, subTask := range subStage.SubTasks {
-							buildInfo, err := base.ToBuildTask(subTask)
-							if err != nil {
-								log.Errorf("BuildStat ToBuildTask err:%v", err)
-								continue
-							}
-							if buildInfo.TaskStatus == config.StatusPassed {
-								totalSuccess++
-							} else if buildInfo.TaskStatus == config.StatusFailed {
-								totalFailure++
-							} else if buildInfo.TaskStatus == config.StatusTimeout {
-								totalTimeout++
-							} else {
-								continue
-							}
-
-							totalDuration += buildInfo.EndTime - buildInfo.StartTime
-							maxDurationPipeline := new(models.PipelineInfo)
-							maxDurationPipeline.PipelineName = taskP.PipelineName
-							maxDurationPipeline.DisplayName = taskP.PipelineDisplayName
-							maxDurationPipeline.TaskID = taskP.TaskID
-							maxDurationPipeline.Type = string(taskP.Type)
-							maxDurationPipeline.MaxDuration = buildInfo.EndTime - buildInfo.StartTime
-							maxDurationPipelines = append(maxDurationPipelines, maxDurationPipeline)
-						}
-					}
-				}
 			case *commonmodels.WorkflowTask:
 				stages := taskP.Stages
 				for _, stage := range stages {
@@ -453,7 +420,9 @@ func GetTenDurationMeasure(startDate int64, endDate int64, productNames []string
 	for _, buidStat := range maxTenDurationBuildStats {
 		task, err := getTaskDetail(buidStat.MaxDurationPipeline.Type, buidStat.MaxDurationPipeline.PipelineName, buidStat.MaxDurationPipeline.TaskID)
 		if err != nil {
-			log.Errorf("PipelineTask Find err:%v", err)
+			if err != mongo.ErrNoDocuments {
+				log.Errorf("PipelineTask Find err:%v", err)
+			}
 			continue
 		}
 
@@ -592,7 +561,7 @@ func GetBuildTrendMeasure(startDate int64, endDate int64, productNames []string,
 	for buildStatDateMapKey := range buildStatMap {
 		buildStatDateKeys = append(buildStatDateKeys, buildStatDateMapKey)
 	}
-	sort.Sort(sort.Reverse(sort.StringSlice(buildStatDateKeys)))
+	sort.Sort(sort.StringSlice(buildStatDateKeys))
 
 	totalSuccess = 0
 	totalFailure = 0

@@ -23,16 +23,16 @@ import (
 
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	taskmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/task"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/base"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	taskmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/task"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/base"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/s3"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 const SplitSymbol = "&"
@@ -82,11 +82,6 @@ func ListServiceWorkflows(productName, envName, serviceName, serviceType string,
 	if err != nil {
 		log.Errorf("ServiceTmpl.Find failed, productName:%s, serviceName:%s, serviceType:%s, err:%v", productName, serviceName, serviceType, err)
 		return resp, e.ErrGetService.AddErr(err)
-	}
-
-	if service.Visibility != setting.PublicService && service.ProductName != productName {
-		log.Errorf("Find service failed, productName:%s, serviceName:%s, serviceType:%s", productName, serviceName, serviceType)
-		return resp, e.ErrGetService
 	}
 
 	// 获取支持升级此服务的产品工作流
@@ -190,7 +185,7 @@ func CreateServiceTask(args *commonmodels.ServiceTaskArgs, log *zap.SugaredLogge
 		return nil, fmt.Errorf("服务[%s]的构建名称和服务版本必须有一个存在", args.ServiceName)
 	} else if args.BuildName == "" && args.Revision > 0 {
 		serviceTmpl, err := commonservice.GetServiceTemplate(
-			args.ServiceName, setting.PMDeployType, args.ProductName, setting.ProductStatusDeleting, args.Revision, log,
+			args.ServiceName, setting.PMDeployType, args.ProductName, setting.ProductStatusDeleting, args.Revision, false, log,
 		)
 		if err != nil {
 			return nil, fmt.Errorf("GetServiceTemplate servicename:%s revision:%d err:%v ", args.ServiceName, args.Revision, err)
@@ -209,7 +204,7 @@ func CreateServiceTask(args *commonmodels.ServiceTaskArgs, log *zap.SugaredLogge
 		return nil, err
 	}
 
-	defaultURL, err := defaultS3.GetEncryptedURL()
+	defaultURL, err := defaultS3.GetEncrypted()
 	if err != nil {
 		err = e.ErrS3Storage.AddErr(err)
 		return nil, err

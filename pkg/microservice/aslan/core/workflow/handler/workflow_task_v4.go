@@ -19,17 +19,22 @@ package handler
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
+	workflowtool "github.com/koderover/zadig/v2/pkg/tool/workflow"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow"
-	"github.com/koderover/zadig/pkg/setting"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
+
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 type listWorkflowTaskV4Query struct {
@@ -44,7 +49,7 @@ type listWorkflowTaskV4Resp struct {
 }
 
 type ApproveRequest struct {
-	StageName    string `json:"stage_name"`
+	JobName      string `json:"job_name"`
 	WorkflowName string `json:"workflow_name"`
 	TaskID       int64  `json:"task_id"`
 	Approve      bool   `json:"approve"`
@@ -52,30 +57,51 @@ type ApproveRequest struct {
 }
 
 func CreateWorkflowTaskV4(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	args := new(commonmodels.WorkflowV4)
-	data, err := c.GetRawData()
 	if err != nil {
-		log.Errorf("CreateWorkflowTaskv4 c.GetRawData() err : %s", err)
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
 	}
-	if err = json.Unmarshal(data, args); err != nil {
+
+	args := new(commonmodels.WorkflowV4)
+	data := getBody(c)
+	if err := json.Unmarshal([]byte(data), args); err != nil {
 		log.Errorf("CreateWorkflowTaskv4 json.Unmarshal err : %s", err)
-	}
-
-	c.Request.Body = io.NopCloser(bytes.NewBuffer(data))
-
-	if err := c.ShouldBindJSON(&args); err != nil {
 		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
 		return
 	}
+
+	internalhandler.InsertOperationLog(c, ctx.UserName, args.Project, "新建", "自定义工作流任务", args.Name, data, ctx.Logger)
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[args.Project]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[args.Project].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[args.Project].Workflow.Execute {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, args.Project, types.ResourceTypeWorkflow, args.Name, types.WorkflowActionRun)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
 	ctx.Resp, ctx.Err = workflow.CreateWorkflowTaskV4(&workflow.CreateWorkflowTaskV4Args{
-		Name:   ctx.UserName,
-		UserID: ctx.UserID,
+		Name:    ctx.UserName,
+		Account: ctx.Account,
+		UserID:  ctx.UserID,
 	}, args, ctx.Logger)
 }
 
+// TODO: fix the authorization problem for this
 func CreateWorkflowTaskV4ByBuildInTrigger(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
@@ -89,20 +115,53 @@ func CreateWorkflowTaskV4ByBuildInTrigger(c *gin.Context) {
 	if triggerName == "" {
 		triggerName = setting.DefaultTaskRevoker
 	}
+	internalhandler.InsertOperationLog(c, ctx.UserName, args.Project, "新建", "自定义工作流任务", args.Name, getBody(c), ctx.Logger)
 	ctx.Resp, ctx.Err = workflow.CreateWorkflowTaskV4ByBuildInTrigger(triggerName, args, ctx.Logger)
 }
 
-func ListWorkflowTaskV4(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+type listWorkflowTaskV4PreviewResp struct {
+	WorkflowList []*commonmodels.WorkflowTaskPreview `json:"workflow_list"`
+	Total        int64                               `json:"total"`
+}
+
+func ListWorkflowTaskV4ByFilter(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
-	args := &listWorkflowTaskV4Query{}
-	if err := c.ShouldBindQuery(args); err != nil {
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	filter := &workflow.TaskHistoryFilter{}
+	if err := c.ShouldBindQuery(filter); err != nil {
 		ctx.Err = err
 		return
 	}
 
-	taskList, total, err := workflow.ListWorkflowTaskV4(args.WorkflowName, args.PageNum, args.PageSize, ctx.Logger)
-	resp := listWorkflowTaskV4Resp{
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[filter.ProjectName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[filter.ProjectName].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[filter.ProjectName].Workflow.View {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, filter.ProjectName, types.ResourceTypeWorkflow, filter.WorkflowName, types.WorkflowActionView)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	filterList := strings.Split(filter.Filters, ",")
+	taskList, total, err := workflow.ListWorkflowTaskV4ByFilter(filter, filterList, ctx.Logger)
+	resp := listWorkflowTaskV4PreviewResp{
 		WorkflowList: taskList,
 		Total:        total,
 	}
@@ -111,39 +170,433 @@ func ListWorkflowTaskV4(c *gin.Context) {
 }
 
 func GetWorkflowTaskV4(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
 	if err != nil {
 		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
 		return
 	}
-	ctx.Resp, ctx.Err = workflow.GetWorkflowTaskV4(c.Param("workflowName"), taskID, ctx.Logger)
+
+	workflowName := c.Param("workflowName")
+
+	w, err := workflow.FindWorkflowV4Raw(workflowName, ctx.Logger)
+	if err != nil {
+		ctx.Logger.Errorf("CreateCronForWorkflowV4 error: %v", err)
+		ctx.Err = e.ErrInvalidParam.AddErr(err)
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[w.Project]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[w.Project].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[w.Project].Workflow.View {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, w.Project, types.ResourceTypeWorkflow, w.Name, types.WorkflowActionView)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	ctx.Resp, ctx.Err = workflow.GetWorkflowTaskV4(workflowName, taskID, ctx.Logger)
 }
 
 func CancelWorkflowTaskV4(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
 	if err != nil {
 		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
 		return
 	}
-	ctx.Err = workflow.CancelWorkflowTaskV4(ctx.UserName, c.Param("workflowName"), taskID, ctx.Logger)
+
+	workflowName := c.Param("workflowName")
+	projectKey := c.Query("projectName")
+
+	username := ctx.UserName
+	if c.Query("username") != "" {
+		username = c.Query("username")
+	}
+	internalhandler.InsertOperationLog(c, username, projectKey, "取消", "自定义工作流任务", c.Param("workflowName"), "", ctx.Logger)
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Workflow.Execute {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeWorkflow, workflowName, types.WorkflowActionRun)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	ctx.Err = workflow.CancelWorkflowTaskV4(username, workflowName, taskID, ctx.Logger)
 }
 
 func CloneWorkflowTaskV4(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	workflowName := c.Param("workflowName")
 
 	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
 	if err != nil {
 		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
 		return
 	}
-	ctx.Resp, ctx.Err = workflow.CloneWorkflowTaskV4(c.Param("workflowName"), taskID, ctx.Logger)
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "克隆", "自定义工作流任务", c.Param("workflowName"), "", ctx.Logger)
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Workflow.Execute {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeWorkflow, workflowName, types.WorkflowActionRun)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	ctx.Resp, ctx.Err = workflow.CloneWorkflowTaskV4(workflowName, taskID, ctx.Logger)
+}
+
+func GetManualExecWorkflowTaskV4Info(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	workflowName := c.Param("workflowName")
+
+	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Workflow.Execute {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeWorkflow, workflowName, types.WorkflowActionRun)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	ctx.Resp, ctx.Err = workflow.GetManualExecWorkflowTaskV4Info(workflowName, taskID, ctx.Logger)
+}
+
+func RetryWorkflowTaskV4(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	workflowName := c.Param("workflowName")
+
+	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
+		return
+	}
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "重试", "自定义工作流任务", c.Param("workflowName"), "", ctx.Logger)
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Workflow.Execute {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeWorkflow, workflowName, types.WorkflowActionRun)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	ctx.Err = workflow.RetryWorkflowTaskV4(workflowName, taskID, ctx.Logger)
+}
+
+// @Summary Manually Execute Workflow Task V4
+// @Description Manually Execute Workflow Task V4
+// @Tags 	workflow
+// @Accept 	json
+// @Produce json
+// @Param 	projectName		query		string										true	"project name"
+// @Param 	workflowName	path		string										true	"workflow name"
+// @Param 	taskID			path		string										true	"workflow task ID"
+// @Param 	stageName		query		string										true	"workflow stage name"
+// @Param 	body 			body 		workflow.ManualExecWorkflowTaskV4Request 	true 	"workflow stage jobs"
+// @Success 200
+// @Router /api/aslan/workflow/v4/workflowtask/manualexec/workflow/{workflowName}/task/{taskID} [post]
+func ManualExecWorkflowTaskV4(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+	workflowName := c.Param("workflowName")
+	stageName := c.Query("stageName")
+	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
+		return
+	}
+
+	args := new(workflow.ManualExecWorkflowTaskV4Request)
+	data := getBody(c)
+	if err := json.Unmarshal([]byte(data), args); err != nil {
+		log.Errorf("ManualExecWorkflowTaskV4 json.Unmarshal err : %s", err)
+		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
+		return
+	}
+
+	internalhandler.InsertOperationLog(c, ctx.UserName, projectKey, "手动执行", "自定义工作流任务", c.Param("workflowName"), string(data), ctx.Logger)
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Workflow.Execute {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeWorkflow, workflowName, types.WorkflowActionRun)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	ctx.Err = workflow.ManualExecWorkflowTaskV4(workflowName, taskID, stageName, args.Jobs, ctx.UserID, ctx.UserName, ctx.Logger)
+}
+
+func SetWorkflowTaskV4Breakpoint(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	workflowName := c.Param("workflowName")
+
+	w, err := workflow.FindWorkflowV4Raw(workflowName, ctx.Logger)
+	if err != nil {
+		ctx.Logger.Errorf("SetWorkflowTaskV4Breakpoint error: %v", err)
+		ctx.Err = e.ErrInvalidParam.AddErr(err)
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[w.Project]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[w.Project].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[w.Project].Workflow.Debug {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, w.Project, types.ResourceTypeWorkflow, workflowName, types.WorkflowActionDebug)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
+		return
+	}
+	var set bool
+	switch c.Query("operation") {
+	case "set", "unset":
+		set = c.Query("operation") == "set"
+	default:
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid operation")
+		return
+	}
+	switch c.Param("position") {
+	case "before", "after":
+	default:
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid position")
+		return
+	}
+	ctx.Err = workflow.SetWorkflowTaskV4Breakpoint(workflowName, c.Param("jobName"), taskID, set, c.Param("position"), ctx.Logger)
+}
+
+func EnableDebugWorkflowTaskV4(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	workflowName := c.Param("workflowName")
+
+	w, err := workflow.FindWorkflowV4Raw(workflowName, ctx.Logger)
+	if err != nil {
+		ctx.Logger.Errorf("EnableDebugWorkflowTaskV4 error: %v", err)
+		ctx.Err = e.ErrInvalidParam.AddErr(err)
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[w.Project]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[w.Project].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[w.Project].Workflow.Debug {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, w.Project, types.ResourceTypeWorkflow, workflowName, types.WorkflowActionDebug)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
+		return
+	}
+	ctx.Err = workflow.EnableDebugWorkflowTaskV4(workflowName, taskID, ctx.Logger)
+}
+
+func StopDebugWorkflowTaskJobV4(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	workflowName := c.Param("workflowName")
+
+	w, err := workflow.FindWorkflowV4Raw(workflowName, ctx.Logger)
+	if err != nil {
+		ctx.Logger.Errorf("EnableDebugWorkflowTaskV4 error: %v", err)
+		ctx.Err = e.ErrInvalidParam.AddErr(err)
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[w.Project]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[w.Project].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[w.Project].Workflow.Debug {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, w.Project, types.ResourceTypeWorkflow, workflowName, types.WorkflowActionDebug)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	taskID, err := strconv.ParseInt(c.Param("taskID"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
+		return
+	}
+	ctx.Err = workflow.StopDebugWorkflowTaskJobV4(workflowName, c.Param("jobName"), taskID, c.Param("position"), ctx.Logger)
 }
 
 func ApproveStage(c *gin.Context) {
@@ -166,12 +619,75 @@ func ApproveStage(c *gin.Context) {
 		return
 	}
 
-	ctx.Err = workflow.ApproveStage(args.WorkflowName, args.StageName, ctx.UserName, ctx.UserID, args.Comment, args.TaskID, args.Approve, ctx.Logger)
+	ctx.Err = workflow.ApproveStage(args.WorkflowName, args.JobName, ctx.UserName, ctx.UserID, args.Comment, args.TaskID, args.Approve, ctx.Logger)
+}
+
+type HandleJobErrorRequest struct {
+	JobName      string                        `json:"job_name"`
+	WorkflowName string                        `json:"workflow_name"`
+	TaskID       int64                         `json:"task_id"`
+	Decision     workflowtool.JobErrorDecision `json:"decision"`
+}
+
+func HandleJobError(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+	args := &HandleJobErrorRequest{}
+
+	data, err := c.GetRawData()
+	if err != nil {
+		log.Errorf("HandleJobError c.GetRawData() err : %s", err)
+	}
+	if err = json.Unmarshal(data, args); err != nil {
+		log.Errorf("HandleJobError json.Unmarshal err : %s", err)
+	}
+
+	c.Request.Body = io.NopCloser(bytes.NewBuffer(data))
+
+	if err := c.ShouldBindJSON(&args); err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc(err.Error())
+		return
+	}
+
+	ctx.Err = workflow.HandleJobError(args.WorkflowName, args.JobName, ctx.UserID, ctx.UserName, args.TaskID, args.Decision, ctx.Logger)
 }
 
 func GetWorkflowV4ArtifactFileContent(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	workflowName := c.Param("workflowName")
+
+	w, err := workflow.FindWorkflowV4Raw(workflowName, ctx.Logger)
+	if err != nil {
+		ctx.Logger.Errorf("EnableDebugWorkflowTaskV4 error: %v", err)
+		ctx.Err = e.ErrInvalidParam.AddErr(err)
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[w.Project]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[w.Project].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[w.Project].Workflow.View {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, w.Project, types.ResourceTypeWorkflow, workflowName, types.WorkflowActionView)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
 
 	taskID, err := strconv.ParseInt(c.Param("taskId"), 10, 64)
 	if err != nil {
@@ -179,7 +695,7 @@ func GetWorkflowV4ArtifactFileContent(c *gin.Context) {
 		return
 	}
 
-	resp, err := workflow.GetWorkflowV4ArtifactFileContent(c.Param("workflowName"), c.Param("jobName"), taskID, ctx.Logger)
+	resp, err := workflow.GetWorkflowV4ArtifactFileContent(workflowName, c.Param("jobName"), taskID, ctx.Logger)
 	if err != nil {
 		ctx.Err = err
 		return
@@ -187,4 +703,64 @@ func GetWorkflowV4ArtifactFileContent(c *gin.Context) {
 	c.Writer.Header().Set("Content-Disposition", `attachment; filename="artifact.tar.gz"`)
 
 	c.Data(200, "application/octet-stream", resp)
+}
+
+func GetWorkflowV4BuildJobArtifactFile(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	workflowName := c.Param("workflowName")
+
+	w, err := workflow.FindWorkflowV4Raw(workflowName, ctx.Logger)
+	if err != nil {
+		ctx.Logger.Errorf("EnableDebugWorkflowTaskV4 error: %v", err)
+		ctx.Err = e.ErrInvalidParam.AddErr(err)
+		return
+	}
+
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[w.Project]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if !ctx.Resources.ProjectAuthInfo[w.Project].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[w.Project].Workflow.View {
+			// check if the permission is given by collaboration mode
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, w.Project, types.ResourceTypeWorkflow, workflowName, types.WorkflowActionView)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	taskID, err := strconv.ParseInt(c.Param("taskId"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
+		return
+	}
+
+	resp, filename, err := workflow.GetWorkflowV4BuildJobArtifactFile(workflowName, c.Param("jobName"), taskID, ctx.Logger)
+	if err != nil {
+		ctx.Err = err
+		return
+	}
+	c.Writer.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+
+	c.Data(200, "application/octet-stream", resp)
+}
+
+func GetWorkflowTaskFilters(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	ctx.Resp, ctx.Err = workflow.ListWorkflowFilterInfo(c.Query("projectName"), c.Param("name"), c.Query("queryType"), c.Query("jobName"), ctx.Logger)
 }

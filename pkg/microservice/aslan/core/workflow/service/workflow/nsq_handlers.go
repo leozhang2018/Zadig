@@ -18,7 +18,6 @@ package workflow
 
 import (
 	"context"
-	"encoding/json"
 	"encoding/xml"
 	"fmt"
 	"io/ioutil"
@@ -30,28 +29,28 @@ import (
 
 	dockerCli "github.com/docker/docker/client"
 	"github.com/docker/go-connections/sockets"
-	"github.com/nsqio/go-nsq"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/task"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/base"
-	git "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/github"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/notify"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/registry"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/workflowstat"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	"github.com/koderover/zadig/pkg/tool/git/gitlab"
-	"github.com/koderover/zadig/pkg/tool/log"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	"github.com/koderover/zadig/pkg/types"
-	"github.com/koderover/zadig/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/task"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/base"
+	git "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/github"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/notify"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/registry"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/workflowstat"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	"github.com/koderover/zadig/v2/pkg/tool/git/gitlab"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 var once sync.Once
@@ -65,7 +64,7 @@ type TaskAckHandler struct {
 	deliveryArtifactColl *commonrepo.DeliveryArtifactColl
 	deliveryActivityColl *commonrepo.DeliveryActivityColl
 	TestTaskStatColl     *commonrepo.TestTaskStatColl
-	messages             chan *nsq.Message
+	messages             chan *task.Task
 	log                  *zap.SugaredLogger
 }
 
@@ -79,7 +78,7 @@ func NewTaskAckHandler(maxInFlight int, log *zap.SugaredLogger) *TaskAckHandler 
 		deliveryArtifactColl: commonrepo.NewDeliveryArtifactColl(),
 		deliveryActivityColl: commonrepo.NewDeliveryActivityColl(),
 		TestTaskStatColl:     commonrepo.NewTestTaskStatColl(),
-		messages:             make(chan *nsq.Message, maxInFlight*10),
+		messages:             make(chan *task.Task, maxInFlight*10),
 		log:                  log,
 	}
 }
@@ -91,7 +90,7 @@ func NewTaskAckHandler(maxInFlight int, log *zap.SugaredLogger) *TaskAckHandler 
 // pipeline 完成状态包括：passed, failed, timeout
 // 4. 更新 数据库 proudct
 // 5. 更新历史piplinetask的状态为archived(默认只留下最近的一百个task)
-func (h *TaskAckHandler) HandleMessage(message *nsq.Message) error {
+func (h *TaskAckHandler) HandleMessage(message *task.Task) error {
 	once.Do(func() {
 		go func() {
 			for msg := range h.messages {
@@ -104,19 +103,8 @@ func (h *TaskAckHandler) HandleMessage(message *nsq.Message) error {
 	return nil
 }
 
-func (h *TaskAckHandler) handle(message *nsq.Message) error {
-	if message == nil {
-		h.log.Error("nil nsq.Message")
-		return nil
-	}
-
-	var pt *task.Task
-	if err := json.Unmarshal(message.Body, &pt); err != nil {
-		h.log.Errorf("unmarshal PipelineTaskV2 message error: %v", err)
-		return nil
-	}
-
-	ptInfo := fmt.Sprintf("%s %s-%d(%s)", message.ID, pt.PipelineName, pt.TaskID, pt.Status)
+func (h *TaskAckHandler) handle(pt *task.Task) error {
+	ptInfo := fmt.Sprintf("%s-%d(%s)", pt.PipelineName, pt.TaskID, pt.Status)
 	//h.log.Infof("[%s]receive task ACK: %+v", ptInfo, pt)
 
 	start := time.Now()
@@ -195,29 +183,29 @@ func (h *TaskAckHandler) handle(message *nsq.Message) error {
 				h.log.Errorf("ArchiveHistoryPipelineTask error: %v", err)
 			}
 		}()
-	}
 
-	// 更新数据库 product
-	var deploys []*task.Deploy
+		// 更新数据库 product
+		var deploys []*task.Deploy
 
-	for _, stage := range pt.Stages {
-		tasks := make([]map[string]interface{}, 0)
-		for _, v := range stage.SubTasks {
-			tasks = append(tasks, v)
+		for _, stage := range pt.Stages {
+			tasks := make([]map[string]interface{}, 0)
+			for _, v := range stage.SubTasks {
+				tasks = append(tasks, v)
+			}
+
+			deployList, _ := h.getDeployTasks(tasks)
+			deploys = append(deploys, deployList...)
 		}
 
-		deployList, _ := h.getDeployTasks(tasks)
-		deploys = append(deploys, deployList...)
-	}
-
-	for _, deploy := range deploys {
-		if deploy.Enabled && !pt.ResetImage {
-			containerName := strings.TrimSuffix(deploy.ContainerName, "_"+deploy.ServiceName)
-			if err := h.updateProductImageByNs(deploy.Namespace, deploy.ProductName, deploy.ServiceName, containerName, deploy.Image); err != nil {
-				h.log.Errorf("updateProductImage %v error: %v", deploy, err)
-				continue
-			} else {
-				h.log.Infof("succeed to update container image %v", deploy)
+		for _, deploy := range deploys {
+			if deploy.Enabled && !pt.ResetImage {
+				containerName := strings.TrimSuffix(deploy.ContainerName, "_"+deploy.ServiceName)
+				if err := commonutil.UpdateProductImage(deploy.EnvName, deploy.ProductName, deploy.ServiceName, map[string]string{containerName: deploy.Image}, pt.TaskCreator, h.log); err != nil {
+					h.log.Errorf("updateProductImage %+v error: %v", deploy, err)
+					continue
+				} else {
+					h.log.Infof("succeed to update container image %+v", deploy)
+				}
 			}
 		}
 	}
@@ -226,7 +214,7 @@ func (h *TaskAckHandler) handle(message *nsq.Message) error {
 }
 
 // get docker file content from codehost
-// TODO need to support codehub and gerrit
+// TODO need to support gerrit
 func getRawFileContent(codehostID int, repo, owner, branch, filePath string) ([]byte, error) {
 	ch, err := systemconfig.New().GetCodeHost(codehostID)
 	if err != nil {
@@ -300,7 +288,7 @@ func (h *TaskAckHandler) uploadTaskData(pt *task.Task) error {
 							deliveryArtifact.ImageTag = buildInfo.JobCtx.FileArchiveCtx.FileName
 							deliveryArtifact.Type = string(config.File)
 							deliveryArtifact.PackageFileLocation = buildInfo.JobCtx.FileArchiveCtx.FileLocation
-							if storageInfo, err := s3.NewS3StorageFromEncryptedURI(pt.StorageURI); err == nil {
+							if storageInfo, err := s3.UnmarshalNewS3StorageFromEncrypted(pt.StorageURI); err == nil {
 								deliveryArtifact.PackageStorageURI = storageInfo.Endpoint + "/" + storageInfo.Bucket
 							}
 
@@ -601,9 +589,9 @@ func (h *TaskAckHandler) uploadTaskData(pt *task.Task) error {
 							deliveryActivity.CreatedBy = pt.TaskCreator
 							deliveryActivity.URL = fmt.Sprintf("/v1/projects/detail/%s/pipelines/multi/%s/%d", pt.ProductName, pt.PipelineName, pt.TaskID)
 							deliveryActivity.RemoteFileKey = releaseFileInfo.RemoteFileKey
-							storageInfo, _ := s3.NewS3StorageFromEncryptedURI(releaseFileInfo.DestStorageURL)
+							storageInfo, _ := s3.UnmarshalNewS3StorageFromEncrypted(releaseFileInfo.DestStorageURL)
 							deliveryActivity.DistStorageURL = storageInfo.Endpoint
-							storageInfo, _ = s3.NewS3StorageFromEncryptedURI(pt.StorageURI)
+							storageInfo, _ = s3.UnmarshalNewS3StorageFromEncrypted(pt.StorageURI)
 							deliveryActivity.SrcStorageURL = storageInfo.Endpoint
 							deliveryActivity.CreatedTime = time.Now().Unix() + 6
 							deliveryActivity.StartTime = releaseFileInfo.StartTime
@@ -791,75 +779,14 @@ func (h *TaskAckHandler) getDeployTasks(subTasks []map[string]interface{}) ([]*t
 	return deploys, nil
 }
 
-// 更新subtasks中的所有容器部署任务对应服务的镜像
-func (h *TaskAckHandler) updateProductImageByNs(namespace, productName, serviceName, containerName, imageName string) error {
-	opt := &commonrepo.ProductEnvFindOptions{
-		Name:      productName,
-		Namespace: namespace,
-	}
-
-	prod, err := h.productColl.FindEnv(opt)
-
-	if err != nil {
-		h.log.Errorf("find product namespace error: %v", err)
-		return err
-	}
-
-	for i, group := range prod.Services {
-		for j, service := range group {
-			if service.ServiceName == serviceName {
-				for l, container := range service.Containers {
-					if container.Name == containerName {
-						prod.Services[i][j].Containers[l].Image = imageName
-					}
-				}
-			}
-		}
-	}
-
-	if err := h.productColl.Update(prod); err != nil {
-		errMsg := fmt.Sprintf("[%s][%s] update product image error: %v", prod.EnvName, prod.ProductName, err)
-		h.log.Errorf(errMsg)
-		return errors.New(errMsg)
-	}
-
-	return nil
-}
-
-type ItReportHandler struct {
-	itReportColl *commonrepo.ItReportColl
-	log          *zap.SugaredLogger
-}
-
-func (h *ItReportHandler) HandleMessage(message *nsq.Message) error {
-
-	var report *commonmodels.ItReport
-	if err := json.Unmarshal(message.Body, &report); err != nil {
-		h.log.Errorf("unmarshal ItReport message error: %v", err)
-		return nil
-	}
-
-	h.log.Infof("receive it report: %+v", report)
-
-	if err := h.itReportColl.Upsert(report); err != nil {
-		h.log.Errorf("create ItReport error: %v", err)
-	}
-	return nil
-}
-
 // TaskNotificationHandler ...
 type TaskNotificationHandler struct {
 	log *zap.SugaredLogger
 }
 
+// @note this function may be deprecated
 // HandleMessage ...
-func (h *TaskNotificationHandler) HandleMessage(message *nsq.Message) error {
-	var n *commonmodels.Notify
-	if err := json.Unmarshal(message.Body, &n); err != nil {
-		h.log.Errorf("unmarshal Notify message error: %v", err)
-		return nil
-	}
-
+func (h *TaskNotificationHandler) HandleMessage(n *commonmodels.Notify) error {
 	h.log.Infof("receive notification: %+v", n)
 
 	notifyClient := notify.NewNotifyClient()
@@ -878,7 +805,7 @@ func getImageInfo(productName, evnName, repoName, tag string, log *zap.SugaredLo
 	if err != nil {
 		return nil, err
 	}
-	registryInfo, _, err := commonservice.FindRegistryById(productInfo.RegistryID, false, log)
+	registryInfo, err := commonservice.FindRegistryById(productInfo.RegistryID, false, log)
 	if err != nil {
 		log.Errorf("RegistryNamespace.get error: %v", err)
 		return nil, fmt.Errorf("RegistryNamespace.get error: %v", err)

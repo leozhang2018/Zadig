@@ -21,6 +21,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"io/ioutil"
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -28,14 +29,14 @@ import (
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v2"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	"github.com/koderover/zadig/pkg/types/step"
-	"github.com/koderover/zadig/pkg/util"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/s3"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/types/step"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 type junitReportCtl struct {
@@ -131,5 +132,33 @@ func (s *junitReportCtl) AfterRun(ctx context.Context) error {
 		testTaskStat.UpdateTime = time.Now().Unix()
 		_ = commonrepo.NewTestTaskStatColl().Update(testTaskStat)
 	}
+
+	duration := 0.0
+	for _, cases := range testReport.TestCases {
+		duration += cases.Time
+	}
+	// save the test report information into db for further usage
+	err = commonrepo.NewCustomWorkflowTestReportColl().Create(&commonmodels.CustomWorkflowTestReport{
+		WorkflowName:     s.junitReportSpec.SourceWorkflow,
+		JobName:          s.junitReportSpec.SourceJobKey,
+		TaskID:           s.junitReportSpec.TaskID,
+		ServiceName:      s.junitReportSpec.ServiceName,
+		ServiceModule:    s.junitReportSpec.ServiceModule,
+		ZadigTestName:    s.junitReportSpec.TestName,
+		ZadigTestProject: s.junitReportSpec.TestProject,
+		TestName:         testReport.Name,
+		TestCaseNum:      testReport.Tests,
+		SuccessCaseNum:   testReport.Successes,
+		SkipCaseNum:      testReport.Skips,
+		FailedCaseNum:    testReport.Failures,
+		ErrorCaseNum:     testReport.Errors,
+		TestTime:         math.Round(duration*1000) / 1000,
+		TestCases:        testReport.TestCases,
+	})
+
+	if err != nil {
+		log.Error("save junit test result failed, error: %v", err)
+	}
+
 	return nil
 }

@@ -20,8 +20,11 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/git"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/git"
+	commontypes "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/types"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 type LoadSource string
@@ -47,6 +50,7 @@ type HelmServiceCreationArgs struct {
 	CreateFrom     interface{}             `json:"createFrom"`
 	ValuesData     *service.ValuesDataArgs `json:"valuesData"`
 	CreationDetail interface{}             `json:"-"`
+	Production     bool                    `json:"production"`
 }
 
 type BulkHelmServiceCreationArgs struct {
@@ -56,6 +60,7 @@ type BulkHelmServiceCreationArgs struct {
 	RequestID  string                  `json:"-"`
 	ValuesData *service.ValuesDataArgs `json:"valuesData"`
 	AutoSync   bool                    `json:"auto_sync"`
+	Production bool                    `json:"production"`
 }
 
 type FailedService struct {
@@ -145,4 +150,112 @@ func (a *BulkHelmServiceCreationArgs) UnmarshalJSON(data []byte) error {
 	type tmp BulkHelmServiceCreationArgs
 
 	return json.Unmarshal(data, (*tmp)(a))
+}
+
+type LoadServiceFromYamlTemplateReq struct {
+	ServiceName        string                           `json:"service_name"`
+	ProjectName        string                           `json:"project_name"`
+	TemplateID         string                           `json:"template_id"`
+	AutoSync           bool                             `json:"auto_sync"`
+	VariableYaml       string                           `json:"variable_yaml"`
+	ServiceVariableKVs []*commontypes.ServiceVariableKV `json:"service_variable_kvs"`
+}
+
+type OpenAPILoadServiceFromYamlTemplateReq struct {
+	Production   bool         `json:"production"`
+	ServiceName  string       `json:"service_name"`
+	ProjectKey   string       `json:"project_key"`
+	TemplateName string       `json:"template_name"`
+	AutoSync     bool         `json:"auto_sync"`
+	VariableYaml util.KVInput `json:"variable_yaml"`
+}
+
+type OpenAPIUpdateServiceConfigArgs struct {
+	ProjectName string `json:"project_name" `
+	ServiceName string `json:"service_name"`
+	Type        string `json:"type"`
+	Yaml        string `json:"yaml"`
+}
+
+func (o *OpenAPIUpdateServiceConfigArgs) Validate() error {
+	if o.ProjectName == "" {
+		return fmt.Errorf("project name cannot be empty")
+	}
+	if o.ServiceName == "" {
+		return fmt.Errorf("service name cannot be empty")
+	}
+
+	if o.Type == "" {
+		return fmt.Errorf("type cannot be empty")
+	}
+
+	if o.Yaml == "" {
+		return fmt.Errorf("yaml cannot be empty")
+	}
+
+	return nil
+}
+
+func (req *OpenAPILoadServiceFromYamlTemplateReq) Validate() error {
+	if req.ServiceName == "" {
+		return fmt.Errorf("service name cannot be empty")
+	}
+
+	if req.ProjectKey == "" {
+		return fmt.Errorf("project key cannot be empty")
+	}
+
+	if req.TemplateName == "" {
+		return fmt.Errorf("template name cannot be empty")
+	}
+
+	return nil
+}
+
+type OpenAPICreateYamlServiceReq struct {
+	ServiceName  string                           `json:"service_name"`
+	Production   bool                             `json:"production"`
+	Yaml         string                           `json:"yaml"`
+	VariableYaml []*commontypes.ServiceVariableKV `json:"variable_yaml"`
+}
+
+func (req *OpenAPICreateYamlServiceReq) Validate() error {
+	if req.ServiceName == "" {
+		return fmt.Errorf("service name cannot be empty")
+	}
+
+	if req.Yaml == "" {
+		return fmt.Errorf("yaml cannot be empty")
+	}
+
+	return nil
+}
+
+type OpenAPIGetYamlServiceResp struct {
+	ServiceName        string                           `json:"service_name"`
+	Source             string                           `json:"source"`
+	Type               string                           `json:"type"`
+	TemplateName       string                           `json:"template_name"`
+	CreatedBy          string                           `json:"created_by"`
+	CreatedTime        int64                            `json:"created_time"`
+	Yaml               string                           `json:"yaml"`
+	Containers         []*commonmodels.Container        `json:"containers"`
+	ServiceVariableKvs []*commontypes.ServiceVariableKV `json:"service_variable_kvs"`
+}
+
+type OpenAPIServiceBrief struct {
+	ServiceName string            `json:"service_name"`
+	Source      string            `json:"source"`
+	Type        string            `json:"type"`
+	Containers  []*ContainerBrief `json:"containers"`
+}
+
+type ContainerBrief struct {
+	Name      string `json:"name"`
+	Image     string `json:"image"`
+	ImageName string `json:"image_name"`
+}
+
+type OpenAPIUpdateServiceVariableRequest struct {
+	ServiceVariableKVs []*commontypes.ServiceVariableKV `json:"service_variable_kvs" binding:"required"`
 }

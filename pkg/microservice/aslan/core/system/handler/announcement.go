@@ -17,37 +17,68 @@ limitations under the License.
 package handler
 
 import (
-	"github.com/gin-gonic/gin"
+	"fmt"
 
-	systemmodel "github.com/koderover/zadig/pkg/microservice/aslan/core/system/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/system/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	"github.com/gin-gonic/gin"
+	systemmodel "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
 func CreateAnnouncement(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
 	args := new(systemmodel.Announcement)
 
-	err := c.BindJSON(args)
+	err = c.BindJSON(args)
 	if err != nil {
 		ctx.Err = e.ErrInvalidParam.AddDesc("invalid notify args")
 		return
 	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		ctx.UnAuthorized = true
+		return
+	}
+
 	ctx.Err = service.CreateAnnouncement(ctx.UserName, args, ctx.Logger)
 }
 
 func UpdateAnnouncement(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
 	args := new(systemmodel.Announcement)
 
-	err := c.BindJSON(args)
+	err = c.BindJSON(args)
 	if err != nil {
 		ctx.Err = e.ErrInvalidParam.AddDesc("invalid notify args")
 		return
 	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		ctx.UnAuthorized = true
+		return
+	}
+
 	ctx.Err = service.UpdateAnnouncement(ctx.UserName, args.ID.Hex(), args, ctx.Logger)
 }
 
@@ -66,10 +97,23 @@ func PullNotifyAnnouncement(c *gin.Context) {
 }
 
 func DeleteAnnouncement(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
 	ID := c.Param("id")
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		ctx.UnAuthorized = true
+		return
+	}
 
 	ctx.Err = service.DeleteAnnouncement(ctx.UserName, ID, ctx.Logger)
 }

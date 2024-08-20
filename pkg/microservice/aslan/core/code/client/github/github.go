@@ -20,11 +20,12 @@ import (
 	"context"
 
 	github2 "github.com/google/go-github/v35/github"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/code/client"
-	"github.com/koderover/zadig/pkg/tool/git/github"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/client"
+	"github.com/koderover/zadig/v2/pkg/tool/git/github"
 )
 
 type Config struct {
@@ -150,6 +151,28 @@ func (c *Client) ListProjects(opt client.ListOpt) ([]*client.Project, error) {
 			Name:          o.GetName(),
 			DefaultBranch: o.GetDefaultBranch(),
 			Namespace:     o.GetOwner().GetLogin(),
+		})
+	}
+	return res, nil
+}
+
+func (c *Client) ListCommits(opt client.ListOpt) ([]*client.Commit, error) {
+	commits, err := c.Client.ListCommitsForBranch(context.TODO(), opt.Namespace, opt.ProjectName, opt.TargetBranch, &github.ListOptions{
+		Page:        opt.Page,
+		PerPage:     opt.PerPage,
+		NoPaginated: true,
+	})
+	if err != nil {
+		return nil, e.ErrCodehostListCommits.AddDesc(err.Error())
+	}
+	var res []*client.Commit
+	for _, c := range commits {
+		res = append(res, &client.Commit{
+			ID:      *c.SHA,
+			Message: *c.Commit.Message,
+			Author:  *c.Commit.Author.Name,
+			// GitHub won't give creation timestamp in listing API, we will have to set it to 0.
+			CreatedAt: 0,
 		})
 	}
 	return res, nil

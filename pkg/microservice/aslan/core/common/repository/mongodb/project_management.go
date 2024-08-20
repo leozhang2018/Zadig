@@ -25,11 +25,11 @@ import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type ProjectManagementColl struct {
@@ -60,6 +60,18 @@ func (c *ProjectManagementColl) Create(pm *models.ProjectManagement) error {
 		return err
 	}
 	return nil
+}
+
+func (c *ProjectManagementColl) GetByID(idHex string) (*models.ProjectManagement, error) {
+	pm := &models.ProjectManagement{}
+	id, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		return nil, err
+	}
+	query := bson.M{"_id": id}
+
+	err = c.FindOne(context.Background(), query).Decode(pm)
+	return pm, err
 }
 
 func (c *ProjectManagementColl) UpdateByID(idHex string, pm *models.ProjectManagement) error {
@@ -103,6 +115,7 @@ func (c *ProjectManagementColl) List() ([]*models.ProjectManagement, error) {
 	return resp, cursor.All(context.Background(), &resp)
 }
 
+// Deprecated since 1.19.0
 func (c *ProjectManagementColl) GetJira() (*models.ProjectManagement, error) {
 	jira := &models.ProjectManagement{}
 	query := bson.M{"type": setting.PMJira}
@@ -114,6 +127,22 @@ func (c *ProjectManagementColl) GetJira() (*models.ProjectManagement, error) {
 	return jira, nil
 }
 
+func (c *ProjectManagementColl) GetJiraByID(idHex string) (*models.ProjectManagement, error) {
+	id, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		return nil, err
+	}
+	jira := &models.ProjectManagement{}
+	query := bson.M{"_id": id, "type": setting.PMJira}
+
+	err = c.Collection.FindOne(context.TODO(), query).Decode(jira)
+	if err != nil {
+		return nil, err
+	}
+	return jira, nil
+}
+
+// Deprecated since 1.19.0
 func (c *ProjectManagementColl) GetMeego() (*models.ProjectManagement, error) {
 	meego := &models.ProjectManagement{}
 	query := bson.M{"type": setting.PMMeego}
@@ -123,4 +152,28 @@ func (c *ProjectManagementColl) GetMeego() (*models.ProjectManagement, error) {
 		return nil, err
 	}
 	return meego, nil
+}
+
+func (c *ProjectManagementColl) GetMeegoByID(idHex string) (*models.ProjectManagement, error) {
+	id, err := primitive.ObjectIDFromHex(idHex)
+	if err != nil {
+		return nil, err
+	}
+	meego := &models.ProjectManagement{}
+	query := bson.M{"_id": id, "type": setting.PMMeego}
+
+	err = c.Collection.FindOne(context.TODO(), query).Decode(meego)
+	if err != nil {
+		return nil, err
+	}
+	return meego, nil
+}
+
+func (c *ProjectManagementColl) GetBySystemIdentity(systemIdentity string) (*models.ProjectManagement, error) {
+	projectManagement := &models.ProjectManagement{}
+	query := bson.M{"system_identity": systemIdentity}
+	if err := c.Collection.FindOne(context.TODO(), query).Decode(projectManagement); err != nil {
+		return nil, err
+	}
+	return projectManagement, nil
 }

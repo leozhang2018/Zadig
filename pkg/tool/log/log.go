@@ -19,6 +19,7 @@ package log
 import (
 	"os"
 	"strings"
+	"time"
 
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
@@ -29,15 +30,16 @@ var logger *zap.Logger
 var simpleLogger *zap.SugaredLogger
 
 type Config struct {
-	Level       string
-	SendToFile  bool
-	Filename    string
-	NoCaller    bool
-	NoLogLevel  bool
-	Development bool
-	MaxSize     int // megabytes
-	MaxAge      int // days
-	MaxBackups  int
+	Level         string
+	SendToFile    bool
+	Filename      string
+	NoCaller      bool
+	NoLogLevel    bool
+	Development   bool
+	MaxSize       int // megabytes
+	MaxAge        int // days
+	MaxBackups    int
+	WorkflowStyle bool
 }
 
 func Init(cfg *Config) {
@@ -105,6 +107,10 @@ func getEncoder(cfg *Config, jsonFormat bool) zapcore.Encoder {
 		encoderConfig.LevelKey = zapcore.OmitKey
 	}
 
+	if cfg.WorkflowStyle {
+		encoderConfig.EncodeTime = workflowTimeEncoder
+	}
+
 	if jsonFormat {
 		return zapcore.NewJSONEncoder(encoderConfig)
 	}
@@ -113,10 +119,14 @@ func getEncoder(cfg *Config, jsonFormat bool) zapcore.Encoder {
 }
 
 func getLogWriter(filename string, maxSize, maxBackup, maxAge int) zapcore.WriteSyncer {
+	// keep 10 backups (1GB) if not set to avoid run out of disk space
+	if maxBackup == 0 {
+		maxBackup = 10
+	}
 	lumberJackLogger := &lumberjack.Logger{
-		Filename: filename,
+		Filename:   filename,
+		MaxBackups: maxBackup,
 		// MaxSize:    maxSize,
-		// MaxBackups: maxBackup,
 		// MaxAge:     maxAge,
 	}
 
@@ -228,4 +238,17 @@ func Fatal(args ...interface{}) {
 
 func Fatalf(format string, args ...interface{}) {
 	getSimpleLogger().Fatalf(format, args...)
+}
+
+func workflowTimeEncoder(t time.Time, enc zapcore.PrimitiveArrayEncoder) {
+	type appendTimeEncoder interface {
+		AppendTimeLayout(time.Time, string)
+	}
+
+	if enc, ok := enc.(appendTimeEncoder); ok {
+		enc.AppendTimeLayout(t, "[2006-01-02 15:04:05]")
+		return
+	}
+
+	enc.AppendString(t.Format("[2006-01-02 15:04:05]"))
 }

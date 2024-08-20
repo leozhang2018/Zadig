@@ -24,11 +24,12 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	crClient "sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
 )
 
 type BlueGreenReleaseJobCtl struct {
@@ -75,21 +76,21 @@ func (c *BlueGreenReleaseJobCtl) Clean(ctx context.Context) {
 	}
 	//
 	// service point to new deployment means blue green release succeed.
-	if label, exist := service.Spec.Selector[config.BlueGreenVerionLabelName]; !exist || label == c.jobTaskSpec.Version {
+	if label, exist := service.Spec.Selector[config.BlueGreenVersionLabelName]; !exist || label == c.jobTaskSpec.Version {
 		return
 	}
 	// clear intermediate state resources
-	if err := updater.DeleteDeploymentAndWait(c.jobTaskSpec.Namespace, c.jobTaskSpec.BlueWorkloadName, kubeClient); err != nil {
+	if err := updater.DeleteDeploymentAndWaitWithTimeout(c.jobTaskSpec.Namespace, c.jobTaskSpec.BlueWorkloadName, config.DefaultDeleteDeploymentTimeout, kubeClient); err != nil {
 		c.logger.Errorf("delete old deployment error: %v", err)
 	}
 	// if it was the first time blue-green deployment, clean the origin labels.
-	if service.Spec.Selector[config.BlueGreenVerionLabelName] == config.OriginVersion {
-		delete(service.Spec.Selector, config.BlueGreenVerionLabelName)
+	if service.Spec.Selector[config.BlueGreenVersionLabelName] == config.OriginVersion {
+		delete(service.Spec.Selector, config.BlueGreenVersionLabelName)
 		if err := updater.CreateOrPatchService(service, kubeClient); err != nil {
 			c.logger.Errorf("delete origin label for service error: %v", err)
 			return
 		}
-		service.Spec.Selector[config.BlueGreenVerionLabelName] = config.OriginVersion
+		service.Spec.Selector[config.BlueGreenVersionLabelName] = config.OriginVersion
 		selector := labels.Set(service.Spec.Selector).AsSelector()
 		pods, err := getter.ListPods(c.jobTaskSpec.Namespace, selector, kubeClient)
 		if err != nil {
@@ -97,10 +98,10 @@ func (c *BlueGreenReleaseJobCtl) Clean(ctx context.Context) {
 			return
 		}
 		for _, pod := range pods {
-			if pod.ObjectMeta.Labels[config.BlueGreenVerionLabelName] != config.OriginVersion {
+			if pod.ObjectMeta.Labels[config.BlueGreenVersionLabelName] != config.OriginVersion {
 				continue
 			}
-			deleteLabelPatch := fmt.Sprintf(`{"metadata":{"labels":{"%s":null}}}`, config.BlueGreenVerionLabelName)
+			deleteLabelPatch := fmt.Sprintf(`{"metadata":{"labels":{"%s":null}}}`, config.BlueGreenVersionLabelName)
 			if err := updater.PatchPod(c.jobTaskSpec.Namespace, pod.Name, []byte(deleteLabelPatch), kubeClient); err != nil {
 				c.logger.Errorf("patch pod error: %v", err)
 			}
@@ -126,7 +127,7 @@ func (c *BlueGreenReleaseJobCtl) Run(ctx context.Context) {
 		logError(c.job, msg, c.logger)
 		return
 	}
-	service.Spec.Selector[config.BlueGreenVerionLabelName] = c.jobTaskSpec.Version
+	service.Spec.Selector[config.BlueGreenVersionLabelName] = c.jobTaskSpec.Version
 	if err := updater.CreateOrPatchService(service, c.kubeClient); err != nil {
 		msg := fmt.Sprintf("point service: %s to deployment: %s failed: %v", c.jobTaskSpec.K8sServiceName, c.jobTaskSpec.BlueWorkloadName, err)
 		logError(c.job, msg, c.logger)
@@ -142,11 +143,25 @@ func (c *BlueGreenReleaseJobCtl) Run(ctx context.Context) {
 		c.jobTaskSpec.Events.Error(msg)
 		c.ack()
 	}
-	if err := updater.DeleteDeploymentAndWait(c.jobTaskSpec.Namespace, c.jobTaskSpec.WorkloadName, c.kubeClient); err != nil {
+	if err := updater.DeleteDeploymentAndWaitWithTimeout(c.jobTaskSpec.Namespace, c.jobTaskSpec.WorkloadName, config.DefaultDeleteDeploymentTimeout, c.kubeClient); err != nil {
 		msg := fmt.Sprintf("delete old deployment: %s failed: %v", c.jobTaskSpec.WorkloadName, err)
 		logError(c.job, msg, c.logger)
 		return
 	}
 	c.jobTaskSpec.Events.Info(fmt.Sprintf("blue green deployment succeed, now service point to deployemt: %s", c.jobTaskSpec.BlueWorkloadName))
 	c.job.Status = config.StatusPassed
+}
+
+func (c *BlueGreenReleaseJobCtl) SaveInfo(ctx context.Context) error {
+	return mongodb.NewJobInfoColl().Create(context.TODO(), &commonmodels.JobInfo{
+		Type:                c.job.JobType,
+		WorkflowName:        c.workflowCtx.WorkflowName,
+		WorkflowDisplayName: c.workflowCtx.WorkflowDisplayName,
+		TaskID:              c.workflowCtx.TaskID,
+		ProductName:         c.workflowCtx.ProjectName,
+		StartTime:           c.job.StartTime,
+		EndTime:             c.job.EndTime,
+		Duration:            c.job.EndTime - c.job.StartTime,
+		Status:              string(c.job.Status),
+	})
 }

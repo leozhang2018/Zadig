@@ -19,15 +19,16 @@ package task
 import (
 	"fmt"
 
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 type Resource struct {
-	Name      string `json:"name" bson:"name"`
-	Kind      string `json:"kind" bson:"kind"`
-	Container string `json:"container" bson:"container"`
-	Origin    string `json:"origin" bson:"origin"`
+	Name        string `json:"name" bson:"name"`
+	Kind        string `json:"kind" bson:"kind"`
+	Container   string `json:"container" bson:"container"`
+	Origin      string `json:"origin" bson:"origin"`
+	PodOwnerUID string `json:"pod_owner_uid" bson:"pod_owner_uid"`
 }
 
 // Deploy 容器部署任务

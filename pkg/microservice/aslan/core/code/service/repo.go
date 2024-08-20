@@ -24,10 +24,10 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/code/client"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/code/client/open"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/client"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/client/open"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
 )
 
 type RepoInfoList struct {
@@ -101,9 +101,6 @@ func ListRepoInfos(infos []*GitRepoInfo, log *zap.SugaredLogger) ([]*GitRepoInfo
 				wg.Done()
 			}()
 			projectName := info.Repo
-			if info.Source == CodeHostCodeHub {
-				projectName = info.RepoUUID
-			}
 			info.Branches, err = codehostClient.ListBranches(client.ListOpt{
 				Namespace:   strings.Replace(info.GetNamespace(), "%2F", "/", -1),
 				ProjectName: projectName,
@@ -115,7 +112,6 @@ func ListRepoInfos(infos []*GitRepoInfo, log *zap.SugaredLogger) ([]*GitRepoInfo
 				info.Branches = []*client.Branch{}
 				return
 			}
-
 		}(info)
 
 		wg.Add(1)
@@ -124,9 +120,6 @@ func ListRepoInfos(infos []*GitRepoInfo, log *zap.SugaredLogger) ([]*GitRepoInfo
 				wg.Done()
 			}()
 			projectName := info.Repo
-			if info.Source == CodeHostCodeHub {
-				projectName = info.RepoID
-			}
 
 			info.Tags, err = codehostClient.ListTags(client.ListOpt{
 				Namespace:   strings.Replace(info.GetNamespace(), "%2F", "/", -1),
@@ -187,12 +180,31 @@ func ListRepoInfos(infos []*GitRepoInfo, log *zap.SugaredLogger) ([]*GitRepoInfo
 	return infos, nil
 }
 
-func MatchBranchesList(regular string, branches []string) []string {
-	matchBranches := make([]string, 0)
+func MatchBranchesList(codeHostID int, projectName, namespace, key string, page, perPage int, regular string, log *zap.SugaredLogger) ([]*client.Branch, error) {
+	ch, err := systemconfig.New().GetCodeHost(codeHostID)
+	if err != nil {
+		log.Errorf("get code host info err:%s", err)
+		return nil, err
+	}
+	if ch.Type == setting.SourceFromOther {
+		return []*client.Branch{}, nil
+	}
+	cli, err := open.OpenClient(ch, log)
+	if err != nil {
+		log.Errorf("open client err:%s", err)
+		return nil, err
+	}
+	branches, err := cli.ListBranches(client.ListOpt{Namespace: namespace, ProjectName: projectName, Key: key, Page: page, PerPage: perPage, MatchBranches: true})
+	if err != nil {
+		log.Errorf("list branch err:%s", err)
+		return nil, err
+	}
+
+	matchBranches := make([]*client.Branch, 0)
 	for _, branch := range branches {
-		if matched, _ := regexp.MatchString(regular, branch); matched {
+		if matched, _ := regexp.MatchString(regular, branch.Name); matched {
 			matchBranches = append(matchBranches, branch)
 		}
 	}
-	return matchBranches
+	return matchBranches, nil
 }

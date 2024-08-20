@@ -23,18 +23,39 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/service/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/service/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
 )
 
+// @Summary Get Deployable Envs
+// @Description Get Deployable Envs
+// @Tags 	service
+// @Accept 	json
+// @Produce json
+// @Param 	name			path		string							true	"service name"
+// @Param 	projectName		query		string							true	"project name"
+// @Success 200 			{object}  	service.DeployableEnvResp
+// @Router /api/aslan/service/services/{name}/environments/deployable [get]
 func GetDeployableEnvs(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = service.GetDeployableEnvs(c.Param("name"), c.Query("projectName"))
+	production := c.Query("production") == "true"
+	if production {
+		err := commonutil.CheckZadigProfessionalLicense()
+		if err != nil {
+			ctx.Err = err
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = service.GetDeployableEnvs(c.Param("name"), c.Query("projectName"), production)
 }
 
+// GetKubeWorkloads api used to force user to have get environments privilege to use, now it is removed.
+// Revert if necessary
 func GetKubeWorkloads(c *gin.Context) {
 	ctx := internalhandler.NewContext(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
@@ -43,8 +64,14 @@ func GetKubeWorkloads(c *gin.Context) {
 }
 
 func LoadKubeWorkloadsYaml(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	args := new(service.LoadKubeWorkloadsYamlReq)
 	data, err := c.GetRawData()
@@ -63,7 +90,32 @@ func LoadKubeWorkloadsYaml(c *gin.Context) {
 		serviceNames = append(serviceNames, svc.Name)
 	}
 
-	internalhandler.InsertOperationLog(c, ctx.UserName, args.ProductName, "新增", "项目管理-服务", fmt.Sprintf("服务名称:%s", strings.Join(serviceNames, ",")), string(data), ctx.Logger)
+	production := c.Query("production") == "true"
+	detail := "项目管理-服务"
+	if production {
+		detail = "项目管理-生产服务"
+	}
 
-	ctx.Err = service.LoadKubeWorkloadsYaml(ctx.UserName, args, false, ctx.Logger)
+	internalhandler.InsertOperationLog(c, ctx.UserName, args.ProductName, "新增", detail, fmt.Sprintf("服务名称:%s", strings.Join(serviceNames, ",")), string(data), ctx.Logger)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[args.ProductName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[args.ProductName].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[args.ProductName].Service.Create {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	err = commonutil.CheckZadigEnterpriseLicense()
+	if err != nil {
+		ctx.Err = err
+		return
+	}
+
+	ctx.Err = service.LoadKubeWorkloadsYaml(ctx.UserName, args, false, production, ctx.Logger)
 }

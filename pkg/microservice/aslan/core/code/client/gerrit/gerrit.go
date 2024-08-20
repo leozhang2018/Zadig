@@ -17,11 +17,11 @@ limitations under the License.
 package gerrit
 
 import (
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/code/client"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/gerrit"
-	gerrittool "github.com/koderover/zadig/pkg/tool/gerrit"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/client"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/gerrit"
+	gerrittool "github.com/koderover/zadig/v2/pkg/tool/gerrit"
 
 	"go.uber.org/zap"
 )
@@ -99,4 +99,9 @@ func (c *Client) ListProjects(opt client.ListOpt) ([]*client.Project, error) {
 		})
 	}
 	return res, nil
+}
+
+// ListCommits for gerrit is unsupported by its api design
+func (c *Client) ListCommits(opt client.ListOpt) ([]*client.Commit, error) {
+	return make([]*client.Commit, 0), nil
 }

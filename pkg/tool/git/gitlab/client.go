@@ -24,7 +24,7 @@ import (
 
 	"github.com/xanzy/go-gitlab"
 
-	"github.com/koderover/zadig/pkg/tool/httpclient"
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
 )
 
 // TODO: LOU: unify the github/gitlab helpers
@@ -39,6 +39,8 @@ type ListOptions struct {
 
 	// NoPaginated indicates if we need to fetch all result or just one page. True means fetching just one page
 	NoPaginated bool
+
+	MatchBranches bool
 }
 
 type Client struct {

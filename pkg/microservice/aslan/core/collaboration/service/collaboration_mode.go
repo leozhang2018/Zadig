@@ -17,13 +17,32 @@ limitations under the License.
 package service
 
 import (
-	"go.uber.org/zap"
+	"fmt"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/collaboration/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/collaboration/repository/mongodb"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.uber.org/zap"
+	"k8s.io/apimachinery/pkg/util/sets"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/collaboration/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/collaboration/repository/mongodb"
 )
 
+func validateMemberInfo(collaborationMode *models.CollaborationMode) bool {
+	if len(collaborationMode.Members) != len(collaborationMode.MemberInfo) {
+		return false
+	}
+	memberSet := sets.NewString(collaborationMode.Members...)
+	memberInfoSet := sets.NewString()
+	for _, memberInfo := range collaborationMode.MemberInfo {
+		memberInfoSet.Insert(memberInfo.GetID())
+	}
+	return memberSet.Equal(memberInfoSet)
+}
+
 func CreateCollaborationMode(userName string, collaborationMode *models.CollaborationMode, logger *zap.SugaredLogger) error {
+	if !validateMemberInfo(collaborationMode) {
+		return fmt.Errorf("members and member_info not match")
+	}
 	err := mongodb.NewCollaborationModeColl().Create(userName, collaborationMode)
 	if err != nil {
 		logger.Errorf("CreateCollaborationMode error, err msg:%s", err)
@@ -33,6 +52,9 @@ func CreateCollaborationMode(userName string, collaborationMode *models.Collabor
 }
 
 func UpdateCollaborationMode(userName string, collaborationMode *models.CollaborationMode, logger *zap.SugaredLogger) error {
+	if !validateMemberInfo(collaborationMode) {
+		return fmt.Errorf("members and member_info not match")
+	}
 	err := mongodb.NewCollaborationModeColl().Update(userName, collaborationMode)
 	if err != nil {
 		logger.Errorf("UpdateCollaborationMode error, err msg:%s", err)
@@ -48,4 +70,21 @@ func DeleteCollaborationMode(username, projectName, name string, logger *zap.Sug
 		return err
 	}
 	return mongodb.NewCollaborationInstanceColl().ResetRevision(name, projectName)
+}
+
+func GetCollaborationMode(username, projectName, name string, logger *zap.SugaredLogger) (*models.CollaborationMode, bool, error) {
+	opt := &mongodb.CollaborationModeFindOptions{
+		ProjectName: projectName,
+		Name:        name,
+	}
+	resp, err := mongodb.NewCollaborationModeColl().Find(opt)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, false, nil
+		}
+
+		logger.Errorf("UpdateCollaborationMode error, err msg:%s", err)
+		return nil, false, err
+	}
+	return resp, true, nil
 }

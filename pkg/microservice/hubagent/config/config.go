@@ -20,8 +20,8 @@ import (
 	"github.com/spf13/viper"
 
 	// init the config first
-	_ "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/setting"
+	_ "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 func HubAgentToken() string {
@@ -42,4 +42,8 @@ func KubernetesServicePort() string {
 
 func AslanBaseAddr() string {
 	return viper.GetString(setting.AslanBaseAddr)
+}
+
+func ScheduleWorkflow() string {
+	return viper.GetString(setting.ScheduleWorkflow)
 }

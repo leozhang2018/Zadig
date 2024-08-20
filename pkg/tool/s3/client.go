@@ -21,6 +21,7 @@ import (
 	"io/fs"
 	"mime"
 	"os"
+	"path"
 	"path/filepath"
 
 	"github.com/aws/aws-sdk-go/aws"
@@ -29,8 +30,8 @@ import (
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/s3"
 
-	"github.com/koderover/zadig/pkg/tool/log"
-	fsutil "github.com/koderover/zadig/pkg/util/fs"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	fsutil "github.com/koderover/zadig/v2/pkg/util/fs"
 )
 
 const (
@@ -105,8 +106,9 @@ func (c *Client) download(bucketName, objectKey, dest string, option *DownloadOp
 			if e, ok := err1.(awserr.Error); ok && e.Code() == s3.ErrCodeNoSuchKey {
 				if option.IgnoreNotExistError {
 					return nil
+				} else {
+					return fmt.Errorf("object %s not found in bucket %s, err: %v", objectKey, bucketName, err1)
 				}
-				return err1
 			}
 
 			log.Warnf("Failed to get object %s from s3, try again, err: %s", objectKey, err1)
@@ -212,6 +214,8 @@ func (c *Client) Upload(bucketName, src string, objectKey string) error {
 	if err != nil {
 		return err
 	}
+	defer file.Close()
+
 	// TODO: add md5 check for file integrity
 	input := &s3.PutObjectInput{
 		Body:   file,
@@ -235,7 +239,7 @@ func (c *Client) UploadDir(bucketName, srcdir string, s3dir string) error {
 		if d.IsDir() {
 			return nil
 		}
-		key := filepath.Join(s3dir, p)
+		key := path.Join(s3dir, p)
 		originalFilePath := filepath.Join(srcdir, p)
 		return c.Upload(bucketName, originalFilePath, key)
 	})

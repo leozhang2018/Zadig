@@ -17,10 +17,12 @@ limitations under the License.
 package handler
 
 import (
+	"fmt"
+
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/system/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/system/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
 )
 
 func GetDefaultLogin(c *gin.Context) {
@@ -31,12 +33,25 @@ func GetDefaultLogin(c *gin.Context) {
 }
 
 func UpdateDefaultLogin(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	args := new(service.UpdateDefaultLoginParams)
 	if err := c.BindJSON(args); err != nil {
 		ctx.Err = err
+		return
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		ctx.UnAuthorized = true
 		return
 	}
 

@@ -25,15 +25,15 @@ import (
 	"go.uber.org/zap"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	configbase "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/taskplugin/s3"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/httpclient"
-	krkubeclient "github.com/koderover/zadig/pkg/tool/kube/client"
-	"github.com/koderover/zadig/pkg/tool/log"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
+	configbase "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/taskplugin/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
+	krkubeclient "github.com/koderover/zadig/v2/pkg/tool/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
 )
 
 const (
@@ -163,7 +163,7 @@ func (p *TriggerTaskPlugin) Run(ctx context.Context, pipelineTask *task.Task, pi
 func (p *TriggerTaskPlugin) getS3Storage(pipelineTask *task.Task) (string, error) {
 	var err error
 	var store *s3.S3
-	if store, err = s3.NewS3StorageFromEncryptedURI(pipelineTask.StorageURI); err != nil {
+	if store, err = s3.UnmarshalNewS3StorageFromEncrypted(pipelineTask.StorageURI); err != nil {
 		log.Errorf("Archive failed to create s3 storage %s", pipelineTask.StorageURI)
 		return "", err
 	}

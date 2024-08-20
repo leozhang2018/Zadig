@@ -25,13 +25,13 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	"sigs.k8s.io/yaml"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
 )
 
 type ListSecretsResponse struct {
@@ -40,10 +40,11 @@ type ListSecretsResponse struct {
 	SecretType string `json:"secret_type"`
 }
 
-func ListSecrets(envName, productName string, log *zap.SugaredLogger) ([]*ListSecretsResponse, error) {
+func ListSecrets(envName, productName string, production bool, log *zap.SugaredLogger) ([]*ListSecretsResponse, error) {
 	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    productName,
-		EnvName: envName,
+		Name:       productName,
+		EnvName:    envName,
+		Production: &production,
 	})
 	if err != nil {
 		return nil, e.ErrListResources.AddErr(err)
@@ -58,7 +59,7 @@ func ListSecrets(envName, productName string, log *zap.SugaredLogger) ([]*ListSe
 		return nil, e.ErrListResources.AddDesc(err.Error())
 	}
 
-	secrets, err := getter.ListSecrets(product.Namespace, kubeClient)
+	secrets, err := getter.ListSecrets(product.Namespace, nil, kubeClient)
 	if err != nil {
 		log.Error(err)
 		return nil, e.ErrListResources.AddDesc(err.Error())
@@ -139,8 +140,9 @@ func UpdateSecret(args *models.CreateUpdateCommonEnvCfgArgs, userName string, lo
 	}
 
 	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    args.ProductName,
-		EnvName: args.EnvName,
+		Name:       args.ProductName,
+		EnvName:    args.EnvName,
+		Production: &args.Production,
 	})
 	if err != nil {
 		return e.ErrUpdateResource.AddErr(err)

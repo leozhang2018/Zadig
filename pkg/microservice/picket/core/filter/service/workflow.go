@@ -20,12 +20,14 @@ import (
 	"net/http"
 	"net/url"
 
+	"github.com/koderover/zadig/v2/pkg/shared/client/user"
+	"github.com/koderover/zadig/v2/pkg/types"
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/koderover/zadig/pkg/microservice/picket/client/aslan"
-	"github.com/koderover/zadig/pkg/microservice/picket/client/opa"
-	"github.com/koderover/zadig/pkg/microservice/picket/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/picket/client/aslan"
+	"github.com/koderover/zadig/v2/pkg/microservice/picket/client/opa"
+	"github.com/koderover/zadig/v2/pkg/microservice/picket/config"
 )
 
 type rule struct {
@@ -33,23 +35,17 @@ type rule struct {
 	endpoint string
 }
 
-func ListWorkflows(header http.Header, qs url.Values, logger *zap.SugaredLogger) ([]byte, error) {
-	rules := []*rule{{
-		method:   "/api/aslan/workflow/workflow",
-		endpoint: "GET",
-	}}
-	names, err := getAllowedProjects(header, rules, config.AND, logger)
+func ListWorkflows(header http.Header, qs url.Values, uid string, logger *zap.SugaredLogger) ([]byte, error) {
+	projects, _, err := user.New().ListAuthorizedProjectsByResourceAndVerb(uid, types.ResourceTypeWorkflow, types.WorkflowActionView)
 	if err != nil {
 		logger.Errorf("Failed to get allowed project names, err: %s", err)
 		return nil, err
 	}
-	if len(names) == 0 {
+	if len(projects) == 0 {
 		return nil, nil
 	}
-	if !(len(names) == 1 && names[0] == "*") {
-		for _, name := range names {
-			qs.Add("projects", name)
-		}
+	for _, name := range projects {
+		qs.Add("projects", name)
 	}
 	return aslan.New().ListWorkflows(header, qs)
 }
@@ -75,42 +71,29 @@ func ListWorkflowsV3(header http.Header, qs url.Values, logger *zap.SugaredLogge
 	return aslan.New().ListWorkflowsV3(header, qs)
 }
 
-func ListAllWorkflows(header http.Header, qs url.Values, logger *zap.SugaredLogger) ([]byte, error) {
-	rules := []*rule{{
-		method:   "/api/aslan/workflow/workflow",
-		endpoint: "GET",
-	}}
-	names, err := getAllowedProjects(header, rules, config.AND, logger)
+func ListAllWorkflows(header http.Header, qs url.Values, uid string, logger *zap.SugaredLogger) ([]byte, error) {
+	projects, _, err := user.New().ListAuthorizedProjectsByResourceAndVerb(uid, types.ResourceTypeWorkflow, types.WorkflowActionView)
 	if err != nil {
 		logger.Errorf("Failed to get allowed project names, err: %s", err)
 		return nil, err
 	}
-	if len(names) == 0 {
+	if len(projects) == 0 {
 		return nil, nil
 	}
-	for _, name := range names {
+	for _, name := range projects {
 		qs.Add("projects", name)
 	}
 	return aslan.New().ListAllWorkflows(header, qs)
 }
 
-func ListTestWorkflows(testName string, header http.Header, qs url.Values, logger *zap.SugaredLogger) ([]byte, error) {
-	rules := []*rule{{
-		method:   "/api/aslan/workflow/workflow",
-		endpoint: "PUT",
-	}}
-	names, err := getAllowedProjects(header, rules, config.AND, logger)
+func ListTestWorkflows(testName, uid string, header http.Header, qs url.Values, logger *zap.SugaredLogger) ([]byte, error) {
+	authorizedProjects, _, err := user.New().ListAuthorizedProjects(uid)
 	if err != nil {
 		logger.Errorf("Failed to get allowed project names, err: %s", err)
 		return nil, err
 	}
-	if len(names) == 0 {
-		return nil, nil
-	}
-	if !(len(names) == 1 && names[0] == "*") {
-		for _, name := range names {
-			qs.Add("projects", name)
-		}
+	for _, project := range authorizedProjects {
+		qs.Add("projects", project)
 	}
 	return aslan.New().ListTestWorkflows(testName, header, qs)
 }

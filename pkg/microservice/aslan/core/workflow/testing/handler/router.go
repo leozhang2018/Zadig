@@ -30,6 +30,12 @@ func (*Router) Inject(router *gin.RouterGroup) {
 		testReport.GET("workflowv4/:workflowName/id/:id/job/:jobName", GetWorkflowV4HTMLTestReport)
 	}
 
+	// sse apis
+	sse := router.Group("sse")
+	{
+		sse.GET("/:testName/tasks/:taskID", GetTestingTaskSSE)
+	}
+
 	// ---------------------------------------------------------------------------------------
 	// 系统测试接口
 	// ---------------------------------------------------------------------------------------
@@ -38,7 +44,7 @@ func (*Router) Inject(router *gin.RouterGroup) {
 		itReport.GET("/pipelines/:pipelineName/id/:id/names/:testName", GetLocalTestSuite)
 		itReport.GET("/workflowv4/:workflowName/id/:id/job/:jobName", GetWorkflowV4LocalTestSuite)
 		itReport.GET("/workflow/:pipelineName/id/:id/names/:testName/service/:serviceName", GetWorkflowLocalTestSuite)
-		itReport.GET("/latest/service/:serviceName", GetTestLocalTestSuite)
+		itReport.GET("/latest/service/:testName", GetTestLocalTestSuite)
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -66,18 +72,18 @@ func (*Router) Inject(router *gin.RouterGroup) {
 		scanner.DELETE("/:id", DeleteScanningModule)
 
 		// code scan tasks apis
-		scanner.POST("/:id/task", CreateScanningTask)
-		scanner.GET("/:id/task", ListScanningTask)
-		scanner.GET("/:id/task/:scan_id", GetScanningTask)
-		scanner.DELETE("/:id/task/:scan_id", CancelScanningTask)
-		scanner.GET("/:id/task/:scan_id/sse", GetScanningTaskSSE)
+		scanner.POST("/:id/task", FindScanningProjectNameFromID, CreateScanningTask)
+		scanner.GET("/:id/task", FindScanningProjectNameFromID, ListScanningTask)
+		scanner.GET("/:id/task/:scan_id", FindScanningProjectNameFromID, GetScanningTask)
+		scanner.DELETE("/:id/task/:scan_id", FindScanningProjectNameFromID, CancelScanningTask)
+		scanner.GET("/:id/task/:scan_id/sse", FindScanningProjectNameFromID, GetScanningTaskSSE)
 	}
 
-	testStat := router.Group("teststat")
-	{
-		// 供aslanx的enterprise模块的数据统计调用
-		testStat.GET("", ListTestStat)
-	}
+	//testStat := router.Group("teststat")
+	//{
+	//	// 供aslanx的enterprise模块的数据统计调用
+	//	testStat.GET("", ListTestStat)
+	//}
 
 	testDetail := router.Group("testdetail")
 	{
@@ -90,8 +96,16 @@ func (*Router) Inject(router *gin.RouterGroup) {
 	testTask := router.Group("testtask")
 	{
 		testTask.POST("", CreateTestTask)
-		testTask.POST("/productName/:productName/id/:id/pipelines/:name/restart", RestartTestTask)
-		testTask.DELETE("/productName/:productName/id/:id/pipelines/:name", CancelTestTaskV2)
+		testTask.GET("", ListTestTask)
+		testTask.DELETE("", CancelTestTaskV3)
+		testTask.GET("/detail", GetTestTaskInfo)
+		testTask.GET("/report", GetTestTaskJUnitReportInfo)
+		testTask.GET("/html_report", GetTestTaskHtmlReportInfo)
+		testTask.POST("/restart", RestartTestTaskV2)
+		testTask.GET("/artifact", GetTestingTaskArtifact)
+		// TODO:  below is the deprecated apis, remove after 2.2.0
+		//testTask.POST("/productName/:productName/id/:id/pipelines/:name/restart", RestartTestTask)
+		//testTask.DELETE("/productName/:productName/id/:id/pipelines/:name", CancelTestTaskV2)
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -100,7 +114,18 @@ func (*Router) Inject(router *gin.RouterGroup) {
 	workspace := router.Group("workspace")
 	{
 		workspace.GET("/workflow/:pipelineName/taskId/:taskId", GetTestArtifactInfo)
+		workspace.GET("/testing/:testName/taskId/:taskId", GetTestArtifactInfoV2)
 		workspace.GET("/workflowv4/:workflowName/taskId/:taskId/job/:jobName", GetWorkflowV4TestArtifactInfo)
+	}
+}
+
+type QualityCenterRouter struct{}
+
+func (*QualityCenterRouter) Inject(router *gin.RouterGroup) {
+	// testing apis
+	test := router.Group("tests")
+	{
+		test.GET("", ListTestingWithStat)
 	}
 }
 
@@ -110,5 +135,13 @@ func (*QualityRouter) Inject(router *gin.RouterGroup) {
 	scan := router.Group("codescan")
 	{
 		scan.POST("", OpenAPICreateScanningModule)
+		scan.POST("/:scanName/task", OpenAPICreateScanningTask)
+		scan.GET("/:scanName/task/:taskID", OpenAPIGetScanningTaskDetail)
+	}
+
+	test := router.Group("testing")
+	{
+		test.POST("/task", OpenAPICreateTestTask)
+		test.GET("/:testName/task/:taskID", OpenAPIGetTestTaskResult)
 	}
 }

@@ -24,12 +24,13 @@ import (
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type BuildListOption struct {
@@ -42,6 +43,8 @@ type BuildListOption struct {
 	BasicImageID string
 	PrivateKeyID string
 	TemplateID   string
+	PageNum      int64
+	PageSize     int64
 }
 
 // FindOption ...
@@ -153,6 +156,10 @@ func (c *BuildColl) List(opt *BuildListOption) ([]*models.Build, error) {
 	if opt.IsSort {
 		opts.SetSort(bson.D{{"update_time", -1}})
 	}
+	if opt.PageNum > 0 && opt.PageSize > 0 {
+		opts.SetSkip((opt.PageNum - 1) * opt.PageSize)
+		opts.SetLimit(opt.PageSize)
+	}
 	cursor, err := c.Collection.Find(ctx, query, opts)
 	if err != nil {
 		return nil, err
@@ -164,6 +171,44 @@ func (c *BuildColl) List(opt *BuildListOption) ([]*models.Build, error) {
 	}
 
 	return resp, nil
+}
+
+func (c *BuildColl) ListByOptions(opt *BuildListOption) ([]*models.Build, int64, error) {
+	if opt == nil {
+		return nil, 0, errors.New("nil ListOption")
+	}
+
+	query := bson.M{}
+	if len(opt.ProductName) != 0 {
+		query["product_name"] = opt.ProductName
+	}
+
+	var resp []*models.Build
+	ctx := context.Background()
+	opts := options.Find()
+	if opt.IsSort {
+		opts.SetSort(bson.D{{"update_time", -1}})
+	}
+	if opt.PageNum > 0 && opt.PageSize > 0 {
+		opts.SetSkip((opt.PageNum - 1) * opt.PageSize)
+		opts.SetLimit(opt.PageSize)
+	}
+
+	count, err := c.Collection.CountDocuments(ctx, query)
+	if err != nil {
+		return nil, 0, err
+	}
+	cursor, err := c.Collection.Find(ctx, query, opts)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	err = cursor.All(ctx, &resp)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return resp, count, nil
 }
 
 func (c *BuildColl) Delete(name, productName string) error {
@@ -262,7 +307,28 @@ func (c *BuildColl) DistinctTargets(excludeModule []string, productName string) 
 
 	resp := make(map[string]bool)
 	for _, serviceModuleTarget := range serviceModuleTargets {
-		if moduleTarget, ok := serviceModuleTarget.(models.ServiceModuleTarget); ok {
+		moduleTarget := models.ServiceModuleTarget{}
+		if d, ok := serviceModuleTarget.(primitive.D); ok {
+			for _, item := range d {
+				key := item.Key
+				value := item.Value
+
+				switch key {
+				case "product_name":
+					if val, ok := value.(string); ok {
+						moduleTarget.ProductName = val
+					}
+				case "service_name":
+					if val, ok := value.(string); ok {
+						moduleTarget.ServiceName = val
+					}
+				case "service_module":
+					if val, ok := value.(string); ok {
+						moduleTarget.ServiceModule = val
+					}
+				}
+			}
+
 			target := fmt.Sprintf("%s-%s-%s", moduleTarget.ProductName, moduleTarget.ServiceName, moduleTarget.ServiceModule)
 			resp[target] = true
 		}
@@ -302,4 +368,10 @@ func (c *BuildColl) GetBuildTemplateReference(templateID string) ([]*models.Buil
 		return nil, err
 	}
 	return ret, nil
+}
+
+func (c *BuildColl) ListByCursor(opt *BuildListOption) (*mongo.Cursor, error) {
+	query := bson.M{}
+
+	return c.Collection.Find(context.TODO(), query)
 }

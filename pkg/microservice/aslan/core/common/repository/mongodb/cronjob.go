@@ -25,9 +25,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type CronjobDeleteOption struct {
@@ -173,4 +173,23 @@ func (c *CronjobColl) ListActiveJob() ([]*models.Cronjob, error) {
 	}
 	err = cursor.All(context.TODO(), &resp)
 	return resp, err
+}
+
+func (c *CronjobColl) Upsert(args *models.Cronjob) error {
+	query := bson.M{"name": args.Name, "type": args.Type}
+	update := bson.M{"$set": args}
+	result, err := c.UpdateOne(context.TODO(), query, update, options.Update().SetUpsert(true))
+	if oid, ok := result.UpsertedID.(primitive.ObjectID); ok {
+		args.ID = oid
+	}
+	return err
+}
+
+func (c *CronjobColl) GetByName(name, cronType string) (*models.Cronjob, error) {
+	resp := new(models.Cronjob)
+	query := bson.M{"name": name, "type": cronType}
+	if err := c.FindOne(context.TODO(), query).Decode(&resp); err != nil {
+		return resp, err
+	}
+	return resp, nil
 }

@@ -26,11 +26,11 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/task"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/task"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type ListTaskOption struct {
@@ -680,7 +680,7 @@ func (c *TaskColl) ArchiveHistoryPipelineTask(pipelineName string, taskType conf
 	if remain == 0 && remainDays == 0 {
 		return nil
 	}
-	query := bson.M{"pipeline_name": pipelineName, "type": taskType, "is_deleted": false}
+	query := bson.M{"pipeline_name": pipelineName, "type": taskType, "is_deleted": false, "is_archived": false}
 	count, err := c.CountDocuments(context.TODO(), query)
 	if err != nil {
 		return err

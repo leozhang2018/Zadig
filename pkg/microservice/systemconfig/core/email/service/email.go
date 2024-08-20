@@ -19,21 +19,29 @@ package service
 import (
 	"time"
 
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/systemconfig/core/email/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/systemconfig/core/email/repository/mongodb"
-	"github.com/koderover/zadig/pkg/shared/client/aslan"
-	"github.com/koderover/zadig/pkg/tool/crypto"
+	"github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/email/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/email/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/shared/client/aslan"
+	"github.com/koderover/zadig/v2/pkg/tool/crypto"
 )
 
-func GetEmailHost(_ *zap.SugaredLogger) (*models.EmailHost, error) {
+func GetEmailHost(log *zap.SugaredLogger) (*models.EmailHost, error) {
 	host, err := mongodb.NewEmailHostColl().Find()
-	if host != nil {
-		host.Password = "***"
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
+		}
+		log.Errorf("failed to find email host, error: %s", err)
+		return nil, err
 	}
-	return host, err
+
+	host.Password = "***"
+
+	return host, nil
 }
 
 func GetEmailHostInternal(_ *zap.SugaredLogger) (*models.EmailHost, error) {
@@ -48,8 +56,10 @@ func GetEncryptedEmailHost(encryptedKey string, log *zap.SugaredLogger) (*models
 	}
 	result, err := mongodb.NewEmailHostColl().Find()
 	if err != nil {
-		log.Errorf("GetEncryptedEmailHost find email host error:%s", err)
-		return nil, err
+		if err != mongo.ErrNoDocuments {
+			log.Errorf("GetEncryptedEmailHost find email host error:%s", err)
+			return nil, err
+		}
 	}
 	if result == nil {
 		return nil, nil

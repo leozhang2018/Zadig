@@ -24,14 +24,14 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type ServicesInExternalEnvColl struct {
 	*mongo.Collection
-
+	mongo.Session
 	coll string
 }
 
@@ -39,6 +39,15 @@ func NewServicesInExternalEnvColl() *ServicesInExternalEnvColl {
 	name := models.ServicesInExternalEnv{}.TableName()
 	return &ServicesInExternalEnvColl{
 		Collection: mongotool.Database(config.MongoDatabase()).Collection(name),
+		coll:       name,
+	}
+}
+
+func NewServiceInExternalEnvWithSess(session mongo.Session) *ServicesInExternalEnvColl {
+	name := models.ServicesInExternalEnv{}.TableName()
+	return &ServicesInExternalEnvColl{
+		Collection: mongotool.Database(config.MongoDatabase()).Collection(name),
+		Session:    session,
 		coll:       name,
 	}
 }
@@ -77,9 +86,7 @@ func (c *ServicesInExternalEnvColl) Create(args *models.ServicesInExternalEnv) e
 	if args == nil {
 		return errors.New("nil ServicesInExternalEnv")
 	}
-
-	_, err := c.InsertOne(context.TODO(), args)
-
+	_, err := c.InsertOne(mongotool.SessionContext(context.TODO(), c.Session), args)
 	return err
 }
 
@@ -118,7 +125,7 @@ func (c *ServicesInExternalEnvColl) List(args *ServicesInExternalEnvArgs) ([]*mo
 	}
 
 	resp := make([]*models.ServicesInExternalEnv, 0)
-	ctx := context.Background()
+	ctx := mongotool.SessionContext(context.Background(), c.Session)
 
 	cursor, err := c.Collection.Find(ctx, query)
 	if err != nil {
@@ -150,6 +157,6 @@ func (c *ServicesInExternalEnvColl) Delete(args *ServicesInExternalEnvArgs) erro
 		query["service_name"] = args.ServiceName
 	}
 
-	_, err := c.DeleteMany(context.TODO(), query)
+	_, err := c.DeleteMany(mongotool.SessionContext(context.TODO(), c.Session), query)
 	return err
 }

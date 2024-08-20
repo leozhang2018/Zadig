@@ -27,18 +27,18 @@ import (
 
 	"go.uber.org/zap"
 
-	configbase "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/common"
-	plugins "github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/taskplugin"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/taskplugin/github"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/taskplugin/s3"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	"github.com/koderover/zadig/pkg/util"
+	configbase "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/common"
+	plugins "github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/taskplugin"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/taskplugin/github"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/taskplugin/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
 
 // preparePipelineStages
@@ -508,7 +508,7 @@ func downloadReport(taskInfo *task.Task, fileName, testName string, logger *zap.
 	var store *s3.S3
 	var err error
 
-	if store, err = s3.NewS3StorageFromEncryptedURI(taskInfo.StorageURI); err != nil {
+	if store, err = s3.UnmarshalNewS3StorageFromEncrypted(taskInfo.StorageURI); err != nil {
 		logger.Errorf("failed to create s3 storage %s", taskInfo.StorageURI)
 		return nil, err
 	}

@@ -17,7 +17,9 @@ limitations under the License.
 package aslan
 
 import (
-	"github.com/koderover/zadig/pkg/tool/httpclient"
+	"fmt"
+
+	"github.com/koderover/zadig/v2/pkg/tool/httpclient"
 )
 
 type CleanConfig struct {
@@ -42,4 +44,49 @@ func (c *Client) DockerClean() error {
 	url := "/system/cleanCache/oneClick"
 	_, err := c.Post(url)
 	return err
+}
+
+type user struct {
+	Username string `json:"username"`
+	Password string `json:"password"`
+	Email    string `json:"email"`
+}
+
+type SystemSetting struct {
+	TokenExpirationTime int64 `json:"token_expiration_time"`
+	ImprovementPlan     bool  `json:"improvement_plan"`
+}
+
+func (c *Client) InitializeUser(username, password, email string) error {
+	url := "/system/initialization/user"
+	req := user{
+		Username: username,
+		Password: password,
+		Email:    email,
+	}
+
+	_, err := c.Post(url, httpclient.SetBody(req))
+	if err != nil {
+		return fmt.Errorf("failed to initialize user, error: %s", err)
+	}
+
+	return nil
+}
+
+func (c *Client) GetSystemSecurityAndPrivacySettings() (*SystemSetting, error) {
+	url := "/system/security"
+
+	res := new(SystemSetting)
+
+	_, err := c.Get(url, httpclient.SetResult(&res))
+	if err != nil {
+		return nil, err
+	}
+	return res, nil
+}
+
+func (c *Client) ClearSharedStorage() error {
+	url := "/system/cleanCache/sharedStorage"
+	_, err := c.Post(url)
+	return fmt.Errorf("failed to clean shared storage, err: %s", err)
 }

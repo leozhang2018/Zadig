@@ -18,14 +18,15 @@ package service
 
 import (
 	"encoding/json"
+	"fmt"
 
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/systemconfig/core/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/systemconfig/core/repository/orm"
-	"github.com/koderover/zadig/pkg/shared/client/aslan"
-	"github.com/koderover/zadig/pkg/tool/crypto"
+	"github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/systemconfig/core/repository/orm"
+	"github.com/koderover/zadig/v2/pkg/shared/client/aslan"
+	"github.com/koderover/zadig/v2/pkg/tool/crypto"
 )
 
 func ListConnectorsInternal(logger *zap.SugaredLogger) ([]*Connector, error) {
@@ -102,10 +103,12 @@ func ListConnectors(encryptedKey string, logger *zap.SugaredLogger) ([]*Connecto
 			ConnectorBase: ConnectorBase{
 				Type: ConnectorType(c.Type),
 			},
-			ID:        c.ID,
-			Name:      c.Name,
-			Config:    cf,
-			IsDefault: isDefault,
+			ID:                c.ID,
+			Name:              c.Name,
+			Config:            cf,
+			IsDefault:         isDefault,
+			EnableLogOut:      c.EnableLogOut,
+			LogoutRedirectURL: c.LogoutRedirectURL,
 		})
 	}
 
@@ -130,9 +133,11 @@ func GetConnector(id string, logger *zap.SugaredLogger) (*Connector, error) {
 		ConnectorBase: ConnectorBase{
 			Type: ConnectorType(c.Type),
 		},
-		ID:     c.ID,
-		Name:   c.Name,
-		Config: cf,
+		ID:                c.ID,
+		Name:              c.Name,
+		Config:            cf,
+		EnableLogOut:      c.EnableLogOut,
+		LogoutRedirectURL: c.LogoutRedirectURL,
 	}, nil
 
 }
@@ -148,11 +153,24 @@ func CreateConnector(ct *Connector, logger *zap.SugaredLogger) error {
 		return err
 	}
 
+	cfg := make(map[string]interface{})
+	err = json.Unmarshal(cf, &cfg)
+	if err != nil {
+		logger.Errorf("Failed to unmarshal config, err: %s", err)
+		return fmt.Errorf("invalid config")
+	}
+
+	if string(ct.Type) != "oauth" && ct.EnableLogOut {
+		return fmt.Errorf("logout is only available in oauth2 connector")
+	}
+
 	obj := &models.Connector{
-		ID:     ct.ID,
-		Name:   ct.Name,
-		Type:   string(ct.Type),
-		Config: string(cf),
+		ID:                ct.ID,
+		Name:              ct.Name,
+		Type:              string(ct.Type),
+		Config:            string(cf),
+		EnableLogOut:      ct.EnableLogOut,
+		LogoutRedirectURL: ct.LogoutRedirectURL,
 	}
 
 	return orm.NewConnectorColl().Create(obj)
@@ -164,12 +182,25 @@ func UpdateConnector(ct *Connector, logger *zap.SugaredLogger) error {
 		logger.Errorf("Failed to marshal config, err: %s", err)
 		return err
 	}
+	
+	cfg := make(map[string]interface{})
+	err = json.Unmarshal(cf, &cfg)
+	if err != nil {
+		logger.Errorf("Failed to unmarshal config, err: %s", err)
+		return fmt.Errorf("invalid config")
+	}
+
+	if string(ct.Type) != "oauth" && ct.EnableLogOut {
+		return fmt.Errorf("logout is only available in oauth2 connector")
+	}
 
 	obj := &models.Connector{
-		ID:     ct.ID,
-		Name:   ct.Name,
-		Type:   string(ct.Type),
-		Config: string(cf),
+		ID:                ct.ID,
+		Name:              ct.Name,
+		Type:              string(ct.Type),
+		Config:            string(cf),
+		EnableLogOut:      ct.EnableLogOut,
+		LogoutRedirectURL: ct.LogoutRedirectURL,
 	}
 
 	return orm.NewConnectorColl().Update(obj)

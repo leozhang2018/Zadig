@@ -20,24 +20,25 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"os"
 	"strings"
 	"time"
 
-	apierrors "k8s.io/apimachinery/pkg/api/errors"
-
+	"github.com/koderover/zadig/v2/pkg/types"
 	"go.uber.org/zap"
 	"gopkg.in/yaml.v3"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	zadigconfig "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	krkubeclient "github.com/koderover/zadig/pkg/tool/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/label"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
+	zadigconfig "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	krkubeclient "github.com/koderover/zadig/v2/pkg/tool/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/label"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
 )
 
 func InitializeScanningTaskPlugin(taskType config.TaskType) TaskPlugin {
@@ -46,6 +47,7 @@ func InitializeScanningTaskPlugin(taskType config.TaskType) TaskPlugin {
 		kubeClient: krkubeclient.Client(),
 		clientset:  krkubeclient.Clientset(),
 		restConfig: krkubeclient.RESTConfig(),
+		apiReader:  krkubeclient.APIReader(),
 	}
 }
 
@@ -57,8 +59,10 @@ type ScanPlugin struct {
 	kubeClient    client.Client
 	clientset     kubernetes.Interface
 	restConfig    *rest.Config
+	apiReader     client.Reader
 	Task          *task.Scanning
 	Log           *zap.SugaredLogger
+	Timeout       <-chan time.Time
 }
 
 func (p *ScanPlugin) SetAckFunc(func()) {
@@ -102,7 +106,7 @@ func (p *ScanPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipelineC
 	default:
 		p.KubeNamespace = setting.AttachedClusterNamespace
 
-		crClient, clientset, restConfig, err := GetK8sClients(pipelineTask.ConfigPayload.HubServerAddr, p.Task.ClusterID)
+		crClient, clientset, restConfig, apiReader, err := GetK8sClients(pipelineTask.ConfigPayload.HubServerAddr, p.Task.ClusterID)
 		if err != nil {
 			p.Log.Error(err)
 			p.Task.Status = config.StatusFailed
@@ -113,31 +117,72 @@ func (p *ScanPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipelineC
 		p.kubeClient = crClient
 		p.clientset = clientset
 		p.restConfig = restConfig
+		p.apiReader = apiReader
 	}
 
-	// Since only one repository is supported per scanning, we just hard code it
-	repo := &task.Repository{
-		Source:             p.Task.Repos[0].Source,
-		RepoOwner:          p.Task.Repos[0].RepoNamespace,
-		RepoName:           p.Task.Repos[0].RepoName,
-		Branch:             p.Task.Repos[0].Branch,
-		PR:                 p.Task.Repos[0].PR,
-		PRs:                p.Task.Repos[0].PRs,
-		Tag:                p.Task.Repos[0].Tag,
-		OauthToken:         p.Task.Repos[0].OauthToken,
-		Address:            p.Task.Repos[0].Address,
-		Username:           p.Task.Repos[0].Username,
-		Password:           p.Task.Repos[0].Password,
-		EnableProxy:        p.Task.Repos[0].EnableProxy,
-		RemoteName:         p.Task.Repos[0].RemoteName,
-		SubModules:         p.Task.Repos[0].SubModules,
-		CheckoutPath:       p.Task.Repos[0].CheckoutPath,
-		AuthType:           p.Task.Repos[0].AuthType,
-		SSHKey:             p.Task.Repos[0].SSHKey,
-		PrivateAccessToken: p.Task.Repos[0].PrivateAccessToken,
+	repoList := make([]*task.Repository, 0)
+
+	for _, taskRepo := range p.Task.Repos {
+		repo := &task.Repository{
+			Source:             taskRepo.Source,
+			RepoOwner:          taskRepo.RepoNamespace,
+			RepoName:           taskRepo.RepoName,
+			Branch:             taskRepo.Branch,
+			PR:                 taskRepo.PR,
+			PRs:                taskRepo.PRs,
+			Tag:                taskRepo.Tag,
+			OauthToken:         taskRepo.OauthToken,
+			Address:            taskRepo.Address,
+			Username:           taskRepo.Username,
+			Password:           taskRepo.Password,
+			EnableProxy:        taskRepo.EnableProxy,
+			RemoteName:         taskRepo.RemoteName,
+			SubModules:         taskRepo.SubModules,
+			CheckoutPath:       taskRepo.CheckoutPath,
+			AuthType:           taskRepo.AuthType,
+			SSHKey:             taskRepo.SSHKey,
+			PrivateAccessToken: taskRepo.PrivateAccessToken,
+		}
+		if repo.RemoteName == "" {
+			repo.RemoteName = "origin"
+		}
+		repoList = append(repoList, repo)
 	}
-	if repo.RemoteName == "" {
-		repo.RemoteName = "origin"
+
+	// ============== environment variables ============================
+	envVars := make([]*task.KeyVal, 0)
+
+	envVars = append(envVars, PrepareDefaultWorkflowTaskEnvs(pipelineTask)...)
+
+	envVars = append(envVars, CreateEnvsFromRepoInfo(repoList)...)
+
+	for _, env := range p.Task.Envs {
+		envVars = append(envVars, &task.KeyVal{
+			Key:          env.Key,
+			Value:        env.Value,
+			IsCredential: env.IsCredential,
+		})
+	}
+
+	if len(repoList) > 0 {
+		envVars = append(envVars, &task.KeyVal{
+			Key:   "BRANCH",
+			Value: repoList[0].Branch,
+		})
+	}
+
+	if p.Task.SonarInfo != nil {
+		envVars = append(envVars, &task.KeyVal{
+			Key:          "SONAR_TOKEN",
+			Value:        p.Task.SonarInfo.Token,
+			IsCredential: true,
+		})
+
+		envVars = append(envVars, &task.KeyVal{
+			Key:          "SONAR_URL",
+			Value:        p.Task.SonarInfo.ServerAddress,
+			IsCredential: false,
+		})
 	}
 
 	jobCtx := JobCtxBuilder{
@@ -145,7 +190,8 @@ func (p *ScanPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipelineC
 		PipelineCtx: pipelineCtx,
 		Installs:    p.Task.InstallCtx,
 		JobCtx: task.JobCtx{
-			Builds: []*task.Repository{repo},
+			Builds:  repoList,
+			EnvVars: envVars,
 		},
 	}
 
@@ -153,16 +199,36 @@ func (p *ScanPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipelineC
 
 	// if the scanning task is of sonar type, then we add the sonar parameter to the context
 	if p.Task.SonarInfo != nil {
-		reaperContext.SonarParameter = p.Task.Parameter
 		reaperContext.SonarServer = p.Task.SonarInfo.ServerAddress
 		reaperContext.SonarLogin = p.Task.SonarInfo.Token
 		reaperContext.ScannerType = ScanningTypeSonar
-		reaperContext.Scripts = append(reaperContext.Scripts, strings.Split(replaceWrapLine(p.Task.PreScript), "\n")...)
 		reaperContext.SonarCheckQualityGate = p.Task.CheckQualityGate
 	} else {
 		reaperContext.ScannerType = ScanningTypeOther
-		reaperContext.Scripts = append(reaperContext.Scripts, strings.Split(replaceWrapLine(p.Task.Script), "\n")...)
 	}
+	reaperContext.Scripts = append(reaperContext.Scripts, strings.Split(replaceWrapLine(p.Task.Script), "\n")...)
+
+	if p.Task.CacheEnable {
+		// job creation usage
+		pipelineCtx.CacheEnable = true
+		pipelineCtx.Cache = p.Task.Cache
+		pipelineCtx.CacheDirType = p.Task.CacheDirType
+		pipelineCtx.CacheUserDir = p.Task.CacheUserDir
+		// job usage
+		reaperContext.CacheEnable = p.Task.CacheEnable
+		reaperContext.CacheDirType = p.Task.CacheDirType
+		reaperContext.CacheUserDir = p.Task.CacheUserDir
+		reaperContext.Cache = p.Task.Cache
+
+		// Since we allow users to use custom environment variables, variable resolution is required.
+		if pipelineCtx.CacheEnable && pipelineCtx.Cache.MediumType == types.NFSMedium {
+			pipelineCtx.CacheUserDir = p.renderEnv(pipelineCtx.CacheUserDir, envVars)
+			pipelineCtx.Cache.NFSProperties.Subpath = p.renderEnv(pipelineCtx.Cache.NFSProperties.Subpath, envVars)
+		}
+	}
+
+	reaperContext.SonarEnableScanner = p.Task.EnableScanner
+	reaperContext.SonarParameter = p.Task.Parameter
 
 	jobCtxBytes, err := yaml.Marshal(reaperContext)
 	if err != nil {
@@ -242,7 +308,7 @@ func (p *ScanPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipelineC
 		p.Task.Registries = getMatchedRegistries(p.Task.ImageInfo, p.Task.Registries)
 		// search namespace should also include desired namespace
 		job, err := buildJobWithLinkedNs(
-			p.Type(), p.Task.ImageInfo, p.JobName, serviceName, p.Task.ClusterID, pipelineTask.ConfigPayload.Test.KubeNamespace, p.Task.ResReq, p.Task.ResReqSpec, pipelineCtx, pipelineTask, p.Task.Registries,
+			p.Type(), p.Task.ImageInfo, p.JobName, serviceName, p.Task.ClusterID, p.Task.StrategyID, pipelineTask.ConfigPayload.Test.KubeNamespace, p.Task.ResReq, p.Task.ResReqSpec, pipelineCtx, pipelineTask, p.Task.Registries,
 		)
 
 		job.Namespace = p.KubeNamespace
@@ -273,12 +339,15 @@ func (p *ScanPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipelineC
 	}
 
 	p.Log.Infof("succeed to create build job %s", p.JobName)
-
-	p.Task.Status = waitJobReady(ctx, p.KubeNamespace, p.JobName, p.kubeClient, p.Log)
+	p.Timeout = time.After(time.Duration(p.TaskTimeout()) * time.Second)
+	p.Task.Status, err = waitJobReady(ctx, p.KubeNamespace, p.JobName, p.kubeClient, p.apiReader, p.Timeout, p.Log)
+	if err != nil {
+		p.Task.Error = err.Error()
+	}
 }
 
 func (p *ScanPlugin) Wait(ctx context.Context) {
-	status, err := waitJobEndWithFile(ctx, p.TaskTimeout(), p.KubeNamespace, p.JobName, true, p.kubeClient, p.clientset, p.restConfig, p.Log)
+	status, err := waitJobEndWithFile(ctx, p.TaskTimeout(), p.Timeout, p.KubeNamespace, p.JobName, true, p.kubeClient, p.clientset, p.restConfig, p.Log)
 	p.SetStatus(status)
 	if err != nil {
 		p.Task.Error = err.Error()
@@ -314,7 +383,9 @@ func (p *ScanPlugin) Complete(ctx context.Context, pipelineTask *task.Task, serv
 	err := saveContainerLog(pipelineTask, p.KubeNamespace, p.Task.ClusterID, p.FileName, jobLabel, p.kubeClient)
 	if err != nil {
 		p.Log.Error(err)
-		p.Task.Error = err.Error()
+		if p.Task.Error == "" {
+			p.Task.Error = err.Error()
+		}
 		return
 	}
 }
@@ -364,4 +435,22 @@ func (p *ScanPlugin) IsTaskEnabled() bool {
 
 func (p *ScanPlugin) ResetError() {
 	p.Task.Error = ""
+}
+
+// Note: Since there are few environment variables and few variables to be replaced,
+// this method is temporarily used.
+func (p *ScanPlugin) renderEnv(data string, envs []*task.KeyVal) string {
+	mapper := func(data string) string {
+		for _, envar := range envs {
+			if data != envar.Key {
+				continue
+			}
+
+			return envar.Value
+		}
+
+		return fmt.Sprintf("$%s", data)
+	}
+
+	return os.Expand(data, mapper)
 }

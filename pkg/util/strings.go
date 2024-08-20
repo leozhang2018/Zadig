@@ -17,10 +17,14 @@ limitations under the License.
 package util
 
 import (
+	"fmt"
 	"regexp"
 	"strings"
+	"unicode"
 
 	ref "github.com/containers/image/docker/reference"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/mozillazg/go-pinyin"
 )
 
 func GetJiraKeys(title string) (keys []string) {
@@ -60,4 +64,50 @@ func GetImageNameFromContainerInfo(imageName, containerName string) string {
 		return containerName
 	}
 	return imageName
+}
+
+func RemoveExtraSpaces(input string) string {
+	// Remove spaces before and after strings
+	trimmed := strings.TrimSpace(input)
+
+	// Replace multiple consecutive spaces in the middle of a string with a single space
+	regex := regexp.MustCompile(`\s+`)
+	normalized := regex.ReplaceAllString(trimmed, " ")
+
+	return normalized
+}
+
+func ContainsChinese(str string) bool {
+	for _, r := range str {
+		if unicode.Is(unicode.Han, r) {
+			return true
+		}
+	}
+	return false
+}
+
+func GetPinyinFromChinese(han string) (string, string) {
+	firstLetter := ""
+	fullLetter := ""
+	a := pinyin.NewArgs()
+	pinyinArr := pinyin.Pinyin(han, a)
+	for _, pinyin := range pinyinArr {
+		for _, l := range pinyin {
+			fullLetter += l
+			firstLetter += string(l[0])
+		}
+	}
+	return fullLetter, firstLetter
+}
+
+func GetEnvSleepCronName(projectName, envName string, isEnable bool) string {
+	suffix := "sleep"
+	if !isEnable {
+		suffix = "awake"
+	}
+	return fmt.Sprintf("%s-%s-%s-%s", envName, projectName, setting.EnvSleepCronjob, suffix)
+}
+
+func GetReleasePlanCronName(id, releasePlanName string, index int64) string {
+	return fmt.Sprintf("%s-%s-%d-%s", id, releasePlanName, index, setting.ReleasePlanCronjob)
 }

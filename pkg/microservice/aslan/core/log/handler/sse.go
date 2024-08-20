@@ -20,21 +20,33 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/gin-contrib/sse"
 	"github.com/gin-gonic/gin"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	logservice "github.com/koderover/zadig/pkg/microservice/aslan/core/log/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/testing/service"
-	"github.com/koderover/zadig/pkg/setting"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/util/ginzap"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/workflowcontroller/jobcontroller"
+	logservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/log/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/testing/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/util/ginzap"
 )
 
 func GetContainerLogsSSE(c *gin.Context) {
 	logger := ginzap.WithContext(c).Sugar()
+
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
 	tails, err := strconv.ParseInt(c.Query("tails"), 10, 64)
 	if err != nil {
@@ -43,6 +55,62 @@ func GetContainerLogsSSE(c *gin.Context) {
 
 	envName := c.Query("envName")
 	productName := c.Query("projectName")
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[productName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !(ctx.Resources.ProjectAuthInfo[productName].Env.View ||
+			ctx.Resources.ProjectAuthInfo[productName].IsProjectAdmin) {
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, productName, types.ResourceTypeEnvironment, envName, types.EnvActionView)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	internalhandler.Stream(c, func(ctx context.Context, streamChan chan interface{}) {
+		logservice.ContainerLogStream(ctx, streamChan, envName, productName, c.Param("podName"), c.Param("containerName"), true, tails, logger)
+	}, logger)
+}
+
+func GetProductionEnvContainerLogsSSE(c *gin.Context) {
+	logger := ginzap.WithContext(c).Sugar()
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	tails, err := strconv.ParseInt(c.Query("tails"), 10, 64)
+	if err != nil {
+		tails = int64(10)
+	}
+
+	envName := c.Query("envName")
+	productName := c.Query("projectName")
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[productName]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !(ctx.Resources.ProjectAuthInfo[productName].ProductionEnv.View ||
+			ctx.Resources.ProjectAuthInfo[productName].IsProjectAdmin) {
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, productName, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionView)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+			ctx.UnAuthorized = true
+			return
+		}
+	}
 
 	internalhandler.Stream(c, func(ctx context.Context, streamChan chan interface{}) {
 		logservice.ContainerLogStream(ctx, streamChan, envName, productName, c.Param("podName"), c.Param("containerName"), true, tails, logger)
@@ -95,13 +163,15 @@ func GetWorkflowJobContainerLogsSSE(c *gin.Context) {
 		tails = int64(10)
 	}
 
+	jobName := c.Param("jobName")
+
 	internalhandler.Stream(c, func(ctx1 context.Context, streamChan chan interface{}) {
 		logservice.WorkflowTaskV4ContainerLogStream(
 			ctx1, streamChan,
 			&logservice.GetContainerOptions{
 				Namespace:    config.Namespace(),
 				PipelineName: c.Param("workflowName"),
-				SubTask:      c.Param("jobName"),
+				SubTask:      jobcontroller.GetJobContainerName(jobName),
 				TaskID:       taskID,
 				TailLines:    tails,
 			},
@@ -318,26 +388,118 @@ func GetScanningContainerLogsSSE(c *gin.Context) {
 	if resp.AdvancedSetting != nil {
 		clusterId = resp.AdvancedSetting.ClusterID
 	}
-	if clusterId != "" && clusterId != setting.LocalClusterID {
-		namespace = setting.AttachedClusterNamespace
+
+	scanJobName := fmt.Sprintf("%s-%s", resp.Name, resp.Name)
+
+	internalhandler.Stream(c, func(ctx1 context.Context, streamChan chan interface{}) {
+		logservice.WorkflowTaskV4ContainerLogStream(
+			ctx1, streamChan,
+			&logservice.GetContainerOptions{
+				Namespace:    namespace,
+				PipelineName: fmt.Sprintf(setting.ScanWorkflowNamingConvention, id),
+				SubTask:      jobcontroller.GetJobContainerName(scanJobName),
+				TaskID:       taskID,
+				TailLines:    tails,
+				ClusterID:    clusterId,
+			},
+			ctx.Logger)
+	}, ctx.Logger)
+}
+
+func GetTestingContainerLogsSSE(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+
+	testName := c.Param("test_name")
+	if testName == "" {
+		ctx.Err = fmt.Errorf("testName must be provided")
+		return
 	}
 
-	scanningName := fmt.Sprintf("%s-%s-%s", resp.Name, id, "scanning-job")
-	options := &logservice.GetContainerOptions{
-		Namespace:    namespace,
-		PipelineName: scanningName,
-		SubTask:      string(config.TaskScanning),
-		TailLines:    tails,
-		TaskID:       taskID,
-		PipelineType: string(config.ScanningType),
-		ServiceName:  resp.Name,
-		ClusterID:    clusterId,
+	taskIDStr := c.Param("task_id")
+	if taskIDStr == "" {
+		ctx.Err = fmt.Errorf("task_id must be provided")
+		return
+	}
+
+	taskID, err := strconv.ParseInt(taskIDStr, 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
+		return
+	}
+
+	tails, err := strconv.ParseInt(c.Query("lines"), 10, 64)
+	if err != nil {
+		tails = int64(9999999)
+	}
+	workflowName := fmt.Sprintf(setting.TestWorkflowNamingConvention, testName)
+	workflowTask, err := commonrepo.NewworkflowTaskv4Coll().Find(workflowName, taskID)
+	if err != nil {
+		ctx.Logger.Errorf("failed to find workflow task for testing: %s, err: %s", testName, err)
+		ctx.Err = err
+		return
+	}
+
+	if len(workflowTask.Stages) != 1 {
+		ctx.Logger.Errorf("Invalid stage length: stage length for testing should be 1")
+		ctx.Err = fmt.Errorf("invalid stage length")
+		return
+	}
+
+	if len(workflowTask.Stages[0].Jobs) != 1 {
+		ctx.Logger.Errorf("Invalid Job length: job length for testing should be 1")
+		ctx.Err = fmt.Errorf("invalid job length")
+		return
+	}
+
+	jobInfo := new(commonmodels.TaskJobInfo)
+	if err := commonmodels.IToi(workflowTask.Stages[0].Jobs[0].JobInfo, jobInfo); err != nil {
+		ctx.Err = fmt.Errorf("convert job info to task job info error: %v", err)
+		return
+	}
+
+	buildJobName := strings.ToLower(fmt.Sprintf("%s-%s-%s", jobInfo.JobName, jobInfo.TestingName, jobInfo.RandStr))
+
+	internalhandler.Stream(c, func(ctx1 context.Context, streamChan chan interface{}) {
+		logservice.WorkflowTaskV4ContainerLogStream(
+			ctx1, streamChan,
+			&logservice.GetContainerOptions{
+				Namespace:    config.Namespace(),
+				PipelineName: fmt.Sprintf(setting.TestWorkflowNamingConvention, testName),
+				SubTask:      jobcontroller.GetJobContainerName(buildJobName),
+				TaskID:       taskID,
+				TailLines:    tails,
+			},
+			ctx.Logger)
+	}, ctx.Logger)
+}
+
+func GetJenkinsJobContainerLogsSSE(c *gin.Context) {
+	ctx := internalhandler.NewContext(c)
+
+	jobID, err := strconv.ParseInt(c.Param("jobID"), 10, 64)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddDesc("invalid task id")
+		internalhandler.JSONResponse(c, ctx)
+		return
 	}
 
 	internalhandler.Stream(c, func(ctx1 context.Context, streamChan chan interface{}) {
-		logservice.TaskContainerLogStream(
-			ctx1, streamChan,
-			options,
-			ctx.Logger)
+		logservice.JenkinsJobLogStream(ctx1, c.Param("id"), c.Param("jobName"), jobID, streamChan)
 	}, ctx.Logger)
+}
+
+func OpenAPIGetContainerLogsSSE(c *gin.Context) {
+	logger := ginzap.WithContext(c).Sugar()
+
+	tails, err := strconv.ParseInt(c.Query("tails"), 10, 64)
+	if err != nil {
+		tails = int64(10)
+	}
+
+	envName := c.Query("envName")
+	productName := c.Query("projectKey")
+
+	internalhandler.Stream(c, func(ctx context.Context, streamChan chan interface{}) {
+		logservice.ContainerLogStream(ctx, streamChan, envName, productName, c.Param("podName"), c.Param("containerName"), true, tails, logger)
+	}, logger)
 }

@@ -17,12 +17,10 @@ limitations under the License.
 package models
 
 import (
-	"sync"
-
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 type Queue struct {
@@ -66,7 +64,6 @@ type Queue struct {
 	Render                  *RenderInfo                  `bson:"render"                                     json:"render"`
 	StorageURI              string                       `bson:"storage_uri,omitempty"                      json:"storage_uri,omitempty"`
 	TestReports             map[string]interface{}       `bson:"test_reports,omitempty"                     json:"test_reports,omitempty"`
-	RwLock                  sync.Mutex                   `bson:"-"                                          json:"-"`
 	ResetImage              bool                         `bson:"resetImage"                                 json:"resetImage"`
 	ResetImagePolicy        setting.ResetImagePolicyType `bson:"reset_image_policy"                         json:"reset_image_policy"`
 	TriggerBy               *TriggerBy                   `bson:"trigger_by,omitempty"                       json:"trigger_by,omitempty"`
@@ -87,7 +84,8 @@ type TriggerBy struct {
 	// 触发此次任务的commit id
 	CommitID string `bson:"commit_id,omitempty" json:"commit_id,omitempty"`
 	// the git branch which triggered this task
-	Ref string `bson:"ref" json:"ref"`
+	Ref       string `bson:"ref" json:"ref"`
+	EventType string `bson:"event_type" json:"event_type"`
 }
 
 type ServiceTaskArgs struct {

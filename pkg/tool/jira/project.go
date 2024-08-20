@@ -16,7 +16,10 @@ limitations under the License.
 
 package jira
 
-import "github.com/pkg/errors"
+import (
+	"github.com/pkg/errors"
+	"k8s.io/apimachinery/pkg/util/sets"
+)
 
 // Project ...
 type Project struct {
@@ -31,7 +34,7 @@ type ProjectService struct {
 }
 
 // ListProjects https://developer.atlassian.com/cloud/jira/platform/rest/#api-api-2-project-get
-func (s *ProjectService) ListProjects() ([]string, error) {
+func (s *ProjectService) ListProjects() ([]*Project, error) {
 	list := make([]*Project, 0)
 	url := s.client.Host + "/rest/api/2/project"
 
@@ -40,17 +43,25 @@ func (s *ProjectService) ListProjects() ([]string, error) {
 		return nil, err
 	}
 	if resp.GetStatusCode()/100 != 2 {
-		return nil, errors.Errorf("unexpected status code %d", resp.GetStatusCode())
+		return nil, errors.Errorf("get unexpected status code %d, body: %s", resp.GetStatusCode(), resp.String())
 	}
 	if err = resp.UnmarshalJson(&list); err != nil {
 		return nil, errors.Wrap(err, "unmarshal")
 	}
 
-	var name []string
-	for _, project := range list {
-		name = append(name, project.Key)
+	return list, nil
+}
+
+func (s *ProjectService) ListAllStatues(project string) ([]string, error) {
+	resp, err := s.client.Issue.GetTypes(project)
+	if err != nil {
+		return nil, err
 	}
-	return name, nil
+	statuses := sets.NewString()
+	for _, status := range resp {
+		statuses.Insert(status.Status...)
+	}
+	return statuses.List(), nil
 }
 
 //// ListComponents ...

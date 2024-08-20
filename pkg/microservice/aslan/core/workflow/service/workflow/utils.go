@@ -18,10 +18,11 @@ package workflow
 
 import (
 	"fmt"
+	"strings"
 
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/koderover/zadig/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/setting"
 )
 
 func validateHookNames(hookNames []string) error {
@@ -40,4 +41,12 @@ func validateHookNames(hookNames []string) error {
 	}
 
 	return nil
+}
+
+func CheckFixedMarkReturnNoFixedEnv(envName string) (string, bool) {
+	if strings.Contains(envName, setting.FixedValueMark) {
+		return strings.ReplaceAll(envName, setting.FixedValueMark, ""), true
+	} else {
+		return envName, false
+	}
 }

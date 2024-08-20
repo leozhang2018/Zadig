@@ -22,22 +22,27 @@ import (
 	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/kube"
-	commonutil "github.com/koderover/zadig/pkg/microservice/aslan/core/common/util"
-	"github.com/koderover/zadig/pkg/setting"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/kube/serializer"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/kube"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/serializer"
 )
 
 // ExportYaml 查询使用到服务模板的服务组模板
-func ExportYaml(envName, productName, serviceName string, log *zap.SugaredLogger) []string {
+// source determines where the request comes from, can be "wd" or "nil"
+func ExportYaml(envName, productName, serviceName, source string, production bool, log *zap.SugaredLogger) []string {
 	var yamls [][]byte
 	res := make([]string, 0)
 
-	env, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{EnvName: envName, Name: productName})
+	env, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
+		EnvName:    envName,
+		Name:       productName,
+		Production: &production,
+	})
 	if err != nil {
 		log.Errorf("failed to find env [%s][%s] %v", envName, productName, err)
 		return res
@@ -50,32 +55,49 @@ func ExportYaml(envName, productName, serviceName string, log *zap.SugaredLogger
 		return res
 	}
 
+	clientSet, err := kubeclient.GetClientset(config.HubServerAddress(), env.ClusterID)
+	if err != nil {
+		log.Errorf("failed to get clientset for cluster %s", env.ClusterID)
+		return res
+	}
+	clusterVersion, err := clientSet.Discovery().ServerVersion()
+	if err != nil {
+		log.Errorf("failed to get cluster version for cluster %s", env.ClusterID)
+		return res
+	}
+
+	// needFetchByRenderedManifest happens when service is not deployed by zadig, or is not connected to zadig (when request comes from wd)
+	needFetchByRenderedManifest := false
+
 	if commonutil.ServiceDeployed(serviceName, env.ServiceDeployStrategy) {
 		selector := labels.Set{setting.ProductLabel: productName, setting.ServiceLabel: serviceName}.AsSelector()
 		yamls = append(yamls, getConfigMapYaml(kubeClient, namespace, selector, log)...)
 		yamls = append(yamls, getIngressYaml(kubeClient, namespace, selector, log)...)
 		yamls = append(yamls, getServiceYaml(kubeClient, namespace, selector, log)...)
-		yamls = append(yamls, getDeploymentYaml(kubeClient, namespace, selector, log)...)
-		yamls = append(yamls, getStatefulSetYaml(kubeClient, namespace, selector, log)...)
+		deploys := getDeploymentYaml(kubeClient, namespace, selector, log)
+		yamls = append(yamls, deploys...)
+		stss := getStatefulSetYaml(kubeClient, namespace, selector, log)
+		yamls = append(yamls, stss...)
+		cronJobs := getCronJobYaml(kubeClient, namespace, selector, VersionLessThan121(clusterVersion), log)
+		yamls = append(yamls, cronJobs...)
+		if len(deploys) == 0 && len(stss) == 0 && len(cronJobs) == 0 {
+			if source == "wd" {
+				needFetchByRenderedManifest = true
+			}
+		}
 	} else {
+		needFetchByRenderedManifest = true
+	}
+
+	if needFetchByRenderedManifest {
+		yamls = make([][]byte, 0)
 		// for services just import not deployed, workloads can't be queried by labels
 		productService, ok := env.GetServiceMap()[serviceName]
 		if !ok {
 			log.Errorf("failed to find product service: %s", serviceName)
 			return res
 		}
-		opt := &commonrepo.RenderSetFindOption{
-			Name:        env.Render.Name,
-			Revision:    env.Render.Revision,
-			EnvName:     env.EnvName,
-			ProductTmpl: env.ProductName,
-		}
-		renderset, exists, err := commonrepo.NewRenderSetColl().FindRenderSet(opt)
-		if err != nil || !exists {
-			log.Errorf("failed to find renderset for env: %s, err: %v", envName, err)
-			return res
-		}
-		rederedYaml, err := kube.RenderEnvService(env, renderset, productService)
+		rederedYaml, err := kube.RenderEnvService(env, productService.GetServiceRender(), productService)
 		if err != nil {
 			log.Errorf("failed to render service yaml, err: %s", err)
 			return res
@@ -89,7 +111,7 @@ func ExportYaml(envName, productName, serviceName string, log *zap.SugaredLogger
 				continue
 			}
 			switch u.GetKind() {
-			case setting.Deployment, setting.StatefulSet, setting.ConfigMap, setting.Service, setting.Ingress:
+			case setting.Deployment, setting.StatefulSet, setting.ConfigMap, setting.Service, setting.Ingress, setting.CronJob:
 				resource, exists, err := getter.GetResourceYamlInCache(namespace, u.GetName(), u.GroupVersionKind(), kubeClient)
 				if err != nil {
 					log.Errorf("failed to get resource yaml, err: %s", err)
@@ -119,15 +141,6 @@ func getConfigMapYaml(kubeClient client.Client, namespace string, selector label
 	return resources
 }
 
-func getConfigMapYamlByName(kubeClient client.Client, namespace string, name string, log *zap.SugaredLogger) []byte {
-	resource, _, err := getter.GetDeploymentYaml(namespace, name, kubeClient)
-	if err != nil {
-		log.Errorf("getConfigMapYamlByName error: %v", err)
-		return nil
-	}
-	return resource
-}
-
 func getIngressYaml(kubeClient client.Client, namespace string, selector labels.Selector, log *zap.SugaredLogger) [][]byte {
 	resources, err := getter.ListIngressesYaml(namespace, selector, kubeClient)
 	if err != nil {
@@ -144,7 +157,6 @@ func getServiceYaml(kubeClient client.Client, namespace string, selector labels.
 		log.Errorf("ListServices error: %v", err)
 		return nil
 	}
-
 	return resources
 }
 
@@ -154,7 +166,6 @@ func getDeploymentYaml(kubeClient client.Client, namespace string, selector labe
 		log.Errorf("ListDeployments error: %v", err)
 		return nil
 	}
-
 	return resources
 }
 
@@ -164,6 +175,14 @@ func getStatefulSetYaml(kubeClient client.Client, namespace string, selector lab
 		log.Errorf("ListStatefulSets error: %v", err)
 		return nil
 	}
+	return resources
+}
 
+func getCronJobYaml(kubeClient client.Client, namespace string, selector labels.Selector, lessThanVersion121 bool, log *zap.SugaredLogger) [][]byte {
+	resources, err := getter.ListCronJobsYaml(namespace, selector, kubeClient, lessThanVersion121)
+	if err != nil {
+		log.Errorf("ListCronJobs error: %v", err)
+		return nil
+	}
 	return resources
 }

@@ -17,11 +17,14 @@ limitations under the License.
 package service
 
 import (
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/kube"
 	"go.uber.org/zap"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	templatemodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/template"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	templatemodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	commontypes "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/types"
 )
 
 const (
@@ -58,39 +61,59 @@ type EnvResp struct {
 	BaseRefs    []string `json:"base_refs"`
 	BaseName    string   `json:"base_name"`
 	IsExisted   bool     `json:"is_existed"`
+	IsFavorite  bool     `json:"is_favorite"`
+	SharedNS    bool     `json:"shared_ns"`
 
 	// New Since v1.11.0
 	ShareEnvEnable  bool   `json:"share_env_enable"`
 	ShareEnvIsBase  bool   `json:"share_env_is_base"`
 	ShareEnvBaseEnv string `json:"share_env_base_env"`
+
+	// New Since v2.1.0
+	IstioGrayscaleEnable  bool   `json:"istio_grayscale_enable"`
+	IstioGrayscaleIsBase  bool   `json:"istio_grayscale_is_base"`
+	IstioGrayscaleBaseEnv string `json:"istio_grayscale_base_env"`
+}
+
+type SharedNSEnvs struct {
+	ProjectName string `json:"project_name"`
+	EnvName     string `json:"env_name"`
+	Production  bool   `json:"production"`
 }
 
 type ProductResp struct {
-	ID          string                     `json:"id"`
-	ProductName string                     `json:"product_name"`
-	Namespace   string                     `json:"namespace"`
-	Status      string                     `json:"status"`
-	Error       string                     `json:"error"`
-	EnvName     string                     `json:"env_name"`
-	UpdateBy    string                     `json:"update_by"`
-	UpdateTime  int64                      `json:"update_time"`
-	Services    [][]string                 `json:"services"`
-	Render      *commonmodels.RenderInfo   `json:"render"`
-	Vars        []*templatemodels.RenderKV `json:"vars"`
-	IsPublic    bool                       `json:"isPublic"`
-	ClusterID   string                     `json:"cluster_id,omitempty"`
-	ClusterName string                     `json:"cluster_name,omitempty"`
-	RecycleDay  int                        `json:"recycle_day"`
-	IsProd      bool                       `json:"is_prod"`
-	IsLocal     bool                       `json:"is_local"`
-	IsExisted   bool                       `json:"is_existed"`
-	Source      string                     `json:"source"`
-	RegisterID  string                     `json:"registry_id"`
+	ID          string                           `json:"id"`
+	ProductName string                           `json:"product_name"`
+	Namespace   string                           `json:"namespace"`
+	Status      string                           `json:"status"`
+	Error       string                           `json:"error"`
+	EnvName     string                           `json:"env_name"`
+	UpdateBy    string                           `json:"update_by"`
+	UpdateTime  int64                            `json:"update_time"`
+	Services    [][]*commonmodels.ProductService `json:"services"`
+	Render      *commonmodels.RenderInfo         `json:"render"`
+	Vars        []*templatemodels.RenderKV       `json:"vars"`
+	IsPublic    bool                             `json:"isPublic"`
+	ClusterID   string                           `json:"cluster_id,omitempty"`
+	ClusterName string                           `json:"cluster_name,omitempty"`
+	RecycleDay  int                              `json:"recycle_day"`
+	IsProd      bool                             `json:"is_prod"`
+	IsLocal     bool                             `json:"is_local"`
+	IsExisted   bool                             `json:"is_existed"`
+	Source      string                           `json:"source"`
+	RegisterID  string                           `json:"registry_id"`
 
 	// New Since v1.11.0
 	ShareEnvEnable  bool   `json:"share_env_enable"`
 	ShareEnvIsBase  bool   `json:"share_env_is_base"`
 	ShareEnvBaseEnv string `json:"share_env_base_env"`
+
+	// New Since v2.1.0
+	RelatedEnvs           []*SharedNSEnvs            `json:"related_envs"`
+	IstioGrayscaleEnable  bool                       `json:"istio_grayscale_enable"`
+	IstioGrayscaleIsBase  bool                       `json:"istio_grayscale_is_base"`
+	IstioGrayscaleBaseEnv string                     `json:"istio_grayscale_base_env"`
+	YamlData              *templatemodels.CustomYaml `json:"yaml_data,omitempty"` // used for cron service
 }
 
 type ProductParams struct {
@@ -101,9 +124,13 @@ type ProductParams struct {
 }
 
 type EstimateValuesArg struct {
+	ChartRepo      string                  `json:"chartRepo,omitempty"`
+	ChartName      string                  `json:"chartName,omitempty"`
+	ChartVersion   string                  `json:"chartVersion,omitempty"`
 	DefaultValues  string                  `json:"defaultValues"`
 	OverrideYaml   string                  `json:"overrideYaml"`
 	OverrideValues []*commonservice.KVPair `json:"overrideValues,omitempty"`
+	Production     bool                    `json:"-"`
 }
 
 type EnvRenderChartArg struct {
@@ -111,7 +138,7 @@ type EnvRenderChartArg struct {
 }
 
 type EnvRendersetArg struct {
-	DeployType        string                            `json:"-"`
+	DeployType        string                            `json:"deployType"`
 	DefaultValues     string                            `json:"defaultValues"`
 	ValuesData        *commonservice.ValuesDataArgs     `json:"valuesData"`
 	ChartValues       []*commonservice.HelmSvcRenderArg `json:"chartValues"`
@@ -151,8 +178,8 @@ type CreateSingleProductArg struct {
 	ChartValues []*ProductHelmServiceCreationInfo `json:"chartValues"`
 
 	// for k8s products
-	//Vars     []*templatemodels.RenderKV         `json:"vars"`
-	Services [][]*ProductK8sServiceCreationInfo `json:"services"`
+	GlobalVariables []*commontypes.GlobalVariableKV    `json:"global_variables"`
+	Services        [][]*ProductK8sServiceCreationInfo `json:"services"`
 
 	IsExisted bool `json:"is_existed"`
 
@@ -160,6 +187,8 @@ type CreateSingleProductArg struct {
 	ShareEnv commonmodels.ProductShareEnv `json:"share_env"`
 	// New Since v1.13.0
 	EnvConfigs []*commonmodels.CreateUpdateCommonEnvCfgArgs `json:"env_configs"`
+	// New Since v2.1.0
+	IstioGrayscale commonmodels.IstioGrayscale `json:"istio_grayscale"`
 }
 
 type UpdateMultiHelmProductArg struct {
@@ -172,16 +201,6 @@ type UpdateMultiHelmProductArg struct {
 
 type RawYamlResp struct {
 	YamlContent string `json:"yamlContent"`
-}
-
-type ReleaseInstallParam struct {
-	ProductName  string
-	Namespace    string
-	ReleaseName  string
-	MergedValues string
-	RenderChart  *templatemodels.ServiceRender
-	serviceObj   *commonmodels.Service
-	DryRun       bool
 }
 
 type CreateEnvRequest struct {
@@ -201,12 +220,10 @@ type UpdateEnvRequest struct {
 // ------------ used for api of getting deploy status of k8s resource/helm release
 
 type K8sDeployStatusCheckRequest struct {
-	EnvName       string                           `json:"env_name"`
-	Services      []*commonservice.K8sSvcRenderArg `json:"services"`
-	ClusterID     string                           `json:"cluster_id"`
-	Namespace     string                           `json:"namespace"`
-	DefaultValues string                           `json:"default_values"`
-	//Vars      []*templatemodels.RenderKV `json:"vars"`
+	EnvName   string                           `json:"env_name"`
+	Services  []*commonservice.K8sSvcRenderArg `json:"services"`
+	ClusterID string                           `json:"cluster_id"`
+	Namespace string                           `json:"namespace"`
 }
 
 type HelmDeployStatusCheckRequest struct {
@@ -214,7 +231,6 @@ type HelmDeployStatusCheckRequest struct {
 	Services  []string `json:"services"`
 	ClusterID string   `json:"cluster_id"`
 	Namespace string   `json:"namespace"`
-	//Vars      []*templatemodels.RenderKV `json:"vars"`
 }
 
 type DeployStatus string
@@ -225,9 +241,12 @@ const (
 )
 
 type ResourceDeployStatus struct {
-	Type   string       `json:"type"`
-	Name   string       `json:"name"`
-	Status DeployStatus `json:"status"`
+	Type         string                  `json:"type"`
+	Name         string                  `json:"name"`
+	Status       DeployStatus            `json:"status"`
+	GVK          schema.GroupVersionKind `json:"-"`
+	OverrideYaml string                  `json:"override_yaml"`
+	OverrideKvs  []*commonservice.KVPair `json:"override_kvs"`
 }
 
 type ServiceDeployStatus struct {
@@ -235,5 +254,6 @@ type ServiceDeployStatus struct {
 	Resources   []*ResourceDeployStatus `json:"resources"`
 }
 
-type intervalExecutorHandler func(data *commonmodels.Service, isRetry bool, log *zap.SugaredLogger) error
+// type intervalExecutorHandler func(data *commonmodels.Service, productSvc *commonmodels.ProductService, releaseName string, isRetry bool, log *zap.SugaredLogger) error
+type intervalExecutorHandler func(data *kube.ReleaseInstallParam, isRetry bool, log *zap.SugaredLogger) error
 type svcUpgradeFilter func(svc *commonmodels.ProductService) bool

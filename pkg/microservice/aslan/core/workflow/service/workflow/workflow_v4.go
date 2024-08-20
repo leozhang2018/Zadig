@@ -17,32 +17,68 @@ limitations under the License.
 package workflow
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
+	"net/http"
 	"regexp"
+	"sort"
 	"strings"
+	"sync"
 	"time"
 
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/pingcap/tidb/parser"
+	_ "github.com/pingcap/tidb/parser/test_driver"
+	"github.com/pkg/errors"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/zap"
+	"gopkg.in/yaml.v3"
+	"gorm.io/gorm/utils"
+	"helm.sh/helm/v3/pkg/releaseutil"
+	v1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/labels"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/util/sets"
+	"k8s.io/cli-runtime/pkg/printers"
+	"k8s.io/utils/pointer"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/template"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	templaterepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/collaboration"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/nsq"
-	commomtemplate "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/template"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/webhook"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow/job"
-	jobctl "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow/job"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/msg_queue"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	templaterepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/collaboration"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/kube"
+	larkservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/lark"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/repository"
+	commomtemplate "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/template"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/webhook"
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow/job"
+	jobctl "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow/job"
+	"github.com/koderover/zadig/v2/pkg/microservice/picket/client/opa"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/plutusvendor"
+	"github.com/koderover/zadig/v2/pkg/shared/client/user"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	helmtool "github.com/koderover/zadig/v2/pkg/tool/helmclient"
+	"github.com/koderover/zadig/v2/pkg/tool/jenkins"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/serializer"
+	"github.com/koderover/zadig/v2/pkg/tool/lark"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 func CreateWorkflowV4(user string, workflow *commonmodels.WorkflowV4, logger *zap.SugaredLogger) error {
@@ -51,13 +87,18 @@ func CreateWorkflowV4(user string, workflow *commonmodels.WorkflowV4, logger *za
 		errStr := fmt.Sprintf("与项目 [%s] 中的工作流 [%s] 标识相同", existedWorkflow.Project, existedWorkflow.DisplayName)
 		return e.ErrUpsertWorkflow.AddDesc(errStr)
 	}
-	existedWorkflows, _, _ := commonrepo.NewWorkflowV4Coll().List(&commonrepo.ListWorkflowV4Option{ProjectName: workflow.Project, DisplayName: workflow.DisplayName}, 0, 0)
-	if len(existedWorkflows) > 0 {
-		errStr := fmt.Sprintf("当前项目已存在工作流 [%s]", workflow.DisplayName)
-		return e.ErrUpsertWorkflow.AddDesc(errStr)
-	}
+	//existedWorkflows, _, _ := commonrepo.NewWorkflowV4Coll().List(&commonrepo.ListWorkflowV4Option{ProjectName: workflow.Project, DisplayName: workflow.DisplayName}, 0, 0)
+	//if len(existedWorkflows) > 0 {
+	//	errStr := fmt.Sprintf("当前项目已存在工作流 [%s]", workflow.DisplayName)
+	//	return e.ErrUpsertWorkflow.AddDesc(errStr)
+	//}
 	if err := LintWorkflowV4(workflow, logger); err != nil {
 		return err
+	}
+	// lark approval different node type need different approval definition
+	// check whether lark approvals in workflow need to create lark approval definition
+	if err := createLarkApprovalDefinition(workflow); err != nil {
+		return errors.Wrap(err, "create lark approval definition")
 	}
 
 	workflow.CreatedBy = user
@@ -65,13 +106,9 @@ func CreateWorkflowV4(user string, workflow *commonmodels.WorkflowV4, logger *za
 	workflow.CreateTime = time.Now().Unix()
 	workflow.UpdateTime = time.Now().Unix()
 
-	for _, stage := range workflow.Stages {
-		for _, job := range stage.Jobs {
-			if err := jobctl.Instantiate(job, workflow); err != nil {
-				logger.Errorf("Failed to instantiate workflow v4,error: %v", err)
-				return e.ErrUpsertWorkflow.AddErr(err)
-			}
-		}
+	if err := jobctl.InstantiateWorkflow(workflow); err != nil {
+		logger.Errorf("instantiate workflow error: %s", err)
+		return e.ErrUpsertWorkflow.AddErr(err)
 	}
 
 	if _, err := commonrepo.NewWorkflowV4Coll().Create(workflow); err != nil {
@@ -79,6 +116,132 @@ func CreateWorkflowV4(user string, workflow *commonmodels.WorkflowV4, logger *za
 		return e.ErrUpsertWorkflow.AddErr(err)
 	}
 	return nil
+}
+
+func SetWorkflowTasksCustomFields(projectName, workflowName string, args *models.CustomField, logger *zap.SugaredLogger) error {
+	err := commonrepo.NewWorkflowV4Coll().SetCustomFields(commonrepo.SetCustomFieldsOptions{
+		ProjectName:  projectName,
+		WorkflowName: workflowName,
+	}, args)
+	if err != nil {
+		logger.Errorf("Failed to set project: %s workflowV4: %s custom fields: %v, the error is: %s", projectName, workflowName, args, err)
+		return e.ErrUpsertWorkflow.AddErr(err)
+	}
+	return nil
+}
+
+func GetWorkflowTasksCustomFields(projectName, workflowName string, logger *zap.SugaredLogger) (*models.CustomField, error) {
+	workflow, err := commonrepo.NewWorkflowV4Coll().FindByOptions(commonrepo.WorkFlowOptions{
+		ProjectName:  projectName,
+		WorkflowName: workflowName,
+	})
+	if err != nil {
+		logger.Errorf("Failed to get project: %s workflowV4: %s infos, the error is: %s", projectName, workflowName, err)
+		return nil, e.ErrUpsertWorkflow.AddErr(err)
+	}
+
+	fields := workflow.CustomField
+	if fields == nil {
+		fields = &models.CustomField{
+			TaskID:                 1,
+			Status:                 1,
+			Duration:               1,
+			Executor:               1,
+			Remark:                 0,
+			BuildServiceComponent:  make(map[string]int),
+			BuildCodeMsg:           make(map[string]int),
+			DeployServiceComponent: make(map[string]int),
+			DeployEnv:              make(map[string]int),
+			TestResult:             make(map[string]int),
+		}
+	}
+
+	buildJobNames, err := commonrepo.NewWorkflowV4Coll().GetJobNameList(projectName, workflowName, string(config.JobZadigBuild))
+	if err != nil {
+		if err != mongo.ErrNoDocuments && err != mongo.ErrNilDocument {
+			return nil, err
+		}
+	}
+	if fields.BuildServiceComponent == nil {
+		fields.BuildServiceComponent = make(map[string]int)
+	}
+	for key := range fields.BuildServiceComponent {
+		if !utils.Contains(buildJobNames, key) {
+			delete(fields.BuildServiceComponent, key)
+		}
+	}
+
+	if fields.BuildCodeMsg == nil {
+		fields.BuildCodeMsg = make(map[string]int)
+	}
+	for key := range fields.BuildCodeMsg {
+		if !utils.Contains(buildJobNames, key) {
+			delete(fields.BuildCodeMsg, key)
+		}
+	}
+	for _, jobName := range buildJobNames {
+		if _, ok := fields.BuildServiceComponent[jobName]; !ok {
+			fields.BuildServiceComponent[jobName] = 0
+		}
+		if _, ok := fields.BuildCodeMsg[jobName]; !ok {
+			fields.BuildCodeMsg[jobName] = 0
+		}
+	}
+
+	deployJobNames, err := commonrepo.NewWorkflowV4Coll().GetJobNameList(projectName, workflowName, string(config.JobZadigDeploy))
+	if err != nil {
+		if err != mongo.ErrNoDocuments && err != mongo.ErrNilDocument {
+			return nil, err
+		}
+	}
+
+	if fields.DeployServiceComponent == nil {
+		fields.DeployServiceComponent = make(map[string]int)
+	}
+	for key := range fields.DeployServiceComponent {
+		if !utils.Contains(deployJobNames, key) {
+			delete(fields.DeployServiceComponent, key)
+		}
+	}
+
+	if fields.DeployEnv == nil {
+		fields.DeployEnv = make(map[string]int)
+	}
+	for key := range fields.DeployEnv {
+		if !utils.Contains(deployJobNames, key) {
+			delete(fields.DeployEnv, key)
+		}
+	}
+
+	for _, jobName := range deployJobNames {
+		if _, ok := fields.DeployServiceComponent[jobName]; !ok {
+			fields.DeployServiceComponent[jobName] = 0
+		}
+		if _, ok := fields.DeployEnv[jobName]; !ok {
+			fields.DeployEnv[jobName] = 0
+		}
+	}
+
+	testJobNames, err := commonrepo.NewWorkflowV4Coll().GetJobNameList(projectName, workflowName, string(config.JobZadigTesting))
+	if err != nil {
+		if err != mongo.ErrNoDocuments && err != mongo.ErrNilDocument {
+			return nil, err
+		}
+	}
+	if fields.TestResult == nil {
+		fields.TestResult = make(map[string]int)
+	}
+	for key := range fields.TestResult {
+		if !utils.Contains(testJobNames, key) {
+			delete(fields.TestResult, key)
+		}
+	}
+	for _, jobName := range testJobNames {
+		if _, ok := fields.TestResult[jobName]; !ok {
+			fields.TestResult[jobName] = 0
+		}
+	}
+	return fields, nil
 }
 
 func UpdateWorkflowV4(name, user string, inputWorkflow *commonmodels.WorkflowV4, logger *zap.SugaredLogger) error {
@@ -105,6 +268,7 @@ func UpdateWorkflowV4(name, user string, inputWorkflow *commonmodels.WorkflowV4,
 	inputWorkflow.JiraHookCtls = workflow.JiraHookCtls
 	inputWorkflow.GeneralHookCtls = workflow.GeneralHookCtls
 	inputWorkflow.MeegoHookCtls = workflow.MeegoHookCtls
+	inputWorkflow.CustomField = workflow.CustomField
 
 	for _, stage := range inputWorkflow.Stages {
 		for _, job := range stage.Jobs {
@@ -113,6 +277,11 @@ func UpdateWorkflowV4(name, user string, inputWorkflow *commonmodels.WorkflowV4,
 				return e.ErrUpsertWorkflow.AddErr(err)
 			}
 		}
+	}
+	// lark approval different node type need different approval definition
+	// check whether lark approvals in workflow need to create lark approval definition
+	if err := createLarkApprovalDefinition(inputWorkflow); err != nil {
+		return errors.Wrap(err, "create lark approval definition")
 	}
 
 	if err := commonrepo.NewWorkflowV4Coll().Update(
@@ -131,8 +300,22 @@ func FindWorkflowV4(encryptedKey, name string, logger *zap.SugaredLogger) (*comm
 		logger.Errorf("Failed to find WorkflowV4: %s, the error is: %v", name, err)
 		return workflow, e.ErrFindWorkflow.AddErr(err)
 	}
+	if err := jobctl.InstantiateWorkflow(workflow); err != nil {
+		logger.Errorf("instantiate workflow error: %s", err)
+		return workflow, e.ErrFindWorkflow.AddErr(err)
+	}
+
 	if err := ensureWorkflowV4Resp(encryptedKey, workflow, logger); err != nil {
 		return workflow, err
+	}
+	return workflow, err
+}
+
+func FindWorkflowV4Raw(name string, logger *zap.SugaredLogger) (*commonmodels.WorkflowV4, error) {
+	workflow, err := commonrepo.NewWorkflowV4Coll().Find(name)
+	if err != nil {
+		logger.Errorf("Failed to find WorkflowV4: %s, the error is: %v", name, err)
+		return workflow, e.ErrFindWorkflow.AddErr(err)
 	}
 	return workflow, err
 }
@@ -160,12 +343,12 @@ func DeleteWorkflowV4(name string, logger *zap.SugaredLogger) error {
 func ListWorkflowV4(projectName, viewName, userID string, names, v4Names []string, policyFound bool, logger *zap.SugaredLogger) ([]*Workflow, error) {
 	resp := make([]*Workflow, 0)
 	var err error
-	ignoreWorkflow := false
+	//ignoreWorkflow := false
 	ignoreWorkflowV4 := false
 	if viewName == "" {
-		if policyFound && len(names) == 0 {
-			ignoreWorkflow = true
-		}
+		//if policyFound && len(names) == 0 {
+		//	ignoreWorkflow = true
+		//}
 		if policyFound && len(v4Names) == 0 {
 			ignoreWorkflowV4 = true
 		}
@@ -175,9 +358,9 @@ func ListWorkflowV4(projectName, viewName, userID string, names, v4Names []strin
 			logger.Errorf("filterWorkflowNames error: %s", err)
 			return resp, err
 		}
-		if len(names) == 0 {
-			ignoreWorkflow = true
-		}
+		//if len(names) == 0 {
+		//	ignoreWorkflow = true
+		//}
 		if len(v4Names) == 0 {
 			ignoreWorkflowV4 = true
 		}
@@ -197,12 +380,12 @@ func ListWorkflowV4(projectName, viewName, userID string, names, v4Names []strin
 	workflow := []*Workflow{}
 
 	// distribute center only surpport custom workflow.
-	if !ignoreWorkflow && projectName != setting.EnterpriseProject {
-		workflow, err = ListWorkflows([]string{projectName}, userID, names, logger)
-		if err != nil {
-			return resp, err
-		}
-	}
+	//if !ignoreWorkflow && projectName != setting.EnterpriseProject {
+	//	workflow, err = ListWorkflows([]string{projectName}, userID, names, logger)
+	//	if err != nil {
+	//		return resp, err
+	//	}
+	//}
 
 	workflowList := []string{}
 	for _, wV4 := range workflowV4List {
@@ -213,18 +396,47 @@ func ListWorkflowV4(projectName, viewName, userID string, names, v4Names []strin
 	if err != nil {
 		return nil, err
 	}
-	tasks, _, err := commonrepo.NewworkflowTaskv4Coll().List(&commonrepo.ListWorkflowTaskV4Option{WorkflowNames: workflowList})
+
+	var (
+		wg    sync.WaitGroup
+		mu    sync.Mutex
+		tasks []*models.WorkflowTask
+	)
+	for _, name := range workflowList {
+		wg.Add(1)
+		go func(workflowName string) {
+			defer wg.Done()
+			resp, _, err2 := commonrepo.NewworkflowTaskv4Coll().List(&commonrepo.ListWorkflowTaskV4Option{
+				WorkflowName: workflowName,
+				Limit:        10,
+			})
+			if err2 != nil {
+				err = err2
+				return
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			tasks = append(tasks, resp...)
+		}(name)
+	}
+	wg.Wait()
 	if err != nil {
 		return resp, err
+	}
+
+	favorites, err := commonrepo.NewFavoriteColl().List(&commonrepo.FavoriteArgs{UserID: userID, Type: string(config.WorkflowTypeV4)})
+	if err != nil {
+		return resp, errors.Errorf("failed to get custom workflow favorite data, err: %v", err)
+	}
+	favoriteSet := sets.NewString()
+	for _, f := range favorites {
+		favoriteSet.Insert(f.Name)
 	}
 	workflowStatMap := getWorkflowStatMap(workflowList, config.WorkflowTypeV4)
 
 	for _, workflowModel := range workflowV4List {
 		stages := []string{}
 		for _, stage := range workflowModel.Stages {
-			if stage.Approval != nil && stage.Approval.Enabled {
-				stages = append(stages, "人工审批")
-			}
 			stages = append(stages, stage.Name)
 		}
 		var baseRefs []string
@@ -237,6 +449,7 @@ func ListWorkflowV4(projectName, viewName, userID string, names, v4Names []strin
 			Name:          workflowModel.Name,
 			DisplayName:   workflowModel.DisplayName,
 			ProjectName:   workflowModel.Project,
+			Disabled:      workflowModel.Disabled,
 			EnabledStages: stages,
 			CreateTime:    workflowModel.CreateTime,
 			UpdateTime:    workflowModel.UpdateTime,
@@ -249,12 +462,124 @@ func ListWorkflowV4(projectName, viewName, userID string, names, v4Names []strin
 		if workflowModel.Category == setting.ReleaseWorkflow {
 			workflow.WorkflowType = string(setting.ReleaseWorkflow)
 		}
+		if favoriteSet.Has(workflow.Name) {
+			workflow.IsFavorite = true
+		}
 		getRecentTaskV4Info(workflow, tasks)
 		setWorkflowStat(workflow, workflowStatMap)
 
 		resp = append(resp, workflow)
 	}
 	return resp, nil
+}
+
+type NameWithParams struct {
+	Name        string                `json:"name"`
+	DisplayName string                `json:"display_name"`
+	ProjectName string                `json:"project_name"`
+	Params      []*commonmodels.Param `json:"params"`
+}
+
+func ListWorkflowV4CanTrigger(ctx *internalhandler.Context) ([]*NameWithParams, error) {
+	var workflowList []*models.WorkflowV4
+	var err error
+
+	if ctx.Resources.IsSystemAdmin {
+		// if a user is system admin, we simply list all custom workflows
+		workflowList, _, err = commonrepo.NewWorkflowV4Coll().List(&commonrepo.ListWorkflowV4Option{}, 0, 0)
+		if err != nil {
+			ctx.Logger.Errorf("Failed to list all custom workflows from system, err: %s", err)
+			return nil, errors.Errorf("failed to list workflow v4, the error is: %s", err)
+		}
+	} else {
+		projects, _, projectFindErr := user.New().ListAuthorizedProjects(ctx.UserID)
+		if projectFindErr != nil {
+			ctx.Logger.Errorf("failed to list authorized project for normal user, err: %s", projectFindErr)
+			return nil, errors.New("failed to get allowed projects")
+		}
+
+		for _, authorizedProject := range projects {
+			// since it is in authorized project list, it either has a role in this project, or it is in a collaboration mode.
+			if projectAuthInfo, ok := ctx.Resources.ProjectAuthInfo[authorizedProject]; ok {
+				// if it has a project role, check it
+				if projectAuthInfo.IsProjectAdmin || projectAuthInfo.Workflow.View {
+					projectedWorkflowList, _, workflowFindErr := commonrepo.NewWorkflowV4Coll().List(&commonrepo.ListWorkflowV4Option{
+						ProjectName: authorizedProject,
+					}, 0, 0)
+					if workflowFindErr != nil {
+						ctx.Logger.Errorf("failed to find authorized workflows for project: %s, error is: %s", authorizedProject, workflowFindErr)
+						return nil, errors.New("failed to get allowed workflows")
+					}
+					workflowList = append(workflowList, projectedWorkflowList...)
+				} else {
+					// if it does not have any kind of authz from role, we check from collaboration mode anyway.
+					authorizedProjectedCustomWorkflow, findErr := getAuthorizedCustomWorkflowFromCollaborationMode(ctx, authorizedProject)
+					if findErr != nil {
+						ctx.Logger.Errorf("failed to find authorized workflows for project: %s, error is: %s", authorizedProject, findErr)
+						return nil, errors.New("failed to get allowed workflows")
+					}
+					workflowList = append(workflowList, authorizedProjectedCustomWorkflow...)
+				}
+			} else {
+				// otherwise simply check for collaboration mode will suffice
+				authorizedProjectedCustomWorkflow, findErr := getAuthorizedCustomWorkflowFromCollaborationMode(ctx, authorizedProject)
+				if findErr != nil {
+					ctx.Logger.Errorf("failed to find authorized workflows for project: %s, error is: %s", authorizedProject, findErr)
+					return nil, errors.New("failed to get allowed workflows")
+				}
+				workflowList = append(workflowList, authorizedProjectedCustomWorkflow...)
+			}
+
+		}
+	}
+
+	var result []*NameWithParams
+LOOP:
+	for _, workflowV4 := range workflowList {
+		for _, stage := range workflowV4.Stages {
+			for _, job := range stage.Jobs {
+				switch job.JobType {
+				case config.JobFreestyle, config.JobPlugin, config.JobWorkflowTrigger:
+				default:
+					continue LOOP
+				}
+			}
+		}
+		var paramList []*commonmodels.Param
+		for _, param := range workflowV4.Params {
+			if !strings.Contains(param.Value, setting.FixedValueMark) {
+				paramList = append(paramList, param)
+			}
+		}
+		result = append(result, &NameWithParams{
+			Name:        workflowV4.Name,
+			DisplayName: workflowV4.DisplayName,
+			ProjectName: workflowV4.Project,
+			Params:      paramList,
+		})
+	}
+	return result, nil
+}
+
+func getAuthorizedCustomWorkflowFromCollaborationMode(ctx *internalhandler.Context, projectKey string) ([]*models.WorkflowV4, error) {
+	_, authorizedCustomWorkflow, workflowFindErr := user.New().ListAuthorizedWorkflows(ctx.UserID, projectKey)
+	if workflowFindErr != nil {
+		ctx.Logger.Errorf("failed to find authorized workflows for project: %s, error is: %s", projectKey, workflowFindErr)
+		return nil, errors.New("failed to get allowed workflows")
+	}
+	if len(authorizedCustomWorkflow) > 0 {
+		// if there are authorized workflow, we get the details out of it
+		projectedWorkflowList, _, workflowFindErr := commonrepo.NewWorkflowV4Coll().List(&commonrepo.ListWorkflowV4Option{
+			ProjectName: projectKey,
+			Names:       authorizedCustomWorkflow,
+		}, 0, 0)
+		if workflowFindErr != nil {
+			ctx.Logger.Errorf("failed to find authorized workflows for project: %s, error is: %s", projectKey, workflowFindErr)
+			return nil, errors.New("failed to get allowed workflows")
+		}
+		return projectedWorkflowList, nil
+	}
+	return make([]*models.WorkflowV4, 0), nil
 }
 
 func filterWorkflowNamesByView(projectName, viewName string, workflowNames, workflowV4Names []string, policyFound bool) ([]string, []string, error) {
@@ -302,19 +627,33 @@ func getRecentTaskV4Info(workflow *Workflow, tasks []*commonmodels.WorkflowTask)
 	recentFailedTask := &commonmodels.WorkflowTask{}
 	recentSucceedTask := &commonmodels.WorkflowTask{}
 	workflow.NeverRun = true
+	var workflowList []*commonmodels.WorkflowTask
+	var recentTenTask []*commonmodels.WorkflowTask
 	for _, task := range tasks {
 		if task.WorkflowName != workflow.Name {
 			continue
 		}
+		workflowList = append(workflowList, task)
 		workflow.NeverRun = false
-		if task.TaskID > recentTask.TaskID {
+	}
+	sort.Slice(workflowList, func(i, j int) bool {
+		return workflowList[i].TaskID > workflowList[j].TaskID
+	})
+	for _, task := range workflowList {
+		if recentSucceedTask.TaskID != 0 && recentFailedTask.TaskID != 0 && len(recentTenTask) == 10 {
+			break
+		}
+		if recentTask.TaskID == 0 {
 			recentTask = task
 		}
-		if task.Status == config.StatusPassed && task.TaskID > recentSucceedTask.TaskID {
+		if task.Status == config.StatusPassed && recentSucceedTask.TaskID == 0 {
 			recentSucceedTask = task
 		}
-		if task.Status == config.StatusFailed && task.TaskID > recentFailedTask.TaskID {
+		if task.Status == config.StatusFailed && recentFailedTask.TaskID == 0 {
 			recentFailedTask = task
+		}
+		if len(recentTenTask) < 10 {
+			recentTenTask = append(recentTenTask, task)
 		}
 	}
 	if recentTask.TaskID > 0 {
@@ -324,6 +663,7 @@ func getRecentTaskV4Info(workflow *Workflow, tasks []*commonmodels.WorkflowTask)
 			Status:       string(recentTask.Status),
 			TaskCreator:  recentTask.TaskCreator,
 			CreateTime:   recentTask.CreateTime,
+			RunningTime:  util.CalcWorkflowTaskRunningTime(recentTask),
 		}
 	}
 	if recentSucceedTask.TaskID > 0 {
@@ -333,6 +673,7 @@ func getRecentTaskV4Info(workflow *Workflow, tasks []*commonmodels.WorkflowTask)
 			Status:       string(recentSucceedTask.Status),
 			TaskCreator:  recentSucceedTask.TaskCreator,
 			CreateTime:   recentSucceedTask.CreateTime,
+			RunningTime:  util.CalcWorkflowTaskRunningTime(recentSucceedTask),
 		}
 	}
 	if recentFailedTask.TaskID > 0 {
@@ -342,78 +683,254 @@ func getRecentTaskV4Info(workflow *Workflow, tasks []*commonmodels.WorkflowTask)
 			Status:       string(recentFailedTask.Status),
 			TaskCreator:  recentFailedTask.TaskCreator,
 			CreateTime:   recentFailedTask.CreateTime,
+			RunningTime:  util.CalcWorkflowTaskRunningTime(recentFailedTask),
+		}
+	}
+	if len(recentTenTask) > 0 {
+		for _, task := range recentTenTask {
+			workflow.RecentTasks = append(workflow.RecentTasks, &TaskInfo{
+				TaskID:      task.TaskID,
+				Status:      string(task.Status),
+				TaskCreator: task.TaskCreator,
+				CreateTime:  task.CreateTime,
+				StartTime:   task.StartTime,
+				EndTime:     task.EndTime,
+				RunningTime: util.CalcWorkflowTaskRunningTime(task),
+			})
 		}
 	}
 }
 
+func clearWorkflowV4Triggers(workflow *commonmodels.WorkflowV4) {
+	workflow.HookCtls = nil
+	workflow.MeegoHookCtls = nil
+	workflow.GeneralHookCtls = nil
+	workflow.JiraHookCtls = nil
+}
+
 func ensureWorkflowV4Resp(encryptedKey string, workflow *commonmodels.WorkflowV4, logger *zap.SugaredLogger) error {
+	var buildMap sync.Map
+	var buildTemplateMap sync.Map
 	for _, stage := range workflow.Stages {
 		for _, job := range stage.Jobs {
-			if job.JobType == config.JobZadigBuild {
-				spec := &commonmodels.ZadigBuildJobSpec{}
-				if err := commonmodels.IToi(job.Spec, spec); err != nil {
-					logger.Errorf(err.Error())
-					return e.ErrFindWorkflow.AddErr(err)
-				}
-				for _, build := range spec.ServiceAndBuilds {
-					buildInfo, err := commonrepo.NewBuildColl().Find(&commonrepo.BuildFindOption{Name: build.BuildName})
-					if err != nil {
-						logger.Errorf("find build: %s error: %s", build.BuildName, err)
-						continue
-					}
-					kvs := buildInfo.PreBuild.Envs
-					if buildInfo.TemplateID != "" {
-						templateEnvs := []*commonmodels.KeyVal{}
-						buildTemplate, err := commonrepo.NewBuildTemplateColl().Find(&commonrepo.BuildTemplateQueryOption{
-							ID: buildInfo.TemplateID,
-						})
-						// if template not found, envs are empty, but do not block user.
-						if err != nil {
-							logger.Error("build job: %s, template not found", buildInfo.Name)
-						} else {
-							templateEnvs = buildTemplate.PreBuild.Envs
-						}
+			err := ensureWorkflowV4JobResp(job, logger, &buildMap, &buildTemplateMap, encryptedKey, workflow.Project)
+			if err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
 
-						for _, target := range buildInfo.Targets {
-							if target.ServiceName == build.ServiceName && target.ServiceModule == build.ServiceModule {
-								kvs = target.Envs
-							}
-						}
-						// if build template update any keyvals, merge it.
-						kvs = commonservice.MergeBuildEnvs(templateEnvs, kvs)
+func ensureWorkflowV4StageResp(encryptedKey, projectName string, workflowStage *commonmodels.WorkflowStage, logger *zap.SugaredLogger) error {
+	var buildMap sync.Map
+	var buildTemplateMap sync.Map
+	for _, job := range workflowStage.Jobs {
+		err := ensureWorkflowV4JobResp(job, logger, &buildMap, &buildTemplateMap, encryptedKey, projectName)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func ensureWorkflowV4JobResp(job *commonmodels.Job, logger *zap.SugaredLogger, buildMap *sync.Map, buildTemplateMap *sync.Map, encryptedKey, workflowProjectName string) error {
+	if job.JobType == config.JobZadigBuild {
+		spec := &commonmodels.ZadigBuildJobSpec{}
+		if err := commonmodels.IToi(job.Spec, spec); err != nil {
+			logger.Errorf(err.Error())
+			return e.ErrFindWorkflow.AddErr(err)
+		}
+		for _, build := range spec.ServiceAndBuilds {
+			var buildInfo *commonmodels.Build
+			var err error
+			buildMapValue, ok := buildMap.Load(build.BuildName)
+			if !ok {
+				buildInfo, err = commonrepo.NewBuildColl().Find(&commonrepo.BuildFindOption{Name: build.BuildName})
+				if err != nil {
+					logger.Errorf("find build: %s error: %v", build.BuildName, err)
+					buildMap.Store(build.BuildName, nil)
+					continue
+				}
+				buildMap.Store(build.BuildName, buildInfo)
+			} else {
+				if buildMapValue == nil {
+					logger.Errorf("find build: %s error: %v", build.BuildName, err)
+					continue
+				}
+				buildInfo = buildMapValue.(*commonmodels.Build)
+			}
+
+			kvs := buildInfo.PreBuild.Envs
+			if buildInfo.TemplateID != "" {
+				templateEnvs := []*commonmodels.KeyVal{}
+
+				// if template not found, envs are empty, but do not block user.
+				var buildTemplate *commonmodels.BuildTemplate
+				buildTemplateMapValue, ok := buildTemplateMap.Load(buildInfo.TemplateID)
+				if !ok {
+					buildTemplate, err = commonrepo.NewBuildTemplateColl().Find(&commonrepo.BuildTemplateQueryOption{
+						ID: buildInfo.TemplateID,
+					})
+					if err != nil {
+						logger.Errorf("failed to find build template with id: %s, err: %s", buildInfo.TemplateID, err)
+						buildTemplateMap.Store(buildInfo.TemplateID, nil)
+					} else {
+						templateEnvs = buildTemplate.PreBuild.Envs
+						buildTemplateMap.Store(buildInfo.TemplateID, buildTemplate)
 					}
-					build.KeyVals = commonservice.MergeBuildEnvs(kvs, build.KeyVals)
-					if err := commonservice.EncryptKeyVals(encryptedKey, build.KeyVals, logger); err != nil {
-						logger.Errorf(err.Error())
-						return e.ErrFindWorkflow.AddErr(err)
+				} else {
+					if buildTemplateMapValue == nil {
+						logger.Errorf("failed to find build template with id: %s, err: %s", buildInfo.TemplateID, err)
+					} else {
+						buildTemplate = buildTemplateMapValue.(*commonmodels.BuildTemplate)
+						templateEnvs = buildTemplate.PreBuild.Envs
 					}
 				}
-				job.Spec = spec
+
+				for _, target := range buildInfo.Targets {
+					if target.ServiceName == build.ServiceName && target.ServiceModule == build.ServiceModule {
+						kvs = target.Envs
+					}
+				}
+
+				// if build template update any keyvals, merge it.
+				kvs = commonservice.MergeBuildEnvs(templateEnvs, kvs)
 			}
-			if job.JobType == config.JobFreestyle {
-				spec := &commonmodels.FreestyleJobSpec{}
-				if err := commonmodels.IToi(job.Spec, spec); err != nil {
-					logger.Errorf(err.Error())
-					return e.ErrFindWorkflow.AddErr(err)
-				}
-				if err := commonservice.EncryptKeyVals(encryptedKey, spec.Properties.Envs, logger); err != nil {
-					logger.Errorf(err.Error())
-					return e.ErrFindWorkflow.AddErr(err)
-				}
-				job.Spec = spec
+			build.KeyVals = commonservice.MergeBuildEnvs(kvs, build.KeyVals)
+			if err := commonservice.EncryptKeyVals(encryptedKey, build.KeyVals, logger); err != nil {
+				logger.Errorf(err.Error())
+				return e.ErrFindWorkflow.AddErr(err)
 			}
-			if job.JobType == config.JobPlugin {
-				spec := &commonmodels.PluginJobSpec{}
-				if err := commonmodels.IToi(job.Spec, spec); err != nil {
-					logger.Errorf(err.Error())
-					return e.ErrFindWorkflow.AddErr(err)
-				}
-				if err := commonservice.EncryptParams(encryptedKey, spec.Plugin.Inputs, logger); err != nil {
-					logger.Errorf(err.Error())
-					return e.ErrFindWorkflow.AddErr(err)
-				}
-				job.Spec = spec
+		}
+		job.Spec = spec
+	}
+	if job.JobType == config.JobZadigScanning {
+		spec := &commonmodels.ZadigScanningJobSpec{}
+		if err := commonmodels.IToi(job.Spec, spec); err != nil {
+			logger.Errorf(err.Error())
+			return e.ErrFindWorkflow.AddErr(err)
+		}
+
+		for _, scanning := range spec.Scannings {
+			projectName := scanning.ProjectName
+			if projectName == "" {
+				projectName = workflowProjectName
 			}
+			scanningInfo, err := commonrepo.NewScanningColl().Find(projectName, scanning.Name)
+			if err != nil {
+				logger.Errorf(err.Error())
+				return e.ErrFindWorkflow.AddErr(err)
+			}
+
+			if scanningInfo.TemplateID != "" {
+				templateEnvs := []*commonmodels.KeyVal{}
+				scanningTemplate, err := commonrepo.NewScanningTemplateColl().Find(&commonrepo.ScanningTemplateQueryOption{
+					ID: scanningInfo.TemplateID,
+				})
+
+				// if template not found, envs are empty, but do not block user.
+				if err != nil {
+					logger.Error("scanning job: %s, template not found", scanningInfo.Name)
+				} else {
+					templateEnvs = scanningTemplate.Envs
+				}
+
+				kvs := commonservice.MergeBuildEnvs(templateEnvs, scanningInfo.Envs)
+
+				// if build template update any keyvals, merge it.
+				scanning.KeyVals = commonservice.MergeBuildEnvs(kvs, scanning.KeyVals)
+			} else {
+				// otherwise just merge the envs in the
+				scanning.KeyVals = commonservice.MergeBuildEnvs(scanningInfo.Envs, scanning.KeyVals)
+			}
+		}
+		job.Spec = spec
+	}
+	if job.JobType == config.JobWorkflowTrigger {
+		spec := &commonmodels.WorkflowTriggerJobSpec{}
+		if err := commonmodels.IToi(job.Spec, spec); err != nil {
+			logger.Errorf(err.Error())
+			return e.ErrFindWorkflow.AddErr(err)
+		}
+		for _, info := range spec.ServiceTriggerWorkflow {
+			workflow, err := commonrepo.NewWorkflowV4Coll().Find(info.WorkflowName)
+			if err != nil {
+				logger.Errorf(err.Error())
+				continue
+			}
+			var paramList []*commonmodels.Param
+			for _, param := range workflow.Params {
+				if !strings.Contains(param.Value, setting.FixedValueMark) {
+					param.Source = config.ParamSourceRuntime
+					paramList = append(paramList, param)
+				}
+			}
+			info.Params = commonservice.MergeParams(paramList, info.Params)
+		}
+		for _, info := range spec.FixedWorkflowList {
+			workflow, err := commonrepo.NewWorkflowV4Coll().Find(info.WorkflowName)
+			if err != nil {
+				logger.Errorf(err.Error())
+				continue
+			}
+			var paramList []*commonmodels.Param
+			for _, param := range workflow.Params {
+				if !strings.Contains(param.Value, setting.FixedValueMark) {
+					param.Source = config.ParamSourceRuntime
+					paramList = append(paramList, param)
+				}
+			}
+			info.Params = commonservice.MergeParams(paramList, info.Params)
+		}
+		job.Spec = spec
+	}
+	if job.JobType == config.JobFreestyle {
+		spec := &commonmodels.FreestyleJobSpec{}
+		if err := commonmodels.IToi(job.Spec, spec); err != nil {
+			logger.Errorf(err.Error())
+			return e.ErrFindWorkflow.AddErr(err)
+		}
+		if err := commonservice.EncryptKeyVals(encryptedKey, spec.Properties.Envs, logger); err != nil {
+			logger.Errorf(err.Error())
+			return e.ErrFindWorkflow.AddErr(err)
+		}
+		job.Spec = spec
+	}
+	if job.JobType == config.JobPlugin {
+		spec := &commonmodels.PluginJobSpec{}
+		if err := commonmodels.IToi(job.Spec, spec); err != nil {
+			logger.Errorf(err.Error())
+			return e.ErrFindWorkflow.AddErr(err)
+		}
+		if err := commonservice.EncryptParams(encryptedKey, spec.Plugin.Inputs, logger); err != nil {
+			logger.Errorf(err.Error())
+			return e.ErrFindWorkflow.AddErr(err)
+		}
+		job.Spec = spec
+	}
+	if job.JobType == config.JobZadigTesting {
+		spec := &commonmodels.ZadigTestingJobSpec{}
+		if err := commonmodels.IToi(job.Spec, spec); err != nil {
+			logger.Errorf(err.Error())
+			return e.ErrFindWorkflow.AddErr(err)
+		}
+		job.Spec = spec
+		for _, testing := range spec.ServiceAndTests {
+			testingInfo, err := commonrepo.NewTestingColl().Find(testing.Name, "")
+			if err != nil {
+				logger.Errorf("find testing: %s error: %s", testing.Name, err)
+				continue
+			}
+			testing.KeyVals = commonservice.MergeBuildEnvs(testingInfo.PreTest.Envs, testing.KeyVals)
+		}
+		for _, testing := range spec.TestModules {
+			testingInfo, err := commonrepo.NewTestingColl().Find(testing.Name, "")
+			if err != nil {
+				logger.Errorf("find testing: %s error: %s", testing.Name, err)
+				continue
+			}
+			testing.KeyVals = commonservice.MergeBuildEnvs(testingInfo.PreTest.Envs, testing.KeyVals)
 		}
 	}
 	return nil
@@ -431,7 +948,7 @@ func LintWorkflowV4(workflow *commonmodels.WorkflowV4, logger *zap.SugaredLogger
 		return e.ErrUpsertWorkflow.AddErr(err)
 	}
 	if !match {
-		errMsg := "工作流标识支持小写字母、数字和中划线"
+		errMsg := "工作流标识支持大小写字母、数字和中划线"
 		logger.Error(errMsg)
 		return e.ErrUpsertWorkflow.AddDesc(errMsg)
 	}
@@ -443,6 +960,16 @@ func LintWorkflowV4(workflow *commonmodels.WorkflowV4, logger *zap.SugaredLogger
 		if err != nil {
 			logger.Errorf("Failed to get project %s, error: %v", workflow.Project, err)
 			return e.ErrUpsertWorkflow.AddErr(err)
+		}
+	}
+
+	licenseStatus, err := plutusvendor.New().CheckZadigXLicenseStatus()
+	if err != nil {
+		return fmt.Errorf("failed to validate zadig license status, error: %s", err)
+	}
+	if !commonutil.ValidateZadigProfessionalLicense(licenseStatus) {
+		if workflow.ConcurrencyLimit != -1 && workflow.ConcurrencyLimit != 1 {
+			return e.ErrLicenseInvalid.AddDesc("基础版工作流并发只支持开关，不支持数量")
 		}
 	}
 
@@ -461,10 +988,12 @@ func LintWorkflowV4(workflow *commonmodels.WorkflowV4, logger *zap.SugaredLogger
 		return e.ErrUpsertWorkflow.AddErr(err)
 	}
 	for _, stage := range workflow.Stages {
-		if err := lintApprovals(stage.Approval); err != nil {
-			logger.Errorf("stage: %s approval info error: %v", stage.Name, err)
-			return e.ErrUpsertWorkflow.AddDesc(fmt.Sprintf("stage: %s approval info error: %v", stage.Name, err))
+		if !commonutil.ValidateZadigProfessionalLicense(licenseStatus) {
+			if stage.ManualExec != nil && stage.ManualExec.Enabled {
+				return e.ErrLicenseInvalid.AddDesc("基础版不支持工作流手动执行")
+			}
 		}
+
 		if _, ok := stageNameMap[stage.Name]; !ok {
 			stageNameMap[stage.Name] = true
 		} else {
@@ -491,36 +1020,83 @@ func LintWorkflowV4(workflow *commonmodels.WorkflowV4, logger *zap.SugaredLogger
 	return nil
 }
 
-func lintApprovals(approval *commonmodels.Approval) error {
-	if approval == nil {
-		return nil
-	}
-	if !approval.Enabled {
-		return nil
-	}
-	switch approval.Type {
-	case config.NativeApproval:
-		if approval.NativeApproval == nil {
-			return errors.New("approval not found")
-		}
-		if len(approval.NativeApproval.ApproveUsers) < approval.NativeApproval.NeededApprovers {
-			return errors.New("all approve users should not less than needed approvers")
-		}
-	case config.LarkApproval:
-		if approval.LarkApproval == nil {
-			return errors.New("approval not found")
-		}
-		if len(approval.LarkApproval.ApproveUsers) == 0 {
-			return errors.New("num of approver is 0")
-		}
-	default:
-		return errors.New("invalid approval type")
-	}
+func createLarkApprovalDefinition(workflow *commonmodels.WorkflowV4) error {
+	for _, stage := range workflow.Stages {
+		for _, job := range stage.Jobs {
+			if job.JobType == config.JobApproval {
+				spec := new(commonmodels.ApprovalJobSpec)
+				err := commonmodels.IToi(job.Spec, spec)
+				if err != nil {
+					return fmt.Errorf("failed to decode job: %s, error: %s", job.Name, err)
+				}
 
+				if data := spec.LarkApproval; data != nil && data.ID != "" {
+					larkInfo, err := commonrepo.NewIMAppColl().GetByID(context.Background(), data.ID)
+					if err != nil {
+						return errors.Wrapf(err, "get lark app %s", data.ID)
+					}
+					if larkInfo.Type != string(config.LarkApproval) {
+						return errors.Errorf("lark app %s is not lark approval", data.ID)
+					}
+
+					if larkInfo.LarkApprovalCodeList == nil {
+						larkInfo.LarkApprovalCodeList = make(map[string]string)
+					}
+					// skip if this node type approval definition already created
+					if approvalNodeTypeID := larkInfo.LarkApprovalCodeList[data.GetNodeTypeKey()]; approvalNodeTypeID != "" {
+						log.Infof("lark approval definition %s already created", approvalNodeTypeID)
+						continue
+					}
+
+					// create this node type approval definition and save to db
+					client, err := larkservice.GetLarkClientByIMAppID(data.ID)
+					if err != nil {
+						return errors.Wrapf(err, "get lark client by im app id %s", data.ID)
+					}
+					nodesArgs := make([]*lark.ApprovalNode, 0)
+					for _, node := range data.ApprovalNodes {
+						nodesArgs = append(nodesArgs, &lark.ApprovalNode{
+							Type: node.Type,
+							ApproverIDList: func() (re []string) {
+								for _, user := range node.ApproveUsers {
+									re = append(re, user.ID)
+								}
+								return
+							}(),
+						})
+					}
+
+					approvalCode, err := client.CreateApprovalDefinition(&lark.CreateApprovalDefinitionArgs{
+						Name:        "Zadig 工作流",
+						Description: "Zadig 工作流-" + data.GetNodeTypeKey(),
+						Nodes:       nodesArgs,
+					})
+					if err != nil {
+						return errors.Wrap(err, "create lark approval definition")
+					}
+					err = client.SubscribeApprovalDefinition(&lark.SubscribeApprovalDefinitionArgs{
+						ApprovalID: approvalCode,
+					})
+					if err != nil {
+						return errors.Wrap(err, "subscribe lark approval definition")
+					}
+					larkInfo.LarkApprovalCodeList[data.GetNodeTypeKey()] = approvalCode
+					if err := commonrepo.NewIMAppColl().Update(context.Background(), data.ID, larkInfo); err != nil {
+						return errors.Wrap(err, "update lark approval data")
+					}
+					log.Infof("create lark approval definition %s, key: %s", approvalCode, data.GetNodeTypeKey())
+				}
+			}
+		}
+	}
 	return nil
 }
-
 func CreateWebhookForWorkflowV4(workflowName string, input *commonmodels.WorkflowV4Hook, logger *zap.SugaredLogger) error {
+	if err := jobctl.InstantiateWorkflow(input.WorkflowArg); err != nil {
+		logger.Errorf("instantiate hook args error: %s", err)
+		return e.ErrCreateWebhook.AddErr(err)
+	}
+
 	workflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName)
 	if err != nil {
 		logger.Errorf("Failed to find WorkflowV4: %s, the error is: %v", workflowName, err)
@@ -549,13 +1125,20 @@ func CreateWebhookForWorkflowV4(workflowName string, input *commonmodels.Workflo
 		log.Error(errMsg)
 		return e.ErrCreateWebhook.AddDesc(errMsg)
 	}
-	if err := createGerritWebhook(input.MainRepo, workflowName); err != nil {
-		logger.Errorf("create gerrit webhook failed: %v", err)
+	if !input.IsManual {
+		if err := createGerritWebhook(input.MainRepo, workflowName); err != nil {
+			logger.Errorf("create gerrit webhook failed: %v", err)
+		}
 	}
 	return nil
 }
 
 func UpdateWebhookForWorkflowV4(workflowName string, input *commonmodels.WorkflowV4Hook, logger *zap.SugaredLogger) error {
+	if err := jobctl.InstantiateWorkflow(input.WorkflowArg); err != nil {
+		logger.Errorf("instantiate hook args error: %s", err)
+		return e.ErrUpdateWebhook.AddErr(err)
+	}
+
 	workflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName)
 	if err != nil {
 		logger.Errorf("Failed to find WorkflowV4: %s, the error is: %v", workflowName, err)
@@ -593,11 +1176,15 @@ func UpdateWebhookForWorkflowV4(workflowName string, input *commonmodels.Workflo
 		return e.ErrUpdateWebhook.AddDesc(errMsg)
 	}
 
-	if err := deleteGerritWebhook(existHook.MainRepo, workflowName); err != nil {
-		logger.Errorf("delete gerrit webhook failed: %v", err)
+	if !existHook.IsManual {
+		if err := deleteGerritWebhook(existHook.MainRepo, workflowName); err != nil {
+			logger.Errorf("delete gerrit webhook failed: %v", err)
+		}
 	}
-	if err := createGerritWebhook(input.MainRepo, workflowName); err != nil {
-		logger.Errorf("create gerrit webhook failed: %v", err)
+	if !input.IsManual {
+		if err := createGerritWebhook(input.MainRepo, workflowName); err != nil {
+			logger.Errorf("create gerrit webhook failed: %v", err)
+		}
 	}
 	return nil
 }
@@ -626,17 +1213,54 @@ func GetWebhookForWorkflowV4Preset(workflowName, triggerName string, logger *zap
 			break
 		}
 	}
-	if err := job.MergeArgs(workflow, workflowArg); err != nil {
-		errMsg := fmt.Sprintf("merge workflow args error: %v", err)
-		log.Error(errMsg)
-		return nil, e.ErrGetWebhook.AddDesc(errMsg)
-	}
 	repos, err := job.GetRepos(workflow)
 	if err != nil {
 		errMsg := fmt.Sprintf("get workflow webhook repos error: %v", err)
 		log.Error(errMsg)
 		return nil, e.ErrGetWebhook.AddDesc(errMsg)
 	}
+	if err := job.MergeArgs(workflow, workflowArg); err != nil {
+		errMsg := fmt.Sprintf("merge workflow args error: %v", err)
+		log.Error(errMsg)
+		return nil, e.ErrGetWebhook.AddDesc(errMsg)
+	}
+
+	for _, stage := range workflow.Stages {
+		for _, item := range stage.Jobs {
+			err := job.SetOptions(item, workflow)
+			if err != nil {
+				errMsg := fmt.Sprintf("merge workflow args set options error: %v", err)
+				log.Error(errMsg)
+				return nil, e.ErrGetWebhook.AddDesc(errMsg)
+			}
+
+			if triggerName == "" {
+				// for some job we need to clear its selection field
+				if item.JobType == config.JobZadigBuild ||
+					item.JobType == config.JobIstioRelease ||
+					item.JobType == config.JobIstioRollback ||
+					item.JobType == config.JobZadigHelmChartDeploy ||
+					item.JobType == config.JobK8sBlueGreenDeploy ||
+					item.JobType == config.JobApollo ||
+					item.JobType == config.JobK8sCanaryDeploy ||
+					item.JobType == config.JobK8sGrayRelease {
+					if err := jobctl.ClearSelectionField(item, workflow); err != nil {
+						log.Errorf("cannot clear workflow %s selection for job %s, the error is: %v", workflowName, item.Name, err)
+						return nil, e.ErrPresetWorkflow.AddDesc(err.Error())
+					}
+				}
+			}
+
+			// additionally we need to update the user-defined args with the latest workflow configuration
+			err = job.UpdateWithLatestSetting(item, workflow)
+			if err != nil {
+				errMsg := fmt.Sprintf("failed to merge user-defined workflow args with latest workflow configuration, error: %s", err)
+				log.Error(errMsg)
+				return nil, fmt.Errorf(errMsg)
+			}
+		}
+	}
+
 	workflowHook.Repos = repos
 	workflowHook.WorkflowArg = workflow
 	workflowHook.WorkflowArg.JiraHookCtls = nil
@@ -685,6 +1309,11 @@ func DeleteWebhookForWorkflowV4(workflowName, triggerName string, logger *zap.Su
 }
 
 func CreateGeneralHookForWorkflowV4(workflowName string, arg *models.GeneralHook, logger *zap.SugaredLogger) error {
+	if err := jobctl.InstantiateWorkflow(arg.WorkflowArg); err != nil {
+		logger.Errorf("instantiate hook args error: %s", err)
+		return e.ErrCreateGeneralHook.AddErr(err)
+	}
+
 	workflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName)
 	if err != nil {
 		logger.Errorf("Failed to find WorkflowV4: %s, the error is: %v", workflowName, err)
@@ -727,6 +1356,43 @@ func GetGeneralHookForWorkflowV4Preset(workflowName, hookName string, logger *za
 		log.Error(errMsg)
 		return nil, e.ErrGetGeneralHook.AddDesc(errMsg)
 	}
+
+	for _, stage := range workflow.Stages {
+		for _, item := range stage.Jobs {
+			err := job.SetOptions(item, workflow)
+			if err != nil {
+				errMsg := fmt.Sprintf("merge workflow args set options error: %v", err)
+				log.Error(errMsg)
+				return nil, e.ErrGetWebhook.AddDesc(errMsg)
+			}
+
+			if hookName == "" {
+				// for some job we need to clear its selection field
+				if item.JobType == config.JobZadigBuild ||
+					item.JobType == config.JobIstioRelease ||
+					item.JobType == config.JobIstioRollback ||
+					item.JobType == config.JobZadigHelmChartDeploy ||
+					item.JobType == config.JobK8sBlueGreenDeploy ||
+					item.JobType == config.JobApollo ||
+					item.JobType == config.JobK8sCanaryDeploy ||
+					item.JobType == config.JobK8sGrayRelease {
+					if err := jobctl.ClearSelectionField(item, workflow); err != nil {
+						log.Errorf("cannot clear workflow %s selection for job %s, the error is: %v", workflowName, item.Name, err)
+						return nil, e.ErrPresetWorkflow.AddDesc(err.Error())
+					}
+				}
+			}
+
+			// additionally we need to update the user-defined args with the latest workflow configuration
+			err = job.UpdateWithLatestSetting(item, workflow)
+			if err != nil {
+				errMsg := fmt.Sprintf("failed to merge user-defined workflow args with latest workflow configuration, error: %s", err)
+				log.Error(errMsg)
+				return nil, fmt.Errorf(errMsg)
+			}
+		}
+	}
+
 	gHook.WorkflowArg = workflow
 	gHook.WorkflowArg.JiraHookCtls = nil
 	gHook.WorkflowArg.MeegoHookCtls = nil
@@ -745,6 +1411,11 @@ func ListGeneralHookForWorkflowV4(workflowName string, logger *zap.SugaredLogger
 }
 
 func UpdateGeneralHookForWorkflowV4(workflowName string, arg *models.GeneralHook, logger *zap.SugaredLogger) error {
+	if err := jobctl.InstantiateWorkflow(arg.WorkflowArg); err != nil {
+		logger.Errorf("instantiate hook args error: %s", err)
+		return e.ErrUpdateGeneralHook.AddErr(err)
+	}
+
 	workflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName)
 	if err != nil {
 		logger.Errorf("Failed to find WorkflowV4: %s, the error is: %v", workflowName, err)
@@ -821,7 +1492,7 @@ func GeneralHookEventHandler(workflowName, hookName string, logger *zap.SugaredL
 		logger.Error(errMsg)
 		return errors.New(errMsg)
 	}
-	_, err = CreateWorkflowTaskV4ByBuildInTrigger(setting.JiraHookTaskCreator, generalHook.WorkflowArg, logger)
+	_, err = CreateWorkflowTaskV4ByBuildInTrigger(setting.GeneralHookTaskCreator, generalHook.WorkflowArg, logger)
 	if err != nil {
 		errMsg := fmt.Sprintf("HandleGeneralHookEvent: failed to create workflow task: %s", err)
 		logger.Error(errMsg)
@@ -832,6 +1503,11 @@ func GeneralHookEventHandler(workflowName, hookName string, logger *zap.SugaredL
 }
 
 func CreateJiraHookForWorkflowV4(workflowName string, arg *models.JiraHook, logger *zap.SugaredLogger) error {
+	if err := jobctl.InstantiateWorkflow(arg.WorkflowArg); err != nil {
+		logger.Errorf("instantiate hook args error: %s", err)
+		return e.ErrCreateJiraHook.AddErr(err)
+	}
+
 	workflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName)
 	if err != nil {
 		logger.Errorf("Failed to find WorkflowV4: %s, the error is: %v", workflowName, err)
@@ -874,6 +1550,43 @@ func GetJiraHookForWorkflowV4Preset(workflowName, hookName string, logger *zap.S
 		log.Error(errMsg)
 		return nil, e.ErrGetJiraHook.AddDesc(errMsg)
 	}
+
+	for _, stage := range workflow.Stages {
+		for _, item := range stage.Jobs {
+			err := job.SetOptions(item, workflow)
+			if err != nil {
+				errMsg := fmt.Sprintf("merge workflow args set options error: %v", err)
+				log.Error(errMsg)
+				return nil, e.ErrGetWebhook.AddDesc(errMsg)
+			}
+
+			if hookName == "" {
+				// for some job we need to clear its selection field
+				if item.JobType == config.JobZadigBuild ||
+					item.JobType == config.JobIstioRelease ||
+					item.JobType == config.JobIstioRollback ||
+					item.JobType == config.JobZadigHelmChartDeploy ||
+					item.JobType == config.JobK8sBlueGreenDeploy ||
+					item.JobType == config.JobApollo ||
+					item.JobType == config.JobK8sCanaryDeploy ||
+					item.JobType == config.JobK8sGrayRelease {
+					if err := jobctl.ClearSelectionField(item, workflow); err != nil {
+						log.Errorf("cannot clear workflow %s selection for job %s, the error is: %v", workflowName, item.Name, err)
+						return nil, e.ErrPresetWorkflow.AddDesc(err.Error())
+					}
+				}
+			}
+
+			// additionally we need to update the user-defined args with the latest workflow configuration
+			err = job.UpdateWithLatestSetting(item, workflow)
+			if err != nil {
+				errMsg := fmt.Sprintf("failed to merge user-defined workflow args with latest workflow configuration, error: %s", err)
+				log.Error(errMsg)
+				return nil, fmt.Errorf(errMsg)
+			}
+		}
+	}
+
 	jiraHook.WorkflowArg = workflow
 	jiraHook.WorkflowArg.JiraHookCtls = nil
 	jiraHook.WorkflowArg.MeegoHookCtls = nil
@@ -892,6 +1605,11 @@ func ListJiraHookForWorkflowV4(workflowName string, logger *zap.SugaredLogger) (
 }
 
 func UpdateJiraHookForWorkflowV4(workflowName string, arg *models.JiraHook, logger *zap.SugaredLogger) error {
+	if err := jobctl.InstantiateWorkflow(arg.WorkflowArg); err != nil {
+		logger.Errorf("instantiate hook args error: %s", err)
+		return e.ErrUpdateJiraHook.AddErr(err)
+	}
+
 	workflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName)
 	if err != nil {
 		logger.Errorf("Failed to find WorkflowV4: %s, the error is: %v", workflowName, err)
@@ -945,6 +1663,11 @@ func DeleteJiraHookForWorkflowV4(workflowName, hookName string, logger *zap.Suga
 }
 
 func CreateMeegoHookForWorkflowV4(workflowName string, arg *models.MeegoHook, logger *zap.SugaredLogger) error {
+	if err := jobctl.InstantiateWorkflow(arg.WorkflowArg); err != nil {
+		logger.Errorf("instantiate hook args error: %s", err)
+		return e.ErrCreateMeegoHook.AddErr(err)
+	}
+
 	workflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName)
 	if err != nil {
 		logger.Errorf("Failed to find WorkflowV4: %s, the error is: %v", workflowName, err)
@@ -987,6 +1710,43 @@ func GetMeegoHookForWorkflowV4Preset(workflowName, hookName string, logger *zap.
 		log.Error(errMsg)
 		return nil, e.ErrGetMeegoHook.AddDesc(errMsg)
 	}
+
+	for _, stage := range workflow.Stages {
+		for _, item := range stage.Jobs {
+			err := job.SetOptions(item, workflow)
+			if err != nil {
+				errMsg := fmt.Sprintf("merge workflow args set options error: %v", err)
+				log.Error(errMsg)
+				return nil, e.ErrGetWebhook.AddDesc(errMsg)
+			}
+
+			if hookName == "" {
+				// for some job we need to clear its selection field
+				if item.JobType == config.JobZadigBuild ||
+					item.JobType == config.JobIstioRelease ||
+					item.JobType == config.JobIstioRollback ||
+					item.JobType == config.JobZadigHelmChartDeploy ||
+					item.JobType == config.JobK8sBlueGreenDeploy ||
+					item.JobType == config.JobApollo ||
+					item.JobType == config.JobK8sCanaryDeploy ||
+					item.JobType == config.JobK8sGrayRelease {
+					if err := jobctl.ClearSelectionField(item, workflow); err != nil {
+						log.Errorf("cannot clear workflow %s selection for job %s, the error is: %v", workflowName, item.Name, err)
+						return nil, e.ErrPresetWorkflow.AddDesc(err.Error())
+					}
+				}
+			}
+
+			// additionally we need to update the user-defined args with the latest workflow configuration
+			err = job.UpdateWithLatestSetting(item, workflow)
+			if err != nil {
+				errMsg := fmt.Sprintf("failed to merge user-defined workflow args with latest workflow configuration, error: %s", err)
+				log.Error(errMsg)
+				return nil, fmt.Errorf(errMsg)
+			}
+		}
+	}
+
 	meegoHook.WorkflowArg = workflow
 	meegoHook.WorkflowArg.JiraHookCtls = nil
 	meegoHook.WorkflowArg.MeegoHookCtls = nil
@@ -1005,6 +1765,11 @@ func ListMeegoHookForWorkflowV4(workflowName string, logger *zap.SugaredLogger) 
 }
 
 func UpdateMeegoHookForWorkflowV4(workflowName string, arg *models.MeegoHook, logger *zap.SugaredLogger) error {
+	if err := jobctl.InstantiateWorkflow(arg.WorkflowArg); err != nil {
+		logger.Errorf("instantiate hook args error: %s", err)
+		return e.ErrUpdateMeegoHook.AddErr(err)
+	}
+
 	workflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName)
 	if err != nil {
 		logger.Errorf("Failed to find WorkflowV4: %s, the error is: %v", workflowName, err)
@@ -1098,11 +1863,16 @@ func BulkCopyWorkflowV4(args BulkCopyWorkflowArgs, username string, log *zap.Sug
 }
 
 func CreateCronForWorkflowV4(workflowName string, input *commonmodels.Cronjob, logger *zap.SugaredLogger) error {
+	if err := jobctl.InstantiateWorkflow(input.WorkflowV4Args); err != nil {
+		logger.Errorf("instantiate hook args error: %s", err)
+		return e.ErrUpsertCronjob.AddErr(err)
+	}
+
 	if !input.ID.IsZero() {
 		return e.ErrUpsertCronjob.AddDesc("cronjob id is not empty")
 	}
 	input.Name = workflowName
-	input.Type = config.WorkflowV4Cronjob
+	input.Type = setting.WorkflowV4Cronjob
 	err := commonrepo.NewCronjobColl().Create(input)
 	if err != nil {
 		msg := fmt.Sprintf("Failed to create cron job, error: %v", err)
@@ -1115,20 +1885,29 @@ func CreateCronForWorkflowV4(workflowName string, input *commonmodels.Cronjob, l
 
 	payload := &commonservice.CronjobPayload{
 		Name:    workflowName,
-		JobType: config.WorkflowV4Cronjob,
+		JobType: setting.WorkflowV4Cronjob,
 		Action:  setting.TypeEnableCronjob,
 		JobList: []*commonmodels.Schedule{cronJobToSchedule(input)},
 	}
 
 	pl, _ := json.Marshal(payload)
-	if err := nsq.Publish(setting.TopicCronjob, pl); err != nil {
-		log.Errorf("Failed to publish to nsq topic: %s, the error is: %v", setting.TopicCronjob, err)
+	err = commonrepo.NewMsgQueueCommonColl().Create(&msg_queue.MsgQueueCommon{
+		Payload:   string(pl),
+		QueueType: setting.TopicCronjob,
+	})
+	if err != nil {
+		log.Errorf("Failed to publish cron to MsgQueueCommon, the error is: %v", err)
 		return e.ErrUpsertCronjob.AddDesc(err.Error())
 	}
 	return nil
 }
 
 func UpdateCronForWorkflowV4(input *commonmodels.Cronjob, logger *zap.SugaredLogger) error {
+	if err := jobctl.InstantiateWorkflow(input.WorkflowV4Args); err != nil {
+		logger.Errorf("instantiate hook args error: %s", err)
+		return e.ErrUpsertCronjob.AddErr(err)
+	}
+
 	_, err := commonrepo.NewCronjobColl().GetByID(input.ID)
 	if err != nil {
 		msg := fmt.Sprintf("cron job not exist, error: %v", err)
@@ -1142,7 +1921,7 @@ func UpdateCronForWorkflowV4(input *commonmodels.Cronjob, logger *zap.SugaredLog
 	}
 	payload := &commonservice.CronjobPayload{
 		Name:    input.Name,
-		JobType: config.WorkflowV4Cronjob,
+		JobType: setting.WorkflowV4Cronjob,
 		Action:  setting.TypeEnableCronjob,
 	}
 	if !input.Enabled {
@@ -1152,8 +1931,12 @@ func UpdateCronForWorkflowV4(input *commonmodels.Cronjob, logger *zap.SugaredLog
 	}
 
 	pl, _ := json.Marshal(payload)
-	if err := nsq.Publish(setting.TopicCronjob, pl); err != nil {
-		log.Errorf("Failed to publish to nsq topic: %s, the error is: %v", setting.TopicCronjob, err)
+	err = commonrepo.NewMsgQueueCommonColl().Create(&msg_queue.MsgQueueCommon{
+		Payload:   string(pl),
+		QueueType: setting.TopicCronjob,
+	})
+	if err != nil {
+		log.Errorf("Failed to publish cron to MsgQueueCommon, the error is: %v", err)
 		return e.ErrUpsertCronjob.AddDesc(err.Error())
 	}
 	return nil
@@ -1162,7 +1945,7 @@ func UpdateCronForWorkflowV4(input *commonmodels.Cronjob, logger *zap.SugaredLog
 func ListCronForWorkflowV4(workflowName string, logger *zap.SugaredLogger) ([]*commonmodels.Cronjob, error) {
 	crons, err := commonrepo.NewCronjobColl().List(&commonrepo.ListCronjobParam{
 		ParentName: workflowName,
-		ParentType: config.WorkflowV4Cronjob,
+		ParentType: setting.WorkflowV4Cronjob,
 	})
 	if err != nil {
 		logger.Errorf("Failed to list WorkflowV4 : %s cron jobs, the error is: %v", workflowName, err)
@@ -1197,6 +1980,43 @@ func GetCronForWorkflowV4Preset(workflowName, cronID string, logger *zap.Sugared
 		log.Error(errMsg)
 		return nil, e.ErrGetWebhook.AddDesc(errMsg)
 	}
+
+	for _, stage := range workflow.Stages {
+		for _, item := range stage.Jobs {
+			err := job.SetOptions(item, workflow)
+			if err != nil {
+				errMsg := fmt.Sprintf("merge workflow args set options error: %v", err)
+				log.Error(errMsg)
+				return nil, e.ErrGetWebhook.AddDesc(errMsg)
+			}
+
+			if cronID == "" {
+				// for some job we need to clear its selection field
+				if item.JobType == config.JobZadigBuild ||
+					item.JobType == config.JobIstioRelease ||
+					item.JobType == config.JobIstioRollback ||
+					item.JobType == config.JobZadigHelmChartDeploy ||
+					item.JobType == config.JobK8sBlueGreenDeploy ||
+					item.JobType == config.JobApollo ||
+					item.JobType == config.JobK8sCanaryDeploy ||
+					item.JobType == config.JobK8sGrayRelease {
+					if err := jobctl.ClearSelectionField(item, workflow); err != nil {
+						log.Errorf("cannot clear workflow %s selection for job %s, the error is: %v", workflowName, item.Name, err)
+						return nil, e.ErrPresetWorkflow.AddDesc(err.Error())
+					}
+				}
+			}
+
+			// additionally we need to update the user-defined args with the latest workflow configuration
+			err = job.UpdateWithLatestSetting(item, workflow)
+			if err != nil {
+				errMsg := fmt.Sprintf("failed to merge user-defined workflow args with latest workflow configuration, error: %s", err)
+				log.Error(errMsg)
+				return nil, fmt.Errorf(errMsg)
+			}
+		}
+	}
+
 	cronJob.WorkflowV4Args = workflow
 	return cronJob, nil
 }
@@ -1215,14 +2035,18 @@ func DeleteCronForWorkflowV4(workflowName, cronID string, logger *zap.SugaredLog
 	}
 	payload := &commonservice.CronjobPayload{
 		Name:       workflowName,
-		JobType:    config.WorkflowV4Cronjob,
+		JobType:    setting.WorkflowV4Cronjob,
 		Action:     setting.TypeEnableCronjob,
 		DeleteList: []string{job.ID.Hex()},
 	}
 
 	pl, _ := json.Marshal(payload)
-	if err := nsq.Publish(setting.TopicCronjob, pl); err != nil {
-		log.Errorf("Failed to publish to nsq topic: %s, the error is: %v", setting.TopicCronjob, err)
+	err = commonrepo.NewMsgQueueCommonColl().Create(&msg_queue.MsgQueueCommon{
+		Payload:   string(pl),
+		QueueType: setting.TopicCronjob,
+	})
+	if err != nil {
+		log.Errorf("Failed to publish cron to MsgQueueCommon, the error is: %v", err)
 		return e.ErrUpsertCronjob.AddDesc(err.Error())
 	}
 	if err := commonrepo.NewCronjobColl().Delete(&commonrepo.CronjobDeleteOption{IDList: []string{cronID}}); err != nil {
@@ -1269,18 +2093,55 @@ func GetPatchParams(patchItem *commonmodels.PatchItem, logger *zap.SugaredLogger
 	return resp, nil
 }
 
-func GetWorkflowGlabalVars(workflow *commonmodels.WorkflowV4, currentJobName string, log *zap.SugaredLogger) []string {
-	return append(getDefaultVars(workflow), jobctl.GetWorkflowOutputs(workflow, currentJobName, log)...)
+func GetWorkflowRepoIndex(workflow *commonmodels.WorkflowV4, currentJobName string, log *zap.SugaredLogger) []*jobctl.RepoIndex {
+	return jobctl.GetWorkflowRepoIndex(workflow, currentJobName, log)
 }
 
-func getDefaultVars(workflow *commonmodels.WorkflowV4) []string {
+func GetWorkflowGlabalVars(workflow *commonmodels.WorkflowV4, currentJobName string, log *zap.SugaredLogger) []string {
+	return append(getDefaultVars(workflow, currentJobName), jobctl.GetWorkflowOutputs(workflow, currentJobName, log)...)
+}
+
+func getDefaultVars(workflow *commonmodels.WorkflowV4, currentJobName string) []string {
 	vars := []string{}
 	vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, "project"))
 	vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, "workflow.name"))
 	vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, "workflow.task.creator"))
+	vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, "workflow.task.creator.id"))
 	vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, "workflow.task.timestamp"))
+	vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, "workflow.task.id"))
 	for _, param := range workflow.Params {
+		if param.ParamsType == "repo" {
+			continue
+		}
 		vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, strings.Join([]string{"workflow", "params", param.Name}, ".")))
+	}
+	for _, stage := range workflow.Stages {
+		for _, j := range stage.Jobs {
+			if j.Name == currentJobName {
+				continue
+			}
+			switch j.JobType {
+			case config.JobZadigBuild:
+				spec := new(commonmodels.ZadigBuildJobSpec)
+				if err := commonmodels.IToiYaml(j.Spec, spec); err != nil {
+					return vars
+				}
+				vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, strings.Join([]string{"job", j.Name, "SERVICES"}, ".")))
+				vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, strings.Join([]string{"job", j.Name, "BRANCHES"}, ".")))
+				vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, strings.Join([]string{"job", j.Name, "IMAGES"}, ".")))
+				vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, strings.Join([]string{"job", j.Name, "GITURLS"}, ".")))
+				for _, s := range spec.ServiceAndBuilds {
+					vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, strings.Join([]string{"job", j.Name, s.ServiceName, s.ServiceModule, "COMMITID"}, ".")))
+					vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, strings.Join([]string{"job", j.Name, s.ServiceName, s.ServiceModule, "BRANCH"}, ".")))
+				}
+			case config.JobZadigDeploy:
+				vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, strings.Join([]string{"job", j.Name, "envName"}, ".")))
+				vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, strings.Join([]string{"job", j.Name, "IMAGES"}, ".")))
+				vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, strings.Join([]string{"job", j.Name, "SERVICES"}, ".")))
+			case config.JobZadigDistributeImage:
+				vars = append(vars, fmt.Sprintf(setting.RenderValueTemplate, strings.Join([]string{"job", j.Name, "IMAGES"}, ".")))
+			}
+		}
 	}
 	return vars
 }
@@ -1397,4 +2258,675 @@ func GetLatestTaskInfo(workflowInfo *Workflow) (startTime int64, creator, status
 		}
 		return taskInfo.StartTime, taskInfo.TaskCreator, string(taskInfo.Status)
 	}
+}
+
+func GetFilteredEnvServices(workflowName, jobName, envName string, serviceNames []string, log *zap.SugaredLogger) ([]*commonmodels.DeployServiceInfo, error) {
+	resp := []*commonmodels.DeployServiceInfo{}
+	workflow, err := commonrepo.NewWorkflowV4Coll().Find(workflowName)
+	if err != nil {
+		msg := fmt.Sprintf("Failed to find WorkflowV4: %s, the error is: %v", workflowName, err)
+		log.Error(msg)
+		return resp, e.ErrFilterWorkflowVars.AddDesc(msg)
+	}
+	jobSpec := &commonmodels.ZadigDeployJobSpec{}
+	found := false
+	svcKVsMap := map[string][]*commonmodels.ServiceKeyVal{}
+	for _, stage := range workflow.Stages {
+		for _, job := range stage.Jobs {
+			if job.Name != jobName {
+				continue
+			}
+			if job.JobType != config.JobZadigDeploy {
+				msg := fmt.Sprintf("job: %s is not a deploy job", jobName)
+				log.Error(msg)
+				return resp, e.ErrFilterWorkflowVars.AddDesc(msg)
+			}
+			if err := commonmodels.IToiYaml(job.Spec, jobSpec); err != nil {
+				msg := fmt.Sprintf("unmarshal deploy job spec error: %v", err)
+				log.Error(msg)
+				return resp, e.ErrFilterWorkflowVars.AddDesc(msg)
+			}
+
+			for _, svc := range jobSpec.Services {
+				svcKVsMap[svc.ServiceName] = svc.KeyVals
+			}
+
+			found = true
+			break
+		}
+	}
+	if !found {
+		msg := fmt.Sprintf("job: %s not found", jobName)
+		log.Error(msg)
+		return resp, e.ErrFilterWorkflowVars.AddDesc(msg)
+	}
+	services, err := commonservice.ListServicesInEnv(envName, workflow.Project, svcKVsMap, log)
+	if err != nil {
+		return resp, e.ErrFilterWorkflowVars.AddErr(err)
+	}
+
+	serviceMap := map[string]*commonservice.EnvService{}
+	for _, service := range services.Services {
+		serviceMap[service.ServiceName] = service
+	}
+	deployServiceMap := map[string]*commonmodels.DeployServiceInfo{}
+	for _, service := range jobSpec.Services {
+		deployServiceMap[service.ServiceName] = service
+	}
+
+	for _, serviceName := range serviceNames {
+		service, err := job.FilterServiceVars(serviceName, jobSpec.DeployContents, deployServiceMap[serviceName], serviceMap[serviceName])
+		if err != nil {
+			log.Error(err)
+			return resp, e.ErrFilterWorkflowVars.AddErr(err)
+		}
+		resp = append(resp, service)
+	}
+	return resp, nil
+}
+
+func CompareHelmServiceYamlInEnv(serviceName, variableYaml, envName, projectName string, images []string, isProduction, updateServiceRevision, isHelmChartDeploy bool, log *zap.SugaredLogger) (*GetHelmValuesDifferenceResp, error) {
+	opt := &commonrepo.ProductFindOptions{Name: projectName, EnvName: envName}
+	prod, err := commonrepo.NewProductColl().Find(opt)
+	if err != nil {
+		return nil, fmt.Errorf("failed to find project: %s, err: %s", projectName, err)
+	}
+
+	if isHelmChartDeploy {
+		currentYaml := ""
+		chartInfo := prod.GetChartDeployRenderMap()[serviceName]
+		if chartInfo != nil {
+			currentYaml, err = helmtool.MergeOverrideValues("", "", chartInfo.GetOverrideYaml(), chartInfo.OverrideValues, nil)
+			if err != nil {
+				return nil, fmt.Errorf("failed to merge override values, err: %s", err)
+			}
+		}
+		return &GetHelmValuesDifferenceResp{
+			Current: currentYaml,
+			Latest:  variableYaml,
+		}, nil
+	}
+
+	// first we get the current yaml in the current environment
+	currentYaml := ""
+	resp, err := commonservice.GetChartValues(projectName, envName, serviceName, false, isProduction, false)
+	if err != nil {
+		log.Infof("failed to get the current service[%s] values from project: %s, env: %s", serviceName, projectName, envName)
+		currentYaml = ""
+	} else {
+		currentYaml = resp.ValuesYaml
+	}
+
+	param := &kube.ResourceApplyParam{
+		ProductInfo: prod,
+		ServiceName: serviceName,
+		// no image preview available in this api
+		Images:                images,
+		Uninstall:             false,
+		UpdateServiceRevision: updateServiceRevision,
+		Timeout:               setting.DeployTimeout,
+	}
+
+	curProdSvcRevision := func() int64 {
+		if prod.GetServiceMap()[serviceName] != nil {
+			return prod.GetServiceMap()[serviceName].Revision
+		}
+		return 0
+	}()
+
+	productService, _, err := kube.PrepareHelmServiceData(param)
+	if err != nil {
+		log.Errorf("prepare helm service data error: %v", err)
+		return nil, err
+	}
+
+	if updateServiceRevision && curProdSvcRevision > int64(0) {
+		svcFindOption := &commonrepo.ServiceFindOption{
+			ProductName: prod.ProductName,
+			ServiceName: serviceName,
+		}
+		latestSvc, err := repository.QueryTemplateService(svcFindOption, prod.Production)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to find service %s/%d in product %s", serviceName, svcFindOption.Revision, prod.ProductName)
+		}
+
+		curUsedSvc, err := repository.QueryTemplateService(&commonrepo.ServiceFindOption{
+			ProductName: prod.ProductName,
+			ServiceName: serviceName,
+			Revision:    curProdSvcRevision,
+		}, prod.Production)
+		if err != nil {
+			return nil, errors.Wrapf(err, "failed to find service %s/%d in product %s", serviceName, svcFindOption.Revision, prod.ProductName)
+		}
+
+		containers := kube.CalculateContainer(productService, curUsedSvc, latestSvc.Containers, prod)
+		images = kube.MergeImages(containers, images)
+		param.Images = images
+	}
+
+	chartInfo := productService.GetServiceRender()
+	param.VariableYaml = variableYaml
+	chartInfo.OverrideYaml.YamlContent = variableYaml
+
+	yamlContent, err := kube.GeneMergedValues(productService, productService.GetServiceRender(), prod.DefaultValues, param.Images, true)
+	if err != nil {
+		log.Errorf("failed to generate merged values.yaml, err: %s", err)
+		return nil, err
+	}
+
+	tmp := make(map[string]interface{})
+	if err := yaml.Unmarshal([]byte(yamlContent), &tmp); err != nil {
+		log.Errorf("failed to unmarshal latest yaml content, err: %s", err)
+		return nil, err
+	}
+
+	// re-marshal it into string to make sure indentation is right
+	latestYamlContent, err := yaml.Marshal(tmp)
+	if err != nil {
+		log.Errorf("failed to marshal latest yaml content, err: %s", err)
+		return nil, err
+	}
+	return &GetHelmValuesDifferenceResp{
+		Current: currentYaml,
+		Latest:  string(latestYamlContent),
+	}, nil
+}
+
+func GetMseOriginalServiceYaml(project, envName, serviceName, grayTag string) (string, error) {
+	yamlContent, _, err := kube.FetchCurrentAppliedYaml(&kube.GeneSvcYamlOption{
+		ProductName:           project,
+		EnvName:               envName,
+		ServiceName:           serviceName,
+		UpdateServiceRevision: false,
+	})
+	if err != nil {
+		return "", errors.Wrap(err, "failed to fetch current applied yaml")
+	}
+
+	var yamls []string
+	resources := make([]*unstructured.Unstructured, 0)
+	manifests := releaseutil.SplitManifests(yamlContent)
+	for _, item := range manifests {
+		u, err := serializer.NewDecoder().YamlToUnstructured([]byte(item))
+		if err != nil {
+			return "", errors.Errorf("failed to decode service %s yaml to unstructured: %v", serviceName, err)
+		}
+		resources = append(resources, u)
+	}
+	deploymentNum := 0
+	nameSuffix := "-mse-" + grayTag
+	for _, resource := range resources {
+		switch resource.GetKind() {
+		case setting.Deployment:
+			if deploymentNum > 0 {
+				return "", errors.Errorf("service-%s: only one deployment is allowed in each service", serviceName)
+			}
+			deploymentNum++
+
+			deploymentObj := &v1.Deployment{}
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, deploymentObj)
+			if err != nil {
+				return "", errors.Errorf("failed to convert service %s deployment to deployment object: %v", serviceName, err)
+			}
+			if deploymentObj.Spec.Selector == nil || !checkMapKeyExist(deploymentObj.Spec.Selector.MatchLabels, types.ZadigReleaseVersionLabelKey) {
+				return "", errors.Errorf("service %s deployment label selector must contain %s", serviceName, types.ZadigReleaseVersionLabelKey)
+			}
+			if !checkMapKeyExist(deploymentObj.Spec.Template.Labels, types.ZadigReleaseVersionLabelKey) {
+				return "", errors.Errorf("service %s deployment template label must contain %s", serviceName, types.ZadigReleaseVersionLabelKey)
+			}
+			deploymentObj.Name += nameSuffix
+			deploymentObj.Spec.Replicas = pointer.Int32(1)
+			deploymentObj.Labels = setMseLabels(deploymentObj.Labels, grayTag, serviceName)
+			deploymentObj.Spec.Selector.MatchLabels = setMseDeploymentLabels(deploymentObj.Spec.Selector.MatchLabels, grayTag, serviceName)
+			deploymentObj.Spec.Template.Labels = setMseDeploymentLabels(deploymentObj.Spec.Template.Labels, grayTag, serviceName)
+			resp, err := toYaml(deploymentObj)
+			if err != nil {
+				return "", errors.Errorf("failed to marshal service %s deployment object: %v", serviceName, err)
+			}
+			yamls = append(yamls, resp)
+		case setting.ConfigMap:
+			cmObj := &corev1.ConfigMap{}
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, cmObj)
+			if err != nil {
+				return "", errors.Errorf("failed to convert service %s ConfigMap to object: %v", serviceName, err)
+			}
+			cmObj.Name += nameSuffix
+			cmObj.Labels = setMseLabels(cmObj.Labels, grayTag, serviceName)
+			s, err := toYaml(cmObj)
+			if err != nil {
+				return "", errors.Errorf("failed to marshal service %s configmap object: %v", serviceName, err)
+			}
+			yamls = append(yamls, s)
+		case setting.Service:
+			serviceObj := &corev1.Service{}
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, serviceObj)
+			if err != nil {
+				return "", errors.Errorf("failed to convert service %s Service to object: %v", serviceName, err)
+			}
+			serviceObj.Name += nameSuffix
+			serviceObj.Labels = setMseLabels(serviceObj.Labels, grayTag, serviceName)
+			serviceObj.Spec.Selector = setMseLabels(serviceObj.Spec.Selector, grayTag, serviceName)
+			s, err := toYaml(serviceObj)
+			if err != nil {
+				return "", errors.Errorf("failed to marshal service %s service object: %v", serviceName, err)
+			}
+			yamls = append(yamls, s)
+		case setting.Secret:
+			secretObj := &corev1.Secret{}
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, secretObj)
+			if err != nil {
+				return "", errors.Errorf("failed to convert service %s Secret to object: %v", serviceName, err)
+			}
+			secretObj.Name += nameSuffix
+			secretObj.Labels = setMseLabels(secretObj.Labels, grayTag, serviceName)
+			s, err := toYaml(secretObj)
+			if err != nil {
+				return "", errors.Errorf("failed to marshal service %s secret object: %v", serviceName, err)
+			}
+			yamls = append(yamls, s)
+		case setting.Ingress:
+			ingressObj := &networkingv1.Ingress{}
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, ingressObj)
+			if err != nil {
+				return "", errors.Errorf("failed to convert service %s Ingress to object: %v", serviceName, err)
+			}
+			ingressObj.Name += nameSuffix
+			ingressObj.Labels = setMseLabels(ingressObj.Labels, grayTag, serviceName)
+			s, err := toYaml(ingressObj)
+			if err != nil {
+				return "", errors.Errorf("failed to marshal service %s ingress object: %v", serviceName, err)
+			}
+			yamls = append(yamls, s)
+		default:
+			return "", errors.Errorf("service %s resource type %s not allowed", serviceName, resource.GetKind())
+		}
+	}
+	if deploymentNum == 0 {
+		return "", errors.Errorf("service %s must contain one deployment", serviceName)
+	}
+	return strings.Join(yamls, "---\n"), nil
+}
+
+func RenderMseServiceYaml(productName, envName, lastGrayTag, grayTag string, service *commonmodels.MseGrayReleaseService) (string, error) {
+	resources := make([]*unstructured.Unstructured, 0)
+	manifests := releaseutil.SplitManifests(service.YamlContent)
+	for _, item := range manifests {
+		u, err := serializer.NewDecoder().YamlToUnstructured([]byte(item))
+		if err != nil {
+			return "", errors.Errorf("failed to decode service %s yaml to unstructured: %v", service.ServiceName, err)
+		}
+		resources = append(resources, u)
+	}
+	deploymentNum := 0
+	var yamls []string
+	serviceName := service.ServiceName
+	getNameWithNewTag := func(name, lastTag, newTag string) string {
+		if !strings.HasSuffix(name, lastTag) {
+			return name
+		}
+		return strings.TrimSuffix(name, lastTag) + newTag
+	}
+	for _, resource := range resources {
+		switch resource.GetKind() {
+		case setting.Deployment:
+			if deploymentNum > 0 {
+				return "", errors.Errorf("service-%s: only one deployment is allowed in each service", serviceName)
+			}
+			deploymentNum++
+
+			deploymentObj := &v1.Deployment{}
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, deploymentObj)
+			if err != nil {
+				return "", errors.Errorf("failed to convert service %s deployment to deployment object: %v", serviceName, err)
+			}
+			if deploymentObj.Spec.Selector == nil || !checkMapKeyExist(deploymentObj.Spec.Selector.MatchLabels, types.ZadigReleaseVersionLabelKey) {
+				return "", errors.Errorf("service %s deployment label selector must contain %s", serviceName, types.ZadigReleaseVersionLabelKey)
+			}
+			if !checkMapKeyExist(deploymentObj.Spec.Template.Labels, types.ZadigReleaseVersionLabelKey) {
+				return "", errors.Errorf("service %s deployment template label must contain %s", serviceName, types.ZadigReleaseVersionLabelKey)
+			}
+
+			deploymentObj.Name = getNameWithNewTag(deploymentObj.Name, lastGrayTag, grayTag)
+			deploymentObj.Labels = setMseLabels(deploymentObj.Labels, grayTag, serviceName)
+			deploymentObj.Spec.Selector.MatchLabels = setMseDeploymentLabels(deploymentObj.Spec.Selector.MatchLabels, grayTag, serviceName)
+			deploymentObj.Spec.Template.Labels = setMseDeploymentLabels(deploymentObj.Spec.Template.Labels, grayTag, serviceName)
+			Replicas := int32(service.Replicas)
+			deploymentObj.Spec.Replicas = &Replicas
+			resp, err := toYaml(deploymentObj)
+			if err != nil {
+				return "", errors.Errorf("failed to marshal service %s deployment object: %v", serviceName, err)
+			}
+			prod, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
+				Name:    productName,
+				EnvName: envName,
+			})
+			if err != nil {
+				return "", errors.Errorf("failed to find product %s: %v", productName, err)
+			}
+			serviceModules := sets.NewString()
+			var newImages []*commonmodels.Container
+			for _, image := range service.ServiceAndImage {
+				serviceModules.Insert(image.ServiceModule)
+				newImages = append(newImages, &commonmodels.Container{
+					Name:  image.ServiceModule,
+					Image: image.Image,
+				})
+			}
+			for _, services := range prod.Services {
+				for _, productService := range services {
+					for _, container := range productService.Containers {
+						if !serviceModules.Has(container.Name) {
+							newImages = append(newImages, &commonmodels.Container{
+								Name:  container.Name,
+								Image: container.Image,
+							})
+						}
+					}
+				}
+			}
+			resp, _, err = kube.ReplaceWorkloadImages(resp, newImages)
+			if err != nil {
+				return "", errors.Errorf("failed to replace service %s deployment image: %v", serviceName, err)
+			}
+			yamls = append(yamls, resp)
+		case setting.ConfigMap:
+			cmObj := &corev1.ConfigMap{}
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, cmObj)
+			if err != nil {
+				return "", errors.Errorf("failed to convert service %s ConfigMap to object: %v", serviceName, err)
+			}
+			cmObj.Name = getNameWithNewTag(cmObj.Name, lastGrayTag, grayTag)
+			cmObj.SetLabels(setMseLabels(cmObj.GetLabels(), grayTag, serviceName))
+			s, err := toYaml(cmObj)
+			if err != nil {
+				return "", errors.Errorf("failed to marshal service %s configmap object: %v", serviceName, err)
+			}
+			yamls = append(yamls, s)
+		case setting.Service:
+			serviceObj := &corev1.Service{}
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, serviceObj)
+			if err != nil {
+				return "", errors.Errorf("failed to convert service %s Service to object: %v", serviceName, err)
+			}
+			serviceObj.Name = getNameWithNewTag(serviceObj.Name, lastGrayTag, grayTag)
+			serviceObj.SetLabels(setMseLabels(serviceObj.GetLabels(), grayTag, serviceName))
+			serviceObj.Spec.Selector = setMseLabels(serviceObj.Spec.Selector, grayTag, serviceName)
+			s, err := toYaml(serviceObj)
+			if err != nil {
+				return "", errors.Errorf("failed to marshal service %s service object: %v", serviceName, err)
+			}
+			yamls = append(yamls, s)
+		case setting.Secret:
+			secretObj := &corev1.Secret{}
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, secretObj)
+			if err != nil {
+				return "", errors.Errorf("failed to convert service %s Secret to object: %v", serviceName, err)
+			}
+			secretObj.Name = getNameWithNewTag(secretObj.Name, lastGrayTag, grayTag)
+			secretObj.SetLabels(setMseLabels(secretObj.GetLabels(), grayTag, serviceName))
+			s, err := toYaml(secretObj)
+			if err != nil {
+				return "", errors.Errorf("failed to marshal service %s secret object: %v", serviceName, err)
+			}
+			yamls = append(yamls, s)
+		case setting.Ingress:
+			ingressObj := &networkingv1.Ingress{}
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, ingressObj)
+			if err != nil {
+				return "", errors.Errorf("failed to convert service %s Ingress to object: %v", serviceName, err)
+			}
+			ingressObj.Name = getNameWithNewTag(ingressObj.Name, lastGrayTag, grayTag)
+			ingressObj.SetLabels(setMseLabels(ingressObj.GetLabels(), grayTag, serviceName))
+			s, err := toYaml(ingressObj)
+			if err != nil {
+				return "", errors.Errorf("failed to marshal service %s ingress object: %v", serviceName, err)
+			}
+			yamls = append(yamls, s)
+		default:
+			return "", errors.Errorf("service %s resource type %s not allowed", serviceName, resource.GetKind())
+		}
+	}
+	if deploymentNum == 0 {
+		return "", errors.Errorf("service %s must contain one deployment", serviceName)
+	}
+	return strings.Join(yamls, "---\n"), nil
+}
+
+func toYaml(obj runtime.Object) (string, error) {
+	y := printers.YAMLPrinter{}
+	writer := bytes.NewBuffer(nil)
+	err := y.PrintObj(obj, writer)
+	if err != nil {
+		return "", errors.Wrapf(err, "failed to marshal object to yaml")
+	}
+	return writer.String(), nil
+}
+
+func GetMseOfflineResources(grayTag, envName, projectName string) ([]string, error) {
+	prod, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
+		Name:    projectName,
+		EnvName: envName,
+	})
+	if err != nil {
+		return nil, errors.Errorf("failed to find product %s: %v", projectName, err)
+	}
+	kubeClient, err := kubeclient.GetKubeClient(config.HubServerAddress(), prod.ClusterID)
+	if err != nil {
+		return nil, err
+	}
+	selector := labels.Set{
+		types.ZadigReleaseTypeLabelKey:    types.ZadigReleaseTypeMseGray,
+		types.ZadigReleaseVersionLabelKey: grayTag,
+	}.AsSelector()
+	deploymentList, err := getter.ListDeployments(prod.Namespace, selector, kubeClient)
+	if err != nil {
+		return nil, errors.Errorf("can't list deployment: %v", err)
+	}
+	var services []string
+	for _, deployment := range deploymentList {
+		if service := deployment.Labels[types.ZadigReleaseServiceNameLabelKey]; service != "" {
+			services = append(services, service)
+		} else {
+			log.Warnf("GetMseOfflineResources: deployment %s has no service name label", deployment.Name)
+		}
+	}
+
+	return services, nil
+}
+
+func GetBlueGreenServiceK8sServiceYaml(projectName, envName, serviceName string) (string, error) {
+	yamlContent, _, err := kube.FetchCurrentAppliedYaml(&kube.GeneSvcYamlOption{
+		ProductName: projectName,
+		EnvName:     envName,
+		ServiceName: serviceName,
+	})
+	if err != nil {
+		return "", errors.Errorf("failed to fetch %s current applied yaml, err: %s", serviceName, err)
+	}
+	resources := make([]*unstructured.Unstructured, 0)
+	manifests := releaseutil.SplitManifests(yamlContent)
+	for _, item := range manifests {
+		u, err := serializer.NewDecoder().YamlToUnstructured([]byte(item))
+		if err != nil {
+			return "", errors.Errorf("failed to decode service %s yaml to unstructured: %v", serviceName, err)
+		}
+		resources = append(resources, u)
+	}
+	var (
+		service     *corev1.Service
+		serviceYaml string
+	)
+	for _, resource := range resources {
+		switch resource.GetKind() {
+		case setting.Service:
+			if service != nil {
+				return "", errors.Errorf("service %s has more than one service", serviceName)
+			}
+			service = &corev1.Service{}
+			err := runtime.DefaultUnstructuredConverter.FromUnstructured(resource.Object, service)
+			if err != nil {
+				log.Errorf("failed to convert service %s service to service object: %v\nyaml: %s", serviceName, err, yamlContent)
+				return "", errors.Errorf("failed to convert service %s service to service object: %v", serviceName, err)
+			}
+			service.Name = service.Name + "-blue"
+			if service.Spec.Selector == nil {
+				service.Spec.Selector = make(map[string]string)
+			}
+			service.Spec.Selector[config.BlueGreenVersionLabelName] = config.BlueVersion
+			serviceYaml, err = toYaml(service)
+			if err != nil {
+				return "", errors.Errorf("failed to marshal service %s service object: %v", serviceName, err)
+			}
+		}
+	}
+	return serviceYaml, nil
+}
+
+func GetMseTagsInEnv(envName, projectName string) ([]string, error) {
+	prod, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
+		Name:    projectName,
+		EnvName: envName,
+	})
+	if err != nil {
+		return nil, errors.Errorf("failed to find product %s: %v", projectName, err)
+	}
+	kubeClient, err := kubeclient.GetKubeClient(config.HubServerAddress(), prod.ClusterID)
+	if err != nil {
+		return nil, err
+	}
+	selector := labels.Set{
+		types.ZadigReleaseTypeLabelKey: types.ZadigReleaseTypeMseGray,
+	}.AsSelector()
+	deploymentList, err := getter.ListDeployments(prod.Namespace, selector, kubeClient)
+	if err != nil {
+		return nil, errors.Errorf("can't list deployment: %v", err)
+	}
+	tags := sets.NewString()
+	for _, deployment := range deploymentList {
+		if tag := deployment.Labels[types.ZadigReleaseVersionLabelKey]; tag != "" {
+			tags.Insert(tag)
+		} else {
+			log.Warnf("GetMseTagsInEnv: deployment %s has no release version tag", deployment.Name)
+		}
+	}
+
+	return tags.List(), nil
+}
+
+func setMseDeploymentLabels(labels map[string]string, grayTag, serviceName string) map[string]string {
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+	labels[types.ZadigReleaseVersionLabelKey] = grayTag
+	labels[types.ZadigReleaseMSEGrayTagLabelKey] = grayTag
+	labels[types.ZadigReleaseTypeLabelKey] = types.ZadigReleaseTypeMseGray
+	labels[types.ZadigReleaseServiceNameLabelKey] = serviceName
+	return labels
+}
+
+func setMseLabels(labels map[string]string, grayTag, serviceName string) map[string]string {
+	if labels == nil {
+		labels = make(map[string]string)
+	}
+	labels[types.ZadigReleaseVersionLabelKey] = grayTag
+	labels[types.ZadigReleaseTypeLabelKey] = types.ZadigReleaseTypeMseGray
+	labels[types.ZadigReleaseServiceNameLabelKey] = serviceName
+	return labels
+}
+
+func checkMapKeyExist(m map[string]string, key string) bool {
+	if m == nil {
+		return false
+	}
+	_, ok := m[key]
+	return ok
+}
+
+func getAllowedProjects(headers http.Header) ([]string, error) {
+	type allowedProjectsData struct {
+		Projects []string `json:"result"`
+	}
+	allowedProjects := &allowedProjectsData{}
+	opaClient := opa.NewDefault()
+	err := opaClient.Evaluate("rbac.user_allowed_projects", allowedProjects, func() (*opa.Input, error) {
+		return generateOPAInput(headers, "GET", "/api/aslan/workflow/workflow"), nil
+	})
+	if err != nil {
+		log.Errorf("get allowed projects error: %v", err)
+		return nil, err
+	}
+	return allowedProjects.Projects, nil
+}
+
+func generateOPAInput(header http.Header, method string, endpoint string) *opa.Input {
+	authorization := header.Get(strings.ToLower(setting.AuthorizationHeader))
+	headers := map[string]string{}
+	parsedPath := strings.Split(strings.Trim(endpoint, "/"), "/")
+	headers[strings.ToLower(setting.AuthorizationHeader)] = authorization
+
+	return &opa.Input{
+		Attributes: &opa.Attributes{
+			Request: &opa.Request{HTTP: &opa.HTTPSpec{
+				Headers: headers,
+				Method:  method,
+			}},
+		},
+		ParsedPath: parsedPath,
+	}
+}
+
+type JenkinsJobParams struct {
+	Name    string           `json:"name"`
+	Default string           `json:"default"`
+	Type    config.ParamType `json:"type"`
+	Choices []string         `json:"choices"`
+}
+
+func GetJenkinsJobParams(id, jobName string) ([]*JenkinsJobParams, error) {
+	info, err := commonrepo.NewCICDToolColl().Get(id)
+	if err != nil {
+		return nil, errors.Errorf("get jenkins integration error: %v", err)
+	}
+
+	cli := jenkins.NewClient(info.URL, info.Username, info.Password)
+	jobInfo, err := cli.GetJob(jobName)
+	if err != nil {
+		return nil, errors.Errorf("get jenkins job error: %v", err)
+	}
+
+	resp := make([]*JenkinsJobParams, 0)
+	for _, definition := range jobInfo.GetParameters() {
+		resp = append(resp, &JenkinsJobParams{
+			Name:    definition.Name,
+			Default: fmt.Sprintf("%v", definition.DefaultParameterValue.Value),
+			Type: func() config.ParamType {
+				if t, ok := jenkins.ParameterTypeMap[definition.Type]; ok {
+					return t
+				}
+				return config.ParamTypeString
+			}(),
+			Choices: definition.Choices,
+		})
+	}
+
+	return resp, nil
+}
+
+func ValidateSQL(_type config.DBInstanceType, sql string) error {
+	switch _type {
+	case config.DBInstanceTypeMySQL, config.DBInstanceTypeMariaDB:
+		return ValidateMySQL(sql)
+	default:
+		return errors.Errorf("not supported db type: %s", _type)
+	}
+}
+
+func ValidateMySQL(sql string) error {
+	p := parser.New()
+
+	_, _, err := p.Parse(sql, "", "")
+	if err != nil {
+		return errors.Errorf("parse sql statement error: %v", err)
+	}
+	return nil
 }

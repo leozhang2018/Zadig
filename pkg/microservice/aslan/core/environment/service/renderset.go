@@ -27,17 +27,18 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	templatemodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/template"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/command"
-	fsservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/fs"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
-	yamlutil "github.com/koderover/zadig/pkg/util/yaml"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	templatemodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/command"
+	fsservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/fs"
+	commontypes "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/types"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	yamlutil "github.com/koderover/zadig/v2/pkg/util/yaml"
 )
 
 type DefaultValuesResp struct {
@@ -126,12 +127,13 @@ func SyncYamlFromSource(yamlData *templatemodels.CustomYaml, curValue string) (b
 	return syncYamlFromGit(yamlData, curValue)
 }
 
-func GetDefaultValues(productName, envName string, log *zap.SugaredLogger) (*DefaultValuesResp, error) {
+func GetDefaultValues(productName, envName string, production bool, log *zap.SugaredLogger) (*DefaultValuesResp, error) {
 	ret := &DefaultValuesResp{}
 
 	productInfo, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    productName,
-		EnvName: envName,
+		Name:       productName,
+		EnvName:    envName,
+		Production: &production,
 	})
 	if err == mongo.ErrNoDocuments {
 		return ret, nil
@@ -141,31 +143,14 @@ func GetDefaultValues(productName, envName string, log *zap.SugaredLogger) (*Def
 		return nil, fmt.Errorf("failed to query product info, productName %s envName %s", productName, envName)
 	}
 
-	if productInfo.Render == nil {
-		return nil, fmt.Errorf("invalid product, nil render data")
-	}
-
-	opt := &commonrepo.RenderSetFindOption{
-		Name:        productInfo.Render.Name,
-		Revision:    productInfo.Render.Revision,
-		ProductTmpl: productName,
-		EnvName:     productInfo.EnvName,
-	}
-	rendersetObj, existed, err := commonrepo.NewRenderSetColl().FindRenderSet(opt)
-	if err != nil {
-		log.Errorf("failed to query renderset info, name %s err %s", productInfo.Render.Name, err)
-		return nil, err
-	}
-	if !existed {
-		return ret, nil
-	}
-	ret.DefaultVariable = rendersetObj.DefaultValues
-	err = service.FillGitNamespace(rendersetObj.YamlData)
+	ret.DefaultVariable = productInfo.DefaultValues
+	err = service.FillGitNamespace(productInfo.YamlData)
 	if err != nil {
 		// Note, since user can always reselect the git info, error should not block normal logic
 		log.Warnf("failed to fill git namespace data, err: %s", err)
 	}
-	ret.YamlData = rendersetObj.YamlData
+	ret.YamlData = productInfo.YamlData
+
 	return ret, nil
 }
 
@@ -246,4 +231,21 @@ func GetMergedYamlContent(arg *YamlContentRequestArg, paths []string) (string, e
 		return "", errors.Wrapf(err, "failed to merge files")
 	}
 	return string(ret), nil
+}
+
+func GetGlobalVariables(productName, envName string, production bool, log *zap.SugaredLogger) ([]*commontypes.GlobalVariableKV, int64, error) {
+	productInfo, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
+		Name:       productName,
+		EnvName:    envName,
+		Production: &production,
+	})
+	if err == mongo.ErrNoDocuments {
+		return nil, 0, nil
+	}
+	if err != nil {
+		log.Errorf("failed to query product info, productName %s envName %s err %s", productName, envName, err)
+		return nil, 0, fmt.Errorf("failed to query product info, productName %s envName %s", productName, envName)
+	}
+
+	return productInfo.GlobalVariables, productInfo.UpdateTime, nil
 }

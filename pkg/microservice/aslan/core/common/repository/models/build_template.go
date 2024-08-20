@@ -19,7 +19,7 @@ package models
 import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type BuildTemplate struct {
@@ -32,6 +32,7 @@ type BuildTemplate struct {
 	UpdateBy                 string             `bson:"update_by"                     json:"update_by"`
 	PreBuild                 *PreBuild          `bson:"pre_build"                     json:"pre_build"`
 	JenkinsBuild             *JenkinsBuild      `bson:"jenkins_build,omitempty"       json:"jenkins_build,omitempty"`
+	ScriptType               types.ScriptType         `bson:"script_type"                   json:"script_type"`
 	Scripts                  string             `bson:"scripts"                       json:"scripts"`
 	PostBuild                *PostBuild         `bson:"post_build,omitempty"          json:"post_build"`
 	SSHs                     []string           `bson:"sshs"                          json:"sshs"`
@@ -41,6 +42,8 @@ type BuildTemplate struct {
 	CacheUserDir             string             `bson:"cache_user_dir"                json:"cache_user_dir"`
 	AdvancedSettingsModified bool               `bson:"advanced_setting_modified"     json:"advanced_setting_modified"`
 	Outputs                  []*Output          `bson:"outputs"                       json:"outputs"`
+	Infrastructure           string             `bson:"infrastructure"                json:"infrastructure"`
+	VmLabels                 []string           `bson:"vm_labels"                     json:"vm_labels"`
 }
 
 func (BuildTemplate) TableName() string {

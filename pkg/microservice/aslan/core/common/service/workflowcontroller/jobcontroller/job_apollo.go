@@ -24,11 +24,11 @@ import (
 
 	"go.uber.org/zap"
 
-	config2 "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/tool/apollo"
+	config2 "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/tool/apollo"
 )
 
 type ApolloJobCtl struct {
@@ -76,7 +76,7 @@ func (c *ApolloJobCtl) Run(ctx context.Context) {
 	client := apollo.NewClient(info.ServerAddress, info.Token)
 	for _, namespace := range c.jobTaskSpec.NamespaceList {
 		for _, kv := range namespace.KeyValList {
-			err := client.UpdateKeyVal(namespace.AppID, namespace.Env, namespace.ClusterID, namespace.Namespace, kv.Key, kv.Val, "zadig")
+			err := client.UpdateKeyVal(namespace.AppID, namespace.Env, namespace.ClusterID, namespace.Namespace, kv.Key, kv.Val, info.ApolloAuthConfig.User)
 			if err != nil {
 				fail = true
 				namespace.Error = fmt.Sprintf("update error: %v", err)
@@ -87,7 +87,7 @@ func (c *ApolloJobCtl) Run(ctx context.Context) {
 			&apollo.ReleaseArgs{
 				ReleaseTitle:   time.Now().Format("20060102150405") + "-zadig",
 				ReleaseComment: fmt.Sprintf("工作流 %s\n详情: %s", c.workflowCtx.WorkflowDisplayName, link),
-				ReleasedBy:     "zadig",
+				ReleasedBy:     info.ApolloAuthConfig.User,
 			})
 		if err != nil {
 			fail = true
@@ -100,4 +100,18 @@ func (c *ApolloJobCtl) Run(ctx context.Context) {
 	}
 	c.job.Status = config.StatusPassed
 	return
+}
+
+func (c *ApolloJobCtl) SaveInfo(ctx context.Context) error {
+	return mongodb.NewJobInfoColl().Create(context.TODO(), &commonmodels.JobInfo{
+		Type:                c.job.JobType,
+		WorkflowName:        c.workflowCtx.WorkflowName,
+		WorkflowDisplayName: c.workflowCtx.WorkflowDisplayName,
+		TaskID:              c.workflowCtx.TaskID,
+		ProductName:         c.workflowCtx.ProjectName,
+		StartTime:           c.job.StartTime,
+		EndTime:             c.job.EndTime,
+		Duration:            c.job.EndTime - c.job.StartTime,
+		Status:              string(c.job.Status),
+	})
 }

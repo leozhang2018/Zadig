@@ -29,20 +29,20 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/yaml"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	templatemodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models/template"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	fsservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/fs"
-	"github.com/koderover/zadig/pkg/setting"
-	kubeclient "github.com/koderover/zadig/pkg/shared/kube/client"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/kube/getter"
-	"github.com/koderover/zadig/pkg/tool/kube/serializer"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
-	"github.com/koderover/zadig/pkg/tool/log"
-	yamlutil "github.com/koderover/zadig/pkg/util/yaml"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	templatemodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models/template"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	fsservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/fs"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	kubeclient "github.com/koderover/zadig/v2/pkg/shared/kube/client"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/getter"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/serializer"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	yamlutil "github.com/koderover/zadig/v2/pkg/util/yaml"
 )
 
 type ResourceWithLabel interface {
@@ -84,10 +84,11 @@ func (resp *ResourceResponseBase) setSourceDetailData(resource ResourceWithLabel
 	}
 }
 
-func DeleteCommonEnvCfg(envName, productName, objectName string, commonEnvCfgType config.CommonEnvCfgType, log *zap.SugaredLogger) error {
+func DeleteCommonEnvCfg(envName, productName, objectName string, commonEnvCfgType config.CommonEnvCfgType, production bool, log *zap.SugaredLogger) error {
 	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    productName,
-		EnvName: envName,
+		Name:       productName,
+		EnvName:    envName,
+		Production: &production,
 	})
 	if err != nil {
 		return e.ErrDeleteResource.AddErr(err)
@@ -178,7 +179,7 @@ func getResourceYamlAndName(sourceYaml []byte, namespace, productName string, re
 	switch resType {
 	case config.CommonEnvCfgTypeConfigMap:
 		cm := &corev1.ConfigMap{}
-		err = json.Unmarshal(sourceYaml, cm)
+		err = yaml.Unmarshal(sourceYaml, cm)
 		if err != nil {
 			return
 		}
@@ -234,8 +235,9 @@ func CreateCommonEnvCfg(args *models.CreateUpdateCommonEnvCfgArgs, userName stri
 	}
 
 	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    args.ProductName,
-		EnvName: args.EnvName,
+		Name:       args.ProductName,
+		EnvName:    args.EnvName,
+		Production: &args.Production,
 	})
 	if err != nil {
 		return e.ErrUpdateResource.AddErr(err)
@@ -276,7 +278,7 @@ func CreateCommonEnvCfg(args *models.CreateUpdateCommonEnvCfgArgs, userName stri
 	switch args.CommonEnvCfgType {
 	case config.CommonEnvCfgTypeConfigMap:
 		cm := &corev1.ConfigMap{}
-		err = json.Unmarshal(js, cm)
+		err = yaml.Unmarshal([]byte(args.YamlData), cm)
 		if err != nil {
 			return e.ErrUpdateResource.AddErr(err)
 		}
@@ -427,6 +429,7 @@ type ListCommonEnvCfgHistoryArgs struct {
 	Name             string                  `json:"name"                form:"name"`
 	CommonEnvCfgType config.CommonEnvCfgType `json:"common_env_cfg_type" form:"commonEnvCfgType"`
 	AutoSync         bool                    `json:"auto_sync"           form:"autoSync"`
+	Production       bool                    `json:"production"          form:"production"`
 }
 
 type SyncEnvResourceArg struct {
@@ -434,6 +437,7 @@ type SyncEnvResourceArg struct {
 	ProductName string `json:"product_name"`
 	Name        string `json:"name"`
 	Type        string `json:"type"`
+	Production  bool   `json:"production"`
 }
 
 type ListCommonEnvCfgHistoryRes struct {
@@ -473,8 +477,9 @@ func ListEnvResourceHistory(args *ListCommonEnvCfgHistoryArgs, log *zap.SugaredL
 	}
 
 	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    args.ProjectName,
-		EnvName: args.EnvName,
+		Name:       args.ProjectName,
+		EnvName:    args.EnvName,
+		Production: &args.Production,
 	})
 	if err != nil {
 		return nil, e.ErrListResources.AddErr(err)
@@ -551,8 +556,9 @@ func ListLatestEnvResources(args *ListCommonEnvCfgHistoryArgs, log *zap.SugaredL
 
 func SyncEnvResource(args *SyncEnvResourceArg, log *zap.SugaredLogger) error {
 	product, err := commonrepo.NewProductColl().Find(&commonrepo.ProductFindOptions{
-		Name:    args.ProductName,
-		EnvName: args.EnvName,
+		Name:       args.ProductName,
+		EnvName:    args.EnvName,
+		Production: &args.Production,
 	})
 	if err != nil {
 		return e.ErrUpdateResource.AddErr(fmt.Errorf("failed to find product: %s:%s, err: %s", args.ProductName, args.EnvName, err))

@@ -19,6 +19,7 @@ package webhook
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -26,16 +27,16 @@ import (
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/sets"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/scmnotify"
-	workflowservice "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow/job"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	"github.com/koderover/zadig/pkg/tool/gerrit"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/scmnotify"
+	workflowservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow/job"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	"github.com/koderover/zadig/v2/pkg/tool/gerrit"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type gerritEventMatcherForWorkflowV4 interface {
@@ -56,7 +57,20 @@ func (gruem *gerritChangeMergedEventMatcherForWorkflowV4) Match(hookRepo *common
 		return false, fmt.Errorf("event doesn't match")
 	}
 
-	if event.Project.Name == gruem.Item.MainRepo.RepoName && strings.Contains(event.RefName, gruem.Item.MainRepo.Branch) {
+	if event.Project.Name == gruem.Item.MainRepo.RepoName {
+		refName := getBranchFromRef(event.RefName)
+		isRegular := gruem.Item.MainRepo.IsRegular
+		if !isRegular && hookRepo.Branch != refName {
+			return false, nil
+		}
+		if isRegular {
+			// Do not use regexp.MustCompile to avoid panic
+			matched, err := regexp.MatchString(gruem.Item.MainRepo.Branch, refName)
+			if err != nil || !matched {
+				return false, nil
+			}
+		}
+		hookRepo.Branch = refName
 		existEventNames := make([]string, 0)
 		for _, eventName := range gruem.Item.MainRepo.Events {
 			existEventNames = append(existEventNames, string(eventName))
@@ -93,7 +107,20 @@ func (gpcem *gerritPatchsetCreatedEventMatcherForWorkflowV4) Match(hookRepo *com
 		return false, fmt.Errorf("event doesn't match")
 	}
 
-	if event.Project.Name == gpcem.Item.MainRepo.RepoName && strings.Contains(event.RefName, gpcem.Item.MainRepo.Branch) {
+	if event.Project.Name == gpcem.Item.MainRepo.RepoName {
+		refName := getBranchFromRef(event.RefName)
+		isRegular := gpcem.Item.MainRepo.IsRegular
+		if !isRegular && hookRepo.Branch != refName {
+			return false, nil
+		}
+		if isRegular {
+			// Do not use regexp.MustCompile to avoid panic
+			matched, err := regexp.MatchString(gpcem.Item.MainRepo.Branch, refName)
+			if err != nil || !matched {
+				return false, nil
+			}
+		}
+		hookRepo.Branch = refName
 		existEventNames := make([]string, 0)
 		for _, eventName := range gpcem.Item.MainRepo.Events {
 			existEventNames = append(existEventNames, string(eventName))

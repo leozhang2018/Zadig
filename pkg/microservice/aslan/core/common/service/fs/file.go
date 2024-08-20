@@ -24,8 +24,8 @@ import (
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/koderover/zadig/pkg/setting"
-	fsutil "github.com/koderover/zadig/pkg/util/fs"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	fsutil "github.com/koderover/zadig/v2/pkg/util/fs"
 )
 
 // PreloadFiles downloads a tarball from object storage and extracts it to a local path for further usage.
@@ -92,7 +92,7 @@ func SaveAndUploadFiles(fileTree fs.FS, names []string, localBase, s3Base string
 
 // CopyAndUploadFiles copy a tree of files to other dir, at the same time, archives them and uploads to object storage.
 func CopyAndUploadFiles(names []string, localBase, s3Base, zipPath, currentChartPath string, logger *zap.SugaredLogger) error {
-	err := copy.Copy(currentChartPath, localBase)
+	err := copyFilesToDisk(currentChartPath, localBase, logger)
 	if err != nil {
 		logger.Errorf("failed to copy chart info, err %s", err)
 		return err
@@ -138,6 +138,40 @@ func saveInMemoryFilesToDisk(fileTree fs.FS, root string, logger *zap.SugaredLog
 
 	if err := os.RemoveAll(tmpRoot); err != nil {
 		logger.Warnf("Failed to delete path %s, err: %s", tmpRoot, err)
+	}
+
+	return nil
+}
+
+func copyFilesToDisk(src, dest string, logger *zap.SugaredLogger) error {
+	ok, err := fsutil.DirExists(dest)
+	if err != nil {
+		return err
+	}
+
+	if !ok {
+		return copy.Copy(src, dest)
+	}
+
+	tmpDest := dest + ".bak"
+	if err = os.Rename(dest, tmpDest); err != nil {
+		return err
+	}
+
+	if err = copy.Copy(src, dest); err != nil {
+		logger.Errorf("Failed to copy %s to %s, err: %s", src, dest, err)
+		if err1 := os.RemoveAll(dest); err1 != nil {
+			logger.Warnf("Failed to delete path %s, err: %s", dest, err1)
+		}
+		if err1 := os.Rename(tmpDest, dest); err1 != nil {
+			logger.Errorf("Failed to rename path from %s to %s, err: %s", tmpDest, dest, err1)
+		}
+
+		return err
+	}
+
+	if err := os.RemoveAll(tmpDest); err != nil {
+		logger.Warnf("Failed to delete path %s, err: %s", tmpDest, err)
 	}
 
 	return nil

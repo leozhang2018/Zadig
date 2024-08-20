@@ -29,7 +29,7 @@ import (
 	"k8s.io/client-go/kubernetes"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	"github.com/koderover/zadig/pkg/tool/kube/util"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/util"
 )
 
 var restartPatchTemplate = template.Must(template.New("restart-patch-template").Parse(`{
@@ -106,4 +106,13 @@ func DeleteDeploymentAndWait(ns, name string, cl client.Client) error {
 			Name:      name,
 		},
 	}, cl)
+}
+
+func DeleteDeploymentAndWaitWithTimeout(ns, name string, timeout time.Duration, cl client.Client) error {
+	return deleteObjectAndWaitWithTimeout(&appsv1.Deployment{
+		ObjectMeta: metav1.ObjectMeta{
+			Namespace: ns,
+			Name:      name,
+		},
+	}, cl, timeout)
 }

@@ -26,9 +26,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type DeliveryDeployArgs struct {
@@ -61,6 +61,7 @@ func (c *DeliveryDeployColl) EnsureIndex(ctx context.Context) error {
 			Keys: bson.D{
 				bson.E{Key: "release_id", Value: 1},
 				bson.E{Key: "service_name", Value: 1},
+				bson.E{Key: "container_name", Value: 1},
 				bson.E{Key: "deleted_at", Value: 1},
 			},
 			Options: options.Index().SetUnique(true),
@@ -74,6 +75,7 @@ func (c *DeliveryDeployColl) EnsureIndex(ctx context.Context) error {
 		},
 	}
 
+	_, _ = c.Indexes().DropOne(ctx, "release_id_1_service_name_1_deleted_at_1")
 	_, err := c.Indexes().CreateMany(ctx, mod)
 
 	return err

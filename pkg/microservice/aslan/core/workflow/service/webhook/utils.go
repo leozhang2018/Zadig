@@ -30,66 +30,19 @@ import (
 	"github.com/hashicorp/go-multierror"
 	"github.com/xanzy/go-gitlab"
 	"go.uber.org/zap"
-	"helm.sh/helm/v3/pkg/releaseutil"
-	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	templaterepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb/template"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/codehub"
-	environmentservice "github.com/koderover/zadig/pkg/microservice/aslan/core/environment/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/service/service"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/shared/client/systemconfig"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	githubtool "github.com/koderover/zadig/pkg/tool/git/github"
-	gitlabtool "github.com/koderover/zadig/pkg/tool/git/gitlab"
-	"github.com/koderover/zadig/pkg/tool/kube/serializer"
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/types"
-	"github.com/koderover/zadig/pkg/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	templaterepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb/template"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/service/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/shared/client/systemconfig"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	githubtool "github.com/koderover/zadig/v2/pkg/tool/git/github"
+	gitlabtool "github.com/koderover/zadig/v2/pkg/tool/git/gitlab"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/util"
 )
-
-func syncContentFromCodehub(args *commonmodels.Service, logger *zap.SugaredLogger) error {
-	address, _, repo, branch, path, pathType, err := GetOwnerRepoBranchPath(args.SrcPath)
-	if err != nil {
-		logger.Errorf("Failed to parse url %s, err: %s", args.SrcPath, err)
-		return fmt.Errorf("url parse failure, err: %s", err)
-	}
-
-	if len(args.LoadPath) > 0 {
-		path = args.LoadPath
-	}
-	if len(args.BranchName) > 0 {
-		branch = args.BranchName
-	}
-	if len(args.RepoName) > 0 {
-		repo = args.RepoName
-	}
-
-	var yamls []string
-	client, err := getCodehubClientByAddress(address)
-	if err != nil {
-		logger.Errorf("Failed to get codehub client, error: %s", err)
-		return err
-	}
-	repoUUID, err := client.GetRepoUUID(repo)
-	if err != nil {
-		logger.Errorf("Failed to get repoUUID, error: %s", err)
-		return err
-	}
-	yamls, err = client.GetYAMLContents(repoUUID, branch, path, pathType == "tree", true)
-	if err != nil {
-		logger.Errorf("Failed to get yamls, error: %s", err)
-		return err
-	}
-
-	args.KubeYamls = yamls
-	args.Yaml = util.CombineManifests(yamls)
-
-	return nil
-}
 
 func reloadServiceTmplFromGit(svc *commonmodels.Service, log *zap.SugaredLogger) error {
 	_, err := service.CreateOrUpdateHelmServiceFromGitRepo(svc.ProductName, &service.HelmServiceCreationArgs{
@@ -105,6 +58,7 @@ func reloadServiceTmplFromGit(svc *commonmodels.Service, log *zap.SugaredLogger)
 			Branch:     svc.BranchName,
 			Paths:      []string{svc.LoadPath},
 		},
+		Production: svc.Production,
 	}, true, log)
 	return err
 }
@@ -143,39 +97,19 @@ func fillServiceTmpl(userName string, args *commonmodels.Service, log *zap.Sugar
 				log.Errorf("Sync content from github failed, error: %v", err)
 				return err
 			}
-		} else if args.Source == setting.SourceFromCodeHub {
-			err := syncContentFromCodehub(args, log)
-			if err != nil {
-				log.Errorf("Sync content from codehub failed, error: %v", err)
-				return err
-			}
 		} else {
 			// 拆分 all-in-one yaml文件
 			// 替换分隔符
 			args.Yaml = util.ReplaceWrapLine(args.Yaml)
 			// 分隔符为\n---\n
-			args.KubeYamls = SplitYaml(args.Yaml)
+			args.KubeYamls = util.SplitYaml(args.Yaml)
 		}
 
-		// 遍历args.KubeYamls，获取 Deployment 或者 StatefulSet 里面所有containers 镜像和名称
-		if err := setCurrentContainerImages(args); err != nil {
+		_, err := service.CreateServiceTemplate(userName, args, true, args.Production, log)
+		if err != nil {
+			log.Infof("failed to create svc tempalte, err: %s", err)
 			return err
 		}
-		log.Infof("find %d containers in service %s", len(args.Containers), args.ServiceName)
-
-		// generate new revision
-		serviceTemplate := fmt.Sprintf(setting.ServiceTemplateCounterName, args.ServiceName, args.ProductName)
-		rev, err := commonrepo.NewCounterColl().GetNextSeq(serviceTemplate)
-		if err != nil {
-			return fmt.Errorf("get next service template revision error: %v", err)
-		}
-		args.Revision = rev
-		// update service template
-		if err := commonrepo.NewServiceColl().Create(args); err != nil {
-			log.Errorf("Failed to sync service %s from github path %s error: %v", args.ServiceName, args.SrcPath, err)
-			return e.ErrCreateTemplate.AddDesc(err.Error())
-		}
-		return environmentservice.AutoDeployYamlServiceToEnvs(args.CreateBy, "", args, log)
 	} else if args.Type == setting.HelmDeployType {
 		if args.Source == setting.SourceFromGitlab {
 			// Set args.Commit
@@ -242,71 +176,11 @@ func syncLatestCommit(service *commonmodels.Service) error {
 	return nil
 }
 
-func syncCodehubLatestCommit(service *commonmodels.Service) error {
-	if service.SrcPath == "" {
-		return fmt.Errorf("url不能是空的")
-	}
-
-	address, owner, repo, branch, _, _, err := GetOwnerRepoBranchPath(service.SrcPath)
-	if err != nil {
-		return fmt.Errorf("url 必须包含 owner/repo/tree/branch/path，具体请参考 Placeholder 提示")
-	}
-
-	client, err := getCodehubClientByAddress(address)
-	if err != nil {
-		return err
-	}
-
-	id, message, err := CodehubGetLatestCommit(client, owner, repo, branch)
-	if err != nil {
-		return err
-	}
-	service.Commit = &commonmodels.Commit{
-		SHA:     id,
-		Message: message,
-	}
-	return nil
-}
-
-func getCodehubClientByAddress(address string) (*codehub.Client, error) {
-	opt := &systemconfig.Option{
-		Address:      address,
-		CodeHostType: systemconfig.CodeHubProvider,
-	}
-	codehost, err := systemconfig.GetCodeHostInfo(opt)
-	if err != nil {
-		log.Error(err)
-		return nil, e.ErrCodehostListProjects.AddDesc("git client is nil")
-	}
-	client := codehub.NewClient(codehost.AccessKey, codehost.SecretKey, codehost.Region, config.ProxyHTTPSAddr(), codehost.EnableProxy)
-
-	return client, nil
-}
-
 func getGitlabClientByCodehostId(codehostId int) (*gitlabtool.Client, error) {
 	codehost, err := systemconfig.New().GetCodeHost(codehostId)
 	if err != nil {
 		log.Error(err)
 		return nil, e.ErrCodehostListProjects.AddDesc(fmt.Sprintf("failed to get codehost:%d, err: %s", codehost, err))
-	}
-	client, err := gitlabtool.NewClient(codehost.ID, codehost.Address, codehost.AccessToken, config.ProxyHTTPSAddr(), codehost.EnableProxy)
-	if err != nil {
-		log.Error(err)
-		return nil, e.ErrCodehostListProjects.AddDesc(err.Error())
-	}
-
-	return client, nil
-}
-
-func getGitlabClientByAddress(address string) (*gitlabtool.Client, error) {
-	opt := &systemconfig.Option{
-		Address:      address,
-		CodeHostType: systemconfig.GitLabProvider,
-	}
-	codehost, err := systemconfig.GetCodeHostInfo(opt)
-	if err != nil {
-		log.Error(err)
-		return nil, e.ErrCodehostListProjects.AddDesc("git client is nil")
 	}
 	client, err := gitlabtool.NewClient(codehost.ID, codehost.Address, codehost.AccessToken, config.ProxyHTTPSAddr(), codehost.EnableProxy)
 	if err != nil {
@@ -324,15 +198,6 @@ func GitlabGetLatestCommit(client *gitlabtool.Client, owner, repo string, ref, p
 			owner, repo, ref, path, err)
 	}
 	return commit, nil
-}
-
-func CodehubGetLatestCommit(client *codehub.Client, owner, repo string, branch string) (string, string, error) {
-	commit, err := client.GetLatestRepositoryCommit(owner, repo, branch)
-	if err != nil {
-		return "", "", fmt.Errorf("failed to get lastest commit with project %s/%s, ref: %s, error: %s",
-			owner, repo, branch, err)
-	}
-	return commit.ID, commit.Message, nil
 }
 
 // GitlabGetRawFiles ...
@@ -407,12 +272,8 @@ func syncContentFromGitlab(userName string, args *commonmodels.Service) error {
 	// 根据gitlab sync的内容来设置args.KubeYamls
 	args.KubeYamls = files
 	// 拼装并设置args.Yaml
-	args.Yaml = joinYamls(files)
+	args.Yaml = util.JoinYamls(files)
 	return nil
-}
-
-func joinYamls(files []string) string {
-	return strings.Join(files, setting.YamlFileSeperator)
 }
 
 func syncContentFromGithub(args *commonmodels.Service, log *zap.SugaredLogger) error {
@@ -432,7 +293,7 @@ func syncContentFromGithub(args *commonmodels.Service, log *zap.SugaredLogger) e
 	}
 	if fileContent != nil {
 		svcContent, _ := fileContent.GetContent()
-		splitYaml := SplitYaml(svcContent)
+		splitYaml := util.SplitYaml(svcContent)
 		args.KubeYamls = splitYaml
 		args.Yaml = svcContent
 	} else {
@@ -456,14 +317,10 @@ func syncContentFromGithub(args *commonmodels.Service, log *zap.SugaredLogger) e
 		}
 
 		args.KubeYamls = files
-		args.Yaml = joinYamls(files)
+		args.Yaml = util.JoinYamls(files)
 	}
 
 	return nil
-}
-
-func SplitYaml(yaml string) []string {
-	return strings.Split(yaml, setting.YamlFileSeperator)
 }
 
 func syncSingleFileFromGithub(owner, repo, branch, path, token string) (string, error) {
@@ -474,68 +331,6 @@ func syncSingleFileFromGithub(owner, repo, branch, path, token string) (string, 
 	}
 
 	return "", err
-}
-
-// 从 kube yaml 中获取所有当前 containers 镜像和名称
-// 支持 Deployment StatefulSet Job
-func setCurrentContainerImages(args *commonmodels.Service) error {
-	srvContainers := make([]*commonmodels.Container, 0)
-	for _, data := range args.KubeYamls {
-		manifests := releaseutil.SplitManifests(data)
-		for _, item := range manifests {
-			//在Unmarshal之前填充渲染变量{{.}}
-			item = config.RenderTemplateAlias.ReplaceAllLiteralString(item, "ssssssss")
-			// replace $Service$ with service name
-			item = config.ServiceNameAlias.ReplaceAllLiteralString(item, args.ServiceName)
-
-			u, err := serializer.NewDecoder().YamlToUnstructured([]byte(item))
-			if err != nil {
-				return fmt.Errorf("unmarshal ResourceKind error: %v", err)
-			}
-
-			switch u.GetKind() {
-			case setting.Deployment, setting.StatefulSet, setting.Job:
-				cs, err := getContainers(u)
-				if err != nil {
-					return fmt.Errorf("GetContainers error: %v", err)
-				}
-				srvContainers = append(srvContainers, cs...)
-			}
-		}
-	}
-
-	args.Containers = srvContainers
-
-	return nil
-}
-
-// 从kube yaml中查找所有containers 镜像和名称
-func getContainers(u *unstructured.Unstructured) ([]*commonmodels.Container, error) {
-	var containers []*commonmodels.Container
-	cs, _, _ := unstructured.NestedSlice(u.Object, "spec", "template", "spec", "containers")
-	for _, c := range cs {
-		val, ok := c.(map[string]interface{})
-		if !ok {
-			continue
-		}
-
-		nameStr, ok := val["name"].(string)
-		if !ok {
-			return containers, errors.New("error name value")
-		}
-
-		imageStr, ok := val["image"].(string)
-		if !ok {
-			return containers, errors.New("error image value")
-		}
-
-		containers = append(containers, &commonmodels.Container{
-			Name:  nameStr,
-			Image: imageStr,
-		})
-	}
-
-	return containers, nil
 }
 
 type MatchFolders []string
@@ -590,7 +385,7 @@ func MatchChanges(m *commonmodels.MainHookRepo, files []string) bool {
 	return false
 }
 
-func ConvertScanningHookToMainHookRepo(hook *types.ScanningHook) *commonmodels.MainHookRepo {
+func ConvertScanningHookToMainHookRepo(hook *commonmodels.ScanningHook) *commonmodels.MainHookRepo {
 	return &commonmodels.MainHookRepo{
 		Source:       hook.Source,
 		RepoOwner:    hook.RepoOwner,
@@ -599,6 +394,7 @@ func ConvertScanningHookToMainHookRepo(hook *types.ScanningHook) *commonmodels.M
 		MatchFolders: hook.MatchFolders,
 		CodehostID:   hook.CodehostID,
 		Events:       hook.Events,
+		IsRegular:    hook.IsRegular,
 	}
 }
 

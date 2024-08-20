@@ -17,16 +17,18 @@ limitations under the License.
 package webhook
 
 import (
+	"regexp"
+
 	"github.com/xanzy/go-gitlab"
 	"go.uber.org/zap"
 
 	"github.com/hashicorp/go-multierror"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/scmnotify"
-	scanningservice "github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/testing/service"
-	"github.com/koderover/zadig/pkg/types"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/scmnotify"
+	scanningservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/testing/service"
 )
 
 func TriggerScanningByGitlabEvent(event interface{}, baseURI, requestID string, log *zap.SugaredLogger) error {
@@ -73,7 +75,20 @@ func TriggerScanningByGitlabEvent(event interface{}, baseURI, requestID string, 
 					}
 
 					triggerRepoInfo := make([]*scanningservice.ScanningRepoInfo, 0)
-					// for now only one repo is supported
+					for _, scanningRepo := range scanning.Repos {
+						// if this is the triggering repo, we simply skip it and add it later with correct info
+						if scanningRepo.CodehostID == item.CodehostID && scanningRepo.RepoOwner == item.RepoOwner && scanningRepo.RepoName == item.RepoName {
+							continue
+						}
+						triggerRepoInfo = append(triggerRepoInfo, &scanningservice.ScanningRepoInfo{
+							CodehostID: scanningRepo.CodehostID,
+							Source:     scanningRepo.Source,
+							RepoOwner:  scanningRepo.RepoOwner,
+							RepoName:   scanningRepo.RepoName,
+							Branch:     scanningRepo.Branch,
+						})
+					}
+
 					repoInfo := &scanningservice.ScanningRepoInfo{
 						CodehostID: item.CodehostID,
 						Source:     item.Source,
@@ -90,7 +105,9 @@ func TriggerScanningByGitlabEvent(event interface{}, baseURI, requestID string, 
 						notificationID = notification.ID.Hex()
 					}
 
-					if resp, err := scanningservice.CreateScanningTask(scanning.ID.Hex(), triggerRepoInfo, notificationID, "webhook", log); err != nil {
+					if resp, err := scanningservice.CreateScanningTaskV2(scanning.ID.Hex(), "webhook", "", "", &scanningservice.CreateScanningTaskReq{
+						Repos: triggerRepoInfo,
+					}, notificationID, log); err != nil {
 						log.Errorf("failed to create testing task when receive event %v due to %v ", event, err)
 						mErr = multierror.Append(mErr, err)
 					} else {
@@ -140,7 +157,7 @@ type gitlabPushEventMatcherForScanning struct {
 	event    *gitlab.PushEvent
 }
 
-func (gpem *gitlabPushEventMatcherForScanning) Match(hookRepo *types.ScanningHook) (bool, error) {
+func (gpem *gitlabPushEventMatcherForScanning) Match(hookRepo *commonmodels.ScanningHook) (bool, error) {
 	ev := gpem.event
 	if hookRepo == nil {
 		return false, nil
@@ -151,8 +168,15 @@ func (gpem *gitlabPushEventMatcherForScanning) Match(hookRepo *types.ScanningHoo
 		if !EventConfigured(matchRepo, config.HookEventPush) {
 			return false, nil
 		}
-		if hookRepo.Branch != getBranchFromRef(ev.Ref) {
-			return false, nil
+
+		if !matchRepo.IsRegular {
+			if getBranchFromRef(ev.Ref) != hookRepo.Branch {
+				return false, nil
+			}
+		} else {
+			if matched, _ := regexp.MatchString(hookRepo.Branch, getBranchFromRef(ev.Ref)); !matched {
+				return false, nil
+			}
 		}
 
 		hookRepo.Branch = getBranchFromRef(ev.Ref)
@@ -176,7 +200,7 @@ type gitlabMergeEventMatcherForScanning struct {
 	event    *gitlab.MergeEvent
 }
 
-func (gmem *gitlabMergeEventMatcherForScanning) Match(hookRepo *types.ScanningHook) (bool, error) {
+func (gmem *gitlabMergeEventMatcherForScanning) Match(hookRepo *commonmodels.ScanningHook) (bool, error) {
 	ev := gmem.event
 	if hookRepo == nil {
 		return false, nil
@@ -186,6 +210,18 @@ func (gmem *gitlabMergeEventMatcherForScanning) Match(hookRepo *types.ScanningHo
 		matchRepo := ConvertScanningHookToMainHookRepo(hookRepo)
 		if !EventConfigured(matchRepo, config.HookEventPr) {
 			return false, nil
+		}
+
+		isRegExp := matchRepo.IsRegular
+
+		if !isRegExp {
+			if ev.ObjectAttributes.TargetBranch != hookRepo.Branch {
+				return false, nil
+			}
+		} else {
+			if matched, _ := regexp.MatchString(hookRepo.Branch, ev.ObjectAttributes.TargetBranch); !matched {
+				return false, nil
+			}
 		}
 
 		hookRepo.Branch = ev.ObjectAttributes.TargetBranch
@@ -212,7 +248,7 @@ type gitlabTagEventMatcherForScanning struct {
 	event    *gitlab.TagEvent
 }
 
-func (gtem *gitlabTagEventMatcherForScanning) Match(hookRepo *types.ScanningHook) (bool, error) {
+func (gtem *gitlabTagEventMatcherForScanning) Match(hookRepo *commonmodels.ScanningHook) (bool, error) {
 	ev := gtem.event
 	if (hookRepo.RepoOwner + "/" + hookRepo.RepoName) == ev.Project.PathWithNamespace {
 		hookInfo := ConvertScanningHookToMainHookRepo(hookRepo)

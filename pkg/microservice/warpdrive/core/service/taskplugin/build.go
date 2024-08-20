@@ -22,7 +22,6 @@ import (
 	"math"
 	"math/rand"
 	"os"
-	"strconv"
 	"strings"
 	"time"
 
@@ -34,15 +33,15 @@ import (
 	"k8s.io/client-go/rest"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
-	zadigconfig "github.com/koderover/zadig/pkg/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/config"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/common"
-	"github.com/koderover/zadig/pkg/microservice/warpdrive/core/service/types/task"
-	"github.com/koderover/zadig/pkg/setting"
-	krkubeclient "github.com/koderover/zadig/pkg/tool/kube/client"
-	"github.com/koderover/zadig/pkg/tool/kube/label"
-	"github.com/koderover/zadig/pkg/tool/kube/updater"
-	"github.com/koderover/zadig/pkg/types"
+	zadigconfig "github.com/koderover/zadig/v2/pkg/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/common"
+	"github.com/koderover/zadig/v2/pkg/microservice/warpdrive/core/service/types/task"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	krkubeclient "github.com/koderover/zadig/v2/pkg/tool/kube/client"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/label"
+	"github.com/koderover/zadig/v2/pkg/tool/kube/updater"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 const (
@@ -56,6 +55,7 @@ func InitializeBuildTaskPlugin(taskType config.TaskType) TaskPlugin {
 		kubeClient: krkubeclient.Client(),
 		clientset:  krkubeclient.Clientset(),
 		restConfig: krkubeclient.RESTConfig(),
+		apiReader:  krkubeclient.APIReader(),
 	}
 }
 
@@ -68,8 +68,10 @@ type BuildTaskPlugin struct {
 	kubeClient    client.Client
 	clientset     kubernetes.Interface
 	restConfig    *rest.Config
+	apiReader     client.Reader
 	Task          *task.Build
 	Log           *zap.SugaredLogger
+	Timeout       <-chan time.Time
 
 	ack func()
 }
@@ -96,25 +98,19 @@ func (p *BuildTaskPlugin) SetStatus(status config.Status) {
 	p.Task.TaskStatus = status
 }
 
-// Note: Unit of input `p.Task.Timeout` is `minutes` and convert it to `seconds` internally.
 // TODO: Using time implicitly is easy to generate bugs. We need use `time.Duration` instead.
 func (p *BuildTaskPlugin) TaskTimeout() int {
-	p.Log.Infof("IsRestart: %t. TaskTimeout: %d", p.Task.IsRestart, p.Task.Timeout)
-
 	if p.Task.Timeout == 0 {
 		p.Task.Timeout = BuildTaskV2Timeout
-	} else {
-		if !p.Task.IsRestart {
-			p.Task.Timeout = p.Task.Timeout * 60
-		}
 	}
+
 	return p.Task.Timeout
 }
 
 // Note: This is a temporary function to be compatible with the `TaskTimeout()` method's process of time.
 // TODO: Remove this function after `TaskTimeout` uses `time.Duration`.
 func (p *BuildTaskPlugin) tmpSetTaskTimeout(durationInSeconds int) {
-	p.Task.Timeout = int(math.Ceil(float64(durationInSeconds) / 60.0))
+	p.Task.Timeout = int(math.Ceil(float64(durationInSeconds)))
 	p.Task.IsRestart = false
 }
 
@@ -142,7 +138,7 @@ func (p *BuildTaskPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipe
 	default:
 		p.KubeNamespace = setting.AttachedClusterNamespace
 
-		crClient, clientset, restConfig, err := GetK8sClients(pipelineTask.ConfigPayload.HubServerAddr, p.Task.ClusterID)
+		crClient, clientset, restConfig, apiReader, err := GetK8sClients(pipelineTask.ConfigPayload.HubServerAddr, p.Task.ClusterID)
 		if err != nil {
 			p.Log.Error(err)
 			p.Task.TaskStatus = config.StatusFailed
@@ -154,6 +150,7 @@ func (p *BuildTaskPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipe
 		p.kubeClient = crClient
 		p.clientset = clientset
 		p.restConfig = restConfig
+		p.apiReader = apiReader
 	}
 
 	dockerhosts := common.NewDockerHosts(pipelineTask.ConfigPayload.HubServerAddr, p.Log)
@@ -183,6 +180,9 @@ func (p *BuildTaskPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipe
 
 	pipelineCtx.UseHostDockerDaemon = p.Task.UseHostDockerDaemon
 
+	// universal envs
+	p.Task.JobCtx.EnvVars = append(p.Task.JobCtx.EnvVars, PrepareDefaultWorkflowTaskEnvs(pipelineTask)...)
+
 	if pipelineTask.Type == config.WorkflowType {
 		envName := pipelineTask.WorkflowArgs.Namespace
 		envNameVar := &task.KeyVal{Key: "ENV_NAME", Value: envName, IsCredential: false}
@@ -200,11 +200,7 @@ func (p *BuildTaskPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipe
 	// Note: When 'pipelinetask.type == config.ServiceType', it may be `nil`.
 	if pipelineTask.WorkflowArgs != nil {
 		p.Task.JobCtx.EnvVars = append(p.Task.JobCtx.EnvVars, &task.KeyVal{Key: "WORKFLOW", Value: pipelineTask.WorkflowArgs.WorkflowName})
-		p.Task.JobCtx.EnvVars = append(p.Task.JobCtx.EnvVars, &task.KeyVal{Key: "PROJECT", Value: pipelineTask.WorkflowArgs.ProductTmplName})
 	}
-
-	taskIDVar := &task.KeyVal{Key: "TASK_ID", Value: strconv.FormatInt(pipelineTask.TaskID, 10), IsCredential: false}
-	p.Task.JobCtx.EnvVars = append(p.Task.JobCtx.EnvVars, taskIDVar)
 
 	privateKeys := sets.String{}
 	for _, privateKey := range pipelineTask.ConfigPayload.PrivateKeys {
@@ -237,7 +233,7 @@ func (p *BuildTaskPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipe
 	}
 
 	//instantiates variables like ${<REPO>_BRANCH} ${${REPO_index}_BRANCH} ..
-	p.Task.JobCtx.EnvVars = append(p.Task.JobCtx.EnvVars, InstantiateBuildSysVariables(&p.Task.JobCtx)...)
+	p.Task.JobCtx.EnvVars = append(p.Task.JobCtx.EnvVars, CreateEnvsFromRepoInfo(p.Task.JobCtx.Builds)...)
 
 	// Note: Currently, `SERVICE` in the environment variable represents a service module.
 	// Since variable rendering is required next, the `SERVICE_MODULE` environment variable is added to accurately
@@ -246,6 +242,7 @@ func (p *BuildTaskPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipe
 	for _, env := range p.Task.JobCtx.EnvVars {
 		if env.Key == "SERVICE" {
 			p.Task.JobCtx.EnvVars = append(p.Task.JobCtx.EnvVars, &task.KeyVal{Key: "SERVICE_MODULE", Value: env.Value})
+			p.Task.JobCtx.EnvVars = append(p.Task.JobCtx.EnvVars, &task.KeyVal{Key: "SERVICE_NAME", Value: strings.TrimPrefix(p.Task.ServiceName, env.Value+"_")})
 			break
 		}
 	}
@@ -355,7 +352,7 @@ func (p *BuildTaskPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipe
 
 		//Resource request default value is LOW
 
-		job, err := buildJob(p.Type(), jobImage, p.JobName, serviceName, p.Task.ClusterID, pipelineTask.ConfigPayload.Build.KubeNamespace, p.Task.ResReq, p.Task.ResReqSpec, pipelineCtx, pipelineTask, p.Task.Registries)
+		job, err := buildJob(p.Type(), jobImage, p.JobName, serviceName, p.Task.ClusterID, p.Task.StrategyID, pipelineTask.ConfigPayload.Build.KubeNamespace, p.Task.ResReq, p.Task.ResReqSpec, pipelineCtx, pipelineTask, p.Task.Registries)
 		if err != nil {
 			msg := fmt.Sprintf("create build job context error: %v", err)
 			p.Log.Error(msg)
@@ -389,11 +386,15 @@ func (p *BuildTaskPlugin) Run(ctx context.Context, pipelineTask *task.Task, pipe
 	}
 	p.Log.Infof("succeed to create build job %s", p.JobName)
 
-	p.Task.TaskStatus = waitJobReady(ctx, p.KubeNamespace, p.JobName, p.kubeClient, p.Log)
+	p.Timeout = time.After(time.Duration(p.TaskTimeout()) * time.Second)
+	p.Task.TaskStatus, err = waitJobReady(ctx, p.KubeNamespace, p.JobName, p.kubeClient, p.apiReader, p.Timeout, p.Log)
+	if err != nil {
+		p.Task.Error = err.Error()
+	}
 }
 
 func (p *BuildTaskPlugin) Wait(ctx context.Context) {
-	status, err := waitJobEndWithFile(ctx, p.TaskTimeout(), p.KubeNamespace, p.JobName, true, p.kubeClient, p.clientset, p.restConfig, p.Log)
+	status, err := waitJobEndWithFile(ctx, p.TaskTimeout(), p.Timeout, p.KubeNamespace, p.JobName, true, p.kubeClient, p.clientset, p.restConfig, p.Log)
 	p.SetBuildStatusCompleted(status)
 	if err != nil {
 		p.Task.Error = err.Error()
@@ -448,7 +449,9 @@ func (p *BuildTaskPlugin) Complete(ctx context.Context, pipelineTask *task.Task,
 	err := saveContainerLog(pipelineTask, p.KubeNamespace, p.Task.ClusterID, p.FileName, jobLabel, p.kubeClient)
 	if err != nil {
 		p.Log.Error(err)
-		p.Task.Error = err.Error()
+		if p.Task.Error == "" {
+			p.Task.Error = err.Error()
+		}
 		return
 	}
 

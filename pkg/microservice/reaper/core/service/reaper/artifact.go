@@ -23,12 +23,12 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/koderover/zadig/pkg/microservice/reaper/core/service/meta"
-	"github.com/koderover/zadig/pkg/microservice/reaper/internal/s3"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/log"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
-	"github.com/koderover/zadig/pkg/util/fs"
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/core/service/meta"
+	"github.com/koderover/zadig/v2/pkg/microservice/reaper/internal/s3"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/util/fs"
 )
 
 func artifactsUpload(ctx *meta.Context, activeWorkspace string, artifactPaths []string, pluginType ...string) error {
@@ -38,7 +38,7 @@ func artifactsUpload(ctx *meta.Context, activeWorkspace string, artifactPaths []
 	)
 
 	if ctx.StorageURI != "" {
-		if store, err = s3.NewS3StorageFromEncryptedURI(ctx.StorageURI, ctx.AesKey); err != nil {
+		if store, err = s3.UnmarshalNewS3StorageFromEncrypted(ctx.StorageURI, ctx.AesKey); err != nil {
 			log.Errorf("artifactsUpload failed to create s3 storage err:%v", err)
 			return err
 		}
@@ -62,7 +62,7 @@ func artifactsUpload(ctx *meta.Context, activeWorkspace string, artifactPaths []
 			artifactPath := filepath.Join(activeWorkspace, artifactPath)
 			isDir, err := fs.IsDir(artifactPath)
 			if err != nil || !isDir {
-				log.Errorf("artifactPath is not exist  %s err: %s", artifactPath, err)
+				log.Errorf("artifactPath is not exist %s or is not dir, err: %s", artifactPath, err)
 				continue
 			}
 			cmdAndArtifactFullPaths = append(cmdAndArtifactFullPaths, artifactPath)

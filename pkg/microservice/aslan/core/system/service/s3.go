@@ -24,15 +24,15 @@ import (
 	"go.uber.org/zap"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	commonrepo "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/s3"
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/tool/crypto"
-	"github.com/koderover/zadig/pkg/tool/errors"
-	s3tool "github.com/koderover/zadig/pkg/tool/s3"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	commonrepo "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/s3"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/crypto"
+	"github.com/koderover/zadig/v2/pkg/tool/errors"
+	s3tool "github.com/koderover/zadig/v2/pkg/tool/s3"
 )
 
 func UpdateS3Storage(updateBy, id string, storage *commonmodels.S3Storage, logger *zap.SugaredLogger) error {
@@ -95,6 +95,20 @@ func ListS3Storage(encryptedKey string, logger *zap.SugaredLogger) ([]*commonmod
 	return stores, err
 }
 
+func ListS3StorageByProject(projectName string, logger *zap.SugaredLogger) ([]*commonmodels.S3Storage, error) {
+	stores, err := commonrepo.NewS3StorageColl().FindByProject(projectName)
+	if err == nil && len(stores) == 0 {
+		stores = make([]*commonmodels.S3Storage, 0)
+	}
+
+	for _, store := range stores {
+		store.Sk = ""
+		store.Ak = ""
+		store.Projects = nil
+	}
+	return stores, err
+}
+
 func DeleteS3Storage(deleteBy string, id string, logger *zap.SugaredLogger) error {
 	err := commonrepo.NewS3StorageColl().Delete(id)
 	if err != nil {
@@ -134,9 +148,9 @@ func ListTars(id, kind string, serviceNames []string, logger *zap.SugaredLogger)
 	defaultS3 = s3.S3{
 		S3Storage: store,
 	}
-	defaultURL, err = defaultS3.GetEncryptedURL()
+	defaultURL, err = defaultS3.GetEncrypted()
 	if err != nil {
-		logger.Errorf("defaultS3 GetEncryptedURL err:%s", err)
+		logger.Errorf("defaultS3 GetEncrypted err:%s", err)
 		return nil, err
 	}
 
@@ -155,6 +169,13 @@ func ListTars(id, kind string, serviceNames []string, logger *zap.SugaredLogger)
 				logger.Errorf("ListTars err:%s", err)
 				return
 			}
+			deliveryArtifactArgs.Source = string(config.WorkflowTypeV4)
+			deliveryArtifacts2, err := commonrepo.NewDeliveryArtifactColl().ListTars(deliveryArtifactArgs)
+			if err != nil {
+				logger.Errorf("ListTars err:%s", err)
+				return
+			}
+			deliveryArtifacts = append(deliveryArtifacts, deliveryArtifacts2...)
 			deliveryArtifactArgs.Name = newServiceName + "_" + newServiceName
 			newDeliveryArtifacts, err := commonrepo.NewDeliveryArtifactColl().ListTars(deliveryArtifactArgs)
 			if err != nil {
@@ -168,13 +189,27 @@ func ListTars(id, kind string, serviceNames []string, logger *zap.SugaredLogger)
 					logger.Errorf("deliveryActivity.list err:%s", err)
 					return
 				}
+
+				taskID := 0
 				urlArr := strings.Split(activities[0].URL, "/")
 				workflowName := urlArr[len(urlArr)-2]
 				taskIDStr := urlArr[len(urlArr)-1]
-				taskID, err := strconv.Atoi(taskIDStr)
-				if err != nil {
-					logger.Errorf("string convert to int err:%s", err)
-					return
+				if deliveryArtifact.Source == string(config.WorkflowType) {
+					taskID, err = strconv.Atoi(taskIDStr)
+					if err != nil {
+						logger.Errorf("WorkflowType source string convert to int err:%s", err)
+						continue
+					}
+				} else if deliveryArtifact.Source == string(config.WorkflowTypeV4) {
+					taskIDStrArr := strings.Split(taskIDStr, "?")
+					taskID, err = strconv.Atoi(taskIDStrArr[0])
+					if err != nil {
+						logger.Errorf("WorkflowTypeV4 source string convert to int err:%s", err)
+						continue
+					}
+				} else {
+					logger.Errorf("deliveryArtifact.Source err:%s", err)
+					continue
 				}
 
 				mutex.Lock()
@@ -183,6 +218,8 @@ func ListTars(id, kind string, serviceNames []string, logger *zap.SugaredLogger)
 					Name:         newServiceName,
 					FileName:     deliveryArtifact.Image,
 					WorkflowName: workflowName,
+					WorkflowType: deliveryArtifact.Source,
+					JobTaskName:  activities[0].JobTaskName,
 					TaskID:       int64(taskID),
 				})
 				mutex.Unlock()

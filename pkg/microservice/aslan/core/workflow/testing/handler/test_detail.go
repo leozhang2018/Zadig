@@ -17,15 +17,57 @@ limitations under the License.
 package handler
 
 import (
-	"github.com/gin-gonic/gin"
+	"fmt"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/testing/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
+	"github.com/gin-gonic/gin"
+	"github.com/koderover/zadig/v2/pkg/types"
+
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/testing/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
 )
 
 func ListDetailTestModules(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = service.ListTestingDetails(c.Query("projectName"), ctx.Logger)
+	if err != nil {
+
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	projectKey := c.Query("projectName")
+
+	// TODO: Authorization leak
+	// this API is sometimes used in edit workflow scenario, thus giving the edit workflow permission
+	// authorization check
+	if !ctx.Resources.IsSystemAdmin {
+		authorized := false
+		if projectAuthInfo, ok := ctx.Resources.ProjectAuthInfo[projectKey]; ok {
+			// first check if the user is projectAdmin
+			if projectAuthInfo.IsProjectAdmin {
+				authorized = true
+			} else if projectAuthInfo.Test.View {
+				// then check if the user has view test permission
+				authorized = true
+			} else if projectAuthInfo.Workflow.Edit ||
+				projectAuthInfo.Workflow.Create {
+				// then check if user has edit workflow permission
+				authorized = true
+			} else {
+				// finally check if the permission is given by collaboration mode
+				collaborationAuthorized, err := internalhandler.CheckPermissionGivenByCollaborationMode(ctx.UserID, projectKey, types.ResourceTypeWorkflow, types.WorkflowActionEdit)
+				if err == nil {
+					authorized = collaborationAuthorized
+				}
+			}
+		}
+		if !authorized {
+			ctx.UnAuthorized = true
+			return
+		}
+	}
+
+	ctx.Resp, ctx.Err = service.ListTestingDetails(projectKey, ctx.Logger)
 }

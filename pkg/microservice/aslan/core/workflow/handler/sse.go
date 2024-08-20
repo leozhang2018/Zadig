@@ -25,13 +25,13 @@ import (
 	"github.com/jinzhu/copier"
 	"k8s.io/apimachinery/pkg/util/wait"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/workflowcontroller"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/delivery/service"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/workflow/service/workflow"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/types/dto"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/workflowcontroller"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/delivery/service"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/workflow/service/workflow"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/types/dto"
 )
 
 func GetPipelineTaskSSE(c *gin.Context) {
@@ -152,7 +152,7 @@ func GetWorkflowTaskSSE(c *gin.Context) {
 				ctx.Logger.Errorf("[%s] GetPipelineTaskSSE error: %v", ctx.UserName, err)
 				return false, err
 			}
-			releases, err := service.ListDeliveryVersion(&service.ListDeliveryVersionArgs{
+			releases, _, err := service.ListDeliveryVersion(&service.ListDeliveryVersionArgs{
 				TaskId:       int(res.TaskID),
 				ServiceName:  res.ServiceName,
 				ProjectName:  res.ProductName,

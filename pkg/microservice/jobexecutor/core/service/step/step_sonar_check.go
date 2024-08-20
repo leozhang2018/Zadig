@@ -20,15 +20,16 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io/ioutil"
+	"os"
 	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v2"
 
-	"github.com/koderover/zadig/pkg/tool/log"
-	"github.com/koderover/zadig/pkg/tool/sonar"
-	"github.com/koderover/zadig/pkg/types/step"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/tool/sonar"
+	"github.com/koderover/zadig/v2/pkg/types/step"
 )
 
 type SonarCheckStep struct {
@@ -61,9 +62,9 @@ func (s *SonarCheckStep) Run(ctx context.Context) error {
 		sonarWorkDir = filepath.Join(s.workspace, s.spec.CheckDir, sonarWorkDir)
 	}
 	taskReportDir := filepath.Join(sonarWorkDir, "report-task.txt")
-	bytes, err := ioutil.ReadFile(taskReportDir)
+	bytes, err := os.ReadFile(taskReportDir)
 	if err != nil {
-		log.Errorf("read sonar task report file: %s error :%v", taskReportDir, err)
+		log.Errorf("read sonar task report file: %s error :%v", time.Now().Format(setting.WorkflowTimeFormat), taskReportDir, err)
 		return err
 	}
 	taskReportContent := string(bytes)
@@ -72,6 +73,7 @@ func (s *SonarCheckStep) Run(ctx context.Context) error {
 		log.Error("can not get sonar ce task ID")
 		return errors.New("can not get sonar ce task ID")
 	}
+
 	analysisID, err := client.WaitForCETaskTobeDone(ceTaskID, time.Minute*10)
 	if err != nil {
 		log.Error(err)
@@ -87,5 +89,6 @@ func (s *SonarCheckStep) Run(ctx context.Context) error {
 	if gateInfo.ProjectStatus.Status != sonar.QualityGateOK && gateInfo.ProjectStatus.Status != sonar.QualityGateNone {
 		return fmt.Errorf("sonar quality gate status was: %s", gateInfo.ProjectStatus.Status)
 	}
+
 	return nil
 }

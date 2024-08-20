@@ -18,15 +18,19 @@ package service
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/tool/workwx"
 	"github.com/pkg/errors"
 	"go.uber.org/zap"
 
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/mongodb"
-	"github.com/koderover/zadig/pkg/setting"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/lark"
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/mongodb"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/tool/dingtalk"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/lark"
 )
 
 func ListIMApp(_type string, log *zap.SugaredLogger) ([]*commonmodels.IMApp, error) {
@@ -39,56 +43,157 @@ func ListIMApp(_type string, log *zap.SugaredLogger) ([]*commonmodels.IMApp, err
 	return resp, nil
 }
 
-func CreateIMApp(args *commonmodels.IMApp, log *zap.SugaredLogger) (string, error) {
-	oid, err := mongodb.NewIMAppColl().Create(context.Background(), args)
-	if err != nil {
-		log.Errorf("create external approval error: %v", err)
-		return "", e.ErrCreateIMApp.AddErr(err)
+func CreateIMApp(args *commonmodels.IMApp, log *zap.SugaredLogger) error {
+	switch args.Type {
+	case setting.IMDingTalk:
+		return createDingTalkIMApp(args, log)
+	case setting.IMLark:
+		return createLarkIMApp(args, log)
+	case setting.IMWorkWx:
+		return createWorkWxIMApp(args, log)
+	default:
+		return errors.Errorf("unknown im type %s", args.Type)
 	}
-
-	client := lark.NewClient(args.AppID, args.AppSecret)
-
-	approvalCode, err := createLarkDefaultApprovalDefinition(client)
-	if err != nil {
-		return "", e.ErrCreateIMApp.AddErr(errors.Wrap(err, "create definition"))
-	}
-	err = client.SubscribeApprovalDefinition(&lark.SubscribeApprovalDefinitionArgs{
-		ApprovalID: approvalCode,
-	})
-	if err != nil {
-		return "", e.ErrCreateIMApp.AddErr(errors.Wrap(err, "subscribe"))
-	}
-
-	args.LarkDefaultApprovalCode = approvalCode
-	err = mongodb.NewIMAppColl().Update(context.Background(), oid, args)
-	if err != nil {
-		return "", errors.Wrap(err, "update approval with approval code")
-	}
-	return "", nil
 }
 
-func UpdateIMApp(id string, args *commonmodels.IMApp, log *zap.SugaredLogger) error {
-	if err := lark.Validate(args.AppID, args.AppSecret); err != nil {
+func createDingTalkIMApp(args *commonmodels.IMApp, log *zap.SugaredLogger) error {
+	if err := dingtalk.Validate(args.DingTalkAppKey, args.DingTalkAppSecret); err != nil {
 		return e.ErrUpdateIMApp.AddErr(errors.Wrap(err, "validate"))
 	}
 
-	client := lark.NewClient(args.AppID, args.AppSecret)
-	approvalCode, err := createLarkDefaultApprovalDefinition(client)
+	client := dingtalk.NewClient(args.DingTalkAppKey, args.DingTalkAppSecret)
+	list, err := client.GetAllApprovalFormDefinitionList()
 	if err != nil {
-		return e.ErrUpdateIMApp.AddErr(errors.Wrap(err, "create definition"))
+		return e.ErrCreateIMApp.AddErr(errors.Wrap(err, "get all approval form definition list"))
 	}
-	err = client.SubscribeApprovalDefinition(&lark.SubscribeApprovalDefinitionArgs{
-		ApprovalID: approvalCode,
-	})
+	// check dingtalk app has default approval form
+	for _, form := range list {
+		if form.Name == dingtalk.DefaultApprovalFormName {
+			args.DingTalkDefaultApprovalFormCode = form.ProcessCode
+			break
+		}
+	}
+
+	if args.DingTalkDefaultApprovalFormCode == "" {
+		resp, err := client.CreateApproval()
+		if err != nil {
+			return e.ErrCreateIMApp.AddErr(errors.Wrap(err, "create approval form"))
+		}
+		args.DingTalkDefaultApprovalFormCode = resp.ProcessCode
+	}
+
+	_, err = mongodb.NewIMAppColl().Create(context.Background(), args)
 	if err != nil {
-		return e.ErrUpdateIMApp.AddErr(errors.Wrap(err, "subscribe"))
+		log.Errorf("create dingtalk IM error: %v", err)
+		return e.ErrCreateIMApp.AddErr(err)
 	}
-	args.LarkDefaultApprovalCode = approvalCode
+	return nil
+}
+
+func createLarkIMApp(args *commonmodels.IMApp, log *zap.SugaredLogger) error {
+	err := lark.Validate(args.AppID, args.AppSecret)
+	if err != nil {
+		return e.ErrCreateIMApp.AddErr(errors.Wrap(err, "validate"))
+	}
+
+	_, err = mongodb.NewIMAppColl().Create(context.Background(), args)
+	if err != nil {
+		log.Errorf("create lark IM error: %v", err)
+		return e.ErrCreateIMApp.AddErr(err)
+	}
+	return nil
+}
+
+func createWorkWxIMApp(args *commonmodels.IMApp, log *zap.SugaredLogger) error {
+	client := workwx.NewClient(args.Host, args.CorpID, args.AgentID, args.AgentSecret)
+
+	templateName, controls := generateWorkWXDefaultApprovalTemplate(args.Name)
+	templateID, err := client.CreateApprovalTemplate(templateName, controls)
+	if err != nil {
+		log.Errorf("failed to create approval template for workwx, error: %s", err)
+		return fmt.Errorf("failed to create approval template for workwx, error: %s", err)
+	}
+
+	args.WorkWXApprovalTemplateID = templateID
+
+	_, err = mongodb.NewIMAppColl().Create(context.Background(), args)
+	if err != nil {
+		log.Errorf("create workwx IM error: %v", err)
+		return e.ErrCreateIMApp.AddErr(err)
+	}
+	return nil
+}
+
+func UpdateIMApp(id string, args *commonmodels.IMApp, log *zap.SugaredLogger) error {
+	switch args.Type {
+	case setting.IMDingTalk:
+		return updateDingTalkIMApp(id, args, log)
+	case setting.IMLark:
+		return updateLarkIMApp(id, args, log)
+	case setting.IMWorkWx:
+		return updateWorkWxIMApp(id, args, log)
+	default:
+		return errors.Errorf("unknown im type %s", args.Type)
+	}
+}
+
+func updateDingTalkIMApp(id string, args *commonmodels.IMApp, log *zap.SugaredLogger) error {
+	if err := dingtalk.Validate(args.DingTalkAppKey, args.DingTalkAppSecret); err != nil {
+		return e.ErrUpdateIMApp.AddErr(errors.Wrap(err, "validate"))
+	}
+
+	client := dingtalk.NewClient(args.DingTalkAppKey, args.DingTalkAppSecret)
+
+	list, err := client.GetAllApprovalFormDefinitionList()
+	if err != nil {
+		return e.ErrUpdateIMApp.AddErr(errors.Wrap(err, "get all approval form definition list"))
+	}
+	// check dingtalk app has default approval form
+	for _, form := range list {
+		if form.Name == dingtalk.DefaultApprovalFormName {
+			args.DingTalkDefaultApprovalFormCode = form.ProcessCode
+			break
+		}
+	}
+	if args.DingTalkDefaultApprovalFormCode == "" {
+		resp, err := client.CreateApproval()
+		if err != nil {
+			return e.ErrUpdateIMApp.AddErr(errors.Wrap(err, "create approval form"))
+		}
+		args.DingTalkDefaultApprovalFormCode = resp.ProcessCode
+	}
 
 	err = mongodb.NewIMAppColl().Update(context.Background(), id, args)
 	if err != nil {
-		log.Errorf("update external approval error: %v", err)
-		return e.ErrUpdateIMApp.AddErr(err)
+		return errors.Wrap(err, "update dingtalk info with process code")
+	}
+	return nil
+}
+
+func updateLarkIMApp(id string, args *commonmodels.IMApp, log *zap.SugaredLogger) error {
+	err := lark.Validate(args.AppID, args.AppSecret)
+	if err != nil {
+		return e.ErrCreateIMApp.AddErr(errors.Wrap(err, "validate"))
+	}
+
+	err = mongodb.NewIMAppColl().Update(context.Background(), id, args)
+	if err != nil {
+		log.Errorf("update lark IM error: %v", err)
+		return e.ErrCreateIMApp.AddErr(err)
+	}
+	return nil
+}
+
+func updateWorkWxIMApp(id string, args *commonmodels.IMApp, log *zap.SugaredLogger) error {
+	err := workwx.Validate(args.Host, args.CorpID, args.AgentID, args.AgentSecret)
+	if err != nil {
+		return e.ErrCreateIMApp.AddErr(errors.Wrap(err, "validate"))
+	}
+
+	err = mongodb.NewIMAppColl().Update(context.Background(), id, args)
+	if err != nil {
+		log.Errorf("update lark IM error: %v", err)
+		return e.ErrCreateIMApp.AddErr(err)
 	}
 	return nil
 }
@@ -102,21 +207,40 @@ func DeleteIMApp(id string, log *zap.SugaredLogger) error {
 	return nil
 }
 
-func ValidateIMApp(approval *commonmodels.IMApp, log *zap.SugaredLogger) error {
-	switch approval.Type {
+func ValidateIMApp(im *commonmodels.IMApp, log *zap.SugaredLogger) error {
+	switch im.Type {
 	case setting.IMLark:
-		return lark.Validate(approval.AppID, approval.AppSecret)
-	case setting.IMDingding:
+		return lark.Validate(im.AppID, im.AppSecret)
+	case setting.IMDingTalk:
+		return dingtalk.Validate(im.DingTalkAppKey, im.DingTalkAppSecret)
+	case setting.IMWorkWx:
+		return workwx.Validate(im.Host, im.CorpID, im.AgentID, im.AgentSecret)
 	default:
 		return e.ErrValidateIMApp.AddDesc("invalid type")
 	}
-	return nil
 }
 
-func createLarkDefaultApprovalDefinition(client *lark.Client) (string, error) {
-	return client.CreateApprovalDefinition(&lark.CreateApprovalDefinitionArgs{
-		Name:        "Zadig 工作流",
-		Description: "Zadig 工作流",
-		Type:        lark.ApproveTypeOr,
+func generateWorkWXDefaultApprovalTemplate(name string) ([]*workwx.GeneralText, []*workwx.ApprovalControl) {
+	templateName := make([]*workwx.GeneralText, 0)
+	templateName = append(templateName, &workwx.GeneralText{
+		Text: fmt.Sprintf("%s - %s", "Zadig 审批", name),
+		Lang: "zh_CN",
 	})
+
+	controls := make([]*workwx.ApprovalControl, 0)
+
+	controls = append(controls, &workwx.ApprovalControl{Property: &workwx.ApprovalControlProperty{
+		Type: config.DefaultWorkWXApprovalControlType,
+		ID:   config.DefaultWorkWXApprovalControlID,
+		Title: []*workwx.GeneralText{
+			{
+				Text: "审批内容",
+				Lang: "zh_CN",
+			},
+		},
+		Require: 1,
+		UnPrint: 0,
+	}})
+
+	return templateName, controls
 }

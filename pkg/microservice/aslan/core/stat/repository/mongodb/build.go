@@ -24,15 +24,20 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	models "github.com/koderover/zadig/pkg/microservice/aslan/core/stat/repository/models"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	models "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/stat/repository/models"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type BuildPipeResp struct {
 	ID              BuildItem `bson:"_id"                    json:"_id"`
 	TotalSuccess    int       `bson:"total_success"          json:"total_success"`
 	TotalBuildCount int       `bson:"total_build_count"      json:"total_build_count"`
+}
+
+type BuildStat struct {
+	TotalSuccess    int `bson:"total_success"          json:"total_success"`
+	TotalBuildCount int `bson:"total_build_count"      json:"total_build_count"`
 }
 
 type BuildItemResp struct {
@@ -190,6 +195,46 @@ func (c *BuildStatColl) GetBuildTotalAndSuccess() ([]*BuildItem, error) {
 	return resp, nil
 }
 
+func (c *BuildStatColl) GetBuildTotalAndSuccessByTime(startTime, endTime int64) (int64, int64, error) {
+	var result []*BuildStat
+	pipeline := []bson.M{
+		{
+			"$match": bson.M{
+				"create_time": bson.M{
+					"$gte": startTime,
+					"$lte": endTime,
+				},
+			},
+		},
+		{
+			"$group": bson.M{
+				"_id": "null",
+				"total_success": bson.M{
+					"$sum": "$total_success",
+				},
+				"total_build_count": bson.M{
+					"$sum": "$total_build_count",
+				},
+			},
+		},
+	}
+
+	cursor, err := c.Aggregate(context.TODO(), pipeline)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := cursor.All(context.TODO(), &result); err != nil {
+		return 0, 0, err
+	}
+
+	var totalSuccess, totalFailure int64
+	for _, res := range result {
+		totalSuccess += int64(res.TotalSuccess)
+		totalFailure += int64(res.TotalBuildCount - res.TotalSuccess)
+	}
+	return totalSuccess, totalFailure, nil
+}
+
 func (c *BuildStatColl) GetBuildStats(args *models.BuildStatOption) (*BuildItem, error) {
 	var result []*BuildItemResp
 	var pipeline []bson.M
@@ -198,6 +243,9 @@ func (c *BuildStatColl) GetBuildStats(args *models.BuildStatOption) (*BuildItem,
 	filter := bson.M{}
 	if args.StartDate > 0 {
 		filter["create_time"] = bson.M{"$gte": args.StartDate, "$lte": args.EndDate}
+	}
+	if len(args.ProductNames) > 0 {
+		filter["product_name"] = bson.M{"$in": args.ProductNames}
 	}
 
 	pipeline = []bson.M{

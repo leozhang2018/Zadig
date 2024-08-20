@@ -23,9 +23,9 @@ import (
 	"github.com/antihax/optional"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/code/client"
-	"github.com/koderover/zadig/pkg/tool/gitee"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/client"
+	"github.com/koderover/zadig/v2/pkg/tool/gitee"
 )
 
 const GiteeHost = "https://gitee.com"
@@ -158,4 +158,8 @@ func (c *Client) ListProjects(opt client.ListOpt) ([]*client.Project, error) {
 	}
 
 	return res, nil
+}
+
+func (c *Client) ListCommits(opt client.ListOpt) ([]*client.Commit, error) {
+	return make([]*client.Commit, 0), nil
 }

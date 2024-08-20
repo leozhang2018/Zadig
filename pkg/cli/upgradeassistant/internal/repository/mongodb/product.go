@@ -23,9 +23,9 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 
-	"github.com/koderover/zadig/pkg/cli/upgradeassistant/internal/repository/models"
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	mongotool "github.com/koderover/zadig/pkg/tool/mongo"
+	"github.com/koderover/zadig/v2/pkg/cli/upgradeassistant/internal/repository/models"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	mongotool "github.com/koderover/zadig/v2/pkg/tool/mongo"
 )
 
 type ProductFindOptions struct {
@@ -146,5 +146,15 @@ func (c *ProductColl) UpdateProductRender(product *models.Product) error {
 		"render": product.Render,
 	}}
 	_, err := c.Collection.UpdateOne(context.TODO(), query, change)
+	return err
+}
+
+func (c *ProductColl) UpdateRender(envName, productName string, render *models.RenderInfo) error {
+	query := bson.M{"env_name": envName, "product_name": productName}
+	change := bson.M{"$set": bson.M{
+		"render": render,
+	}}
+	_, err := c.UpdateOne(context.TODO(), query, change)
+
 	return err
 }

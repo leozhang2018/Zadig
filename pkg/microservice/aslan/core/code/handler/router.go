@@ -31,8 +31,9 @@ func (*Router) Inject(router *gin.RouterGroup) {
 		codehost.GET("/:codehostId/branches", CodeHostGetBranchList)
 		codehost.GET("/:codehostId/tags", CodeHostGetTagList)
 		codehost.GET("/:codehostId/prs", CodeHostGetPRList)
+		codehost.GET("/:codehostId/commits", CodeHostGetCommits)
 		codehost.PUT("/infos", ListRepoInfos)
-		codehost.POST("/branches/regular/check", MatchBranchesList)
+		codehost.GET("/:codehostId/branches/regular/check", MatchBranchesList)
 	}
 
 	// ---------------------------------------------------------------------------------------
@@ -46,7 +47,6 @@ func (*Router) Inject(router *gin.RouterGroup) {
 
 		workspace.GET("/tree", GetRepoTree)
 		workspace.GET("/getcontents/:codehostId", GetContents)
-		workspace.GET("/codehub/:codehostId", GetCodehubRepoInfo)
 	}
 
 }

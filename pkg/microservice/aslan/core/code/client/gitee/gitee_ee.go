@@ -23,9 +23,9 @@ import (
 	"github.com/antihax/optional"
 	"go.uber.org/zap"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/config"
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/code/client"
-	"github.com/koderover/zadig/pkg/tool/gitee"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/config"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/client"
+	"github.com/koderover/zadig/v2/pkg/tool/gitee"
 )
 
 type EEConfig struct {
@@ -163,4 +163,8 @@ func (c *EEClient) ListProjects(opt client.ListOpt) ([]*client.Project, error) {
 	}
 
 	return res, nil
+}
+
+func (c *EEClient) ListCommits(opt client.ListOpt) ([]*client.Commit, error) {
+	return make([]*client.Commit, 0), nil
 }

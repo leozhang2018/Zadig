@@ -19,22 +19,26 @@ package models
 import (
 	"go.mongodb.org/mongo-driver/bson/primitive"
 
-	"github.com/koderover/zadig/pkg/setting"
-	"github.com/koderover/zadig/pkg/types"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type Testing struct {
-	ID          primitive.ObjectID  `bson:"_id,omitempty"            json:"id,omitempty"`
-	Name        string              `bson:"name"                     json:"name"`
-	ProductName string              `bson:"product_name"             json:"product_name"`
-	Desc        string              `bson:"desc"                     json:"desc"`
-	Timeout     int                 `bson:"timeout"                  json:"timeout"`
-	Team        string              `bson:"team"                     json:"team"`
-	Repos       []*types.Repository `bson:"repos"                    json:"repos"`
-	PreTest     *PreTest            `bson:"pre_test"                 json:"pre_test"`
-	Scripts     string              `bson:"scripts"                  json:"scripts"`
-	UpdateTime  int64               `bson:"update_time"              json:"update_time"`
-	UpdateBy    string              `bson:"update_by"                json:"update_by"`
+	ID             primitive.ObjectID  `bson:"_id,omitempty"            json:"id,omitempty"`
+	Name           string              `bson:"name"                     json:"name"`
+	ProductName    string              `bson:"product_name"             json:"product_name"`
+	Desc           string              `bson:"desc"                     json:"desc"`
+	Timeout        int                 `bson:"timeout"                  json:"timeout"`
+	Team           string              `bson:"team"                     json:"team"`
+	Infrastructure string              `bson:"infrastructure"           json:"infrastructure"`
+	VMLabels       []string            `bson:"vm_labels"                json:"vm_labels"`
+	Repos          []*types.Repository `bson:"repos"                    json:"repos"`
+	PreTest        *PreTest            `bson:"pre_test"                 json:"pre_test"`
+	PostTest       *PostTest           `bson:"post_test"                json:"post_test"`
+	ScriptType     types.ScriptType    `bson:"script_type"              json:"script_type"`
+	Scripts        string              `bson:"scripts"                  json:"scripts"`
+	UpdateTime     int64               `bson:"update_time"              json:"update_time"`
+	UpdateBy       string              `bson:"update_by"                json:"update_by"`
 	// Junit 测试报告
 	TestResultPath string `bson:"test_result_path"         json:"test_result_path"`
 	// html 测试报告
@@ -45,7 +49,7 @@ type Testing struct {
 	// TODO: Deprecated.
 	Caches []string `bson:"caches"                   json:"caches"`
 
-	ArtifactPaths []string         `bson:"artifact_paths,omitempty" json:"artifact_paths,omitempty"`
+	ArtifactPaths []string         `bson:"artifact_paths"           json:"artifact_paths,omitempty"`
 	TestCaseNum   int              `bson:"-"                        json:"test_case_num,omitempty"`
 	ExecuteNum    int              `bson:"-"                        json:"execute_num,omitempty"`
 	PassRate      float64          `bson:"-"                        json:"pass_rate,omitempty"`
@@ -75,6 +79,7 @@ type TestingHookCtrl struct {
 
 type TestingHook struct {
 	AutoCancel bool          `bson:"auto_cancel" json:"auto_cancel"`
+	IsManual   bool          `bson:"is_manual"   json:"is_manual"`
 	MainRepo   *MainHookRepo `bson:"main_repo"   json:"main_repo"`
 	TestArgs   *TestTaskArgs `bson:"test_args"   json:"test_args"`
 }
@@ -96,11 +101,16 @@ type PreTest struct {
 	// Envs stores user defined env key val for build
 	Envs []*KeyVal `bson:"envs,omitempty"              json:"envs"`
 	// EnableProxy
-	EnableProxy bool   `bson:"enable_proxy"           json:"enable_proxy"`
-	ClusterID   string `bson:"cluster_id"             json:"cluster_id"`
-
+	EnableProxy      bool   `bson:"enable_proxy"           json:"enable_proxy"`
+	ClusterID        string `bson:"cluster_id"             json:"cluster_id"`
+	StrategyID       string `bson:"strategy_id"            json:"strategy_id"`
+	ConcurrencyLimit int    `bson:"concurrency_limit"      json:"concurrency_limit"`
 	// TODO: Deprecated.
 	Namespace string `bson:"namespace"              json:"namespace"`
+}
+
+type PostTest struct {
+	ObjectStorageUpload *ObjectStorageUpload `bson:"object_storage_upload,omitempty" json:"object_storage_upload,omitempty"`
 }
 
 func (Testing) TableName() string {

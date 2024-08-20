@@ -16,9 +16,7 @@ limitations under the License.
 
 package types
 
-import (
-	"github.com/koderover/zadig/pkg/setting"
-)
+import "github.com/koderover/zadig/v2/pkg/setting"
 
 type UserInfo struct {
 	LastLoginTime      int64          `json:"last_login_time"`
@@ -33,9 +31,21 @@ type UserInfo struct {
 	Admin              bool           `json:"admin"`
 }
 
+type UserBriefInfo struct {
+	UID          string `json:"uid"`
+	Account      string `json:"account"`
+	Name         string `json:"name"`
+	IdentityType string `json:"identity_type"`
+}
+
 type UsersResp struct {
-	Users      []UserInfo `json:"users"`
-	TotalCount int64      `json:"total_count"`
+	Users      []*UserInfo `json:"users"`
+	TotalCount int64       `json:"total_count"`
+}
+
+type UsersBriefResp struct {
+	Users      []*UserBriefInfo `json:"users"`
+	TotalCount int64            `json:"total_count"`
 }
 
 type RoleBinding struct {
@@ -54,6 +64,7 @@ type UserCountByType struct {
 type UserStatistics struct {
 	UserByType []*UserCountByType `json:"user_info"`
 	ActiveUser int64              `json:"active_user"`
+	TotalUser  int64              `json:"total_user"`
 }
 
 type UserSetting struct {
@@ -61,4 +72,18 @@ type UserSetting struct {
 	Theme        string `json:"theme"`
 	LogBgColor   string `json:"log_bg_color"`
 	LogFontColor string `json:"log_font_color"`
+}
+
+type Identity struct {
+	IdentityType string `json:"identity_type"`
+	UID          string `json:"uid,omitempty"`
+	GID          string `json:"gid,omitempty"`
+}
+
+func (id *Identity) GetID() string {
+	if id.IdentityType == "user" {
+		return id.UID
+	} else {
+		return id.GID
+	}
 }

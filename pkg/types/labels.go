@@ -27,3 +27,22 @@ const IstioLabelKeyInjection = "istio-injection"
 const IstioLabelValueInjection = "enabled"
 
 var OriginSpec = fmt.Sprintf("%s/origin", ZadigDomain)
+
+const (
+	ZadigReleaseVersionLabelKey     = "zadigx-release-version"
+	ZadigReleaseTypeLabelKey        = "zadigx-release-type"
+	ZadigReleaseServiceNameLabelKey = "zadigx-release-service-name"
+	ZadigReleaseMSEGrayTagLabelKey  = "alicloud.service.tag"
+)
+
+const (
+	ZadigReleaseVersionOriginal = "original"
+
+	ZadigReleaseTypeMseGray   = "mse-gray"
+	ZadigReleaseTypeBlueGreen = "blue-green"
+)
+
+var ZadigReleaseTypeList = []string{
+	ZadigReleaseTypeMseGray,
+	ZadigReleaseTypeBlueGreen,
+}

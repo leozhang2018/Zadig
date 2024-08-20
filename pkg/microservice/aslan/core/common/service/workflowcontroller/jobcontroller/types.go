@@ -17,7 +17,10 @@ limitations under the License.
 package jobcontroller
 
 import (
-	commonmodels "github.com/koderover/zadig/pkg/microservice/aslan/core/common/repository/models"
+	"gopkg.in/yaml.v2"
+
+	commonmodels "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/repository/models"
+	"github.com/koderover/zadig/v2/pkg/types"
 )
 
 type JobContext struct {
@@ -35,9 +38,26 @@ type JobContext struct {
 	TaskID int64 `yaml:"task_id"`
 	// Paths 执行脚本Path
 	Paths string `yaml:"paths"`
+	// ConfigMapName save the name of the configmap in which the jobContext resides
+	ConfigMapName string `yaml:"config_map_name"`
 
 	Steps   []*commonmodels.StepTask `yaml:"steps"`
 	Outputs []string                 `yaml:"outputs"`
+	// used to vm job
+	Cache *JobCacheConfig `yaml:"cache"`
+}
+
+func (j *JobContext) Decode(job string) error {
+	if err := yaml.Unmarshal([]byte(job), j); err != nil {
+		return err
+	}
+	return nil
+}
+
+type JobCacheConfig struct {
+	CacheEnable  bool               `json:"cache_enable"`
+	CacheDirType types.CacheDirType `json:"cache_dir_type"`
+	CacheUserDir string             `json:"cache_user_dir"`
 }
 
 type EnvVar []string

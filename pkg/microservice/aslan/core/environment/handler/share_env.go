@@ -17,43 +17,301 @@ limitations under the License.
 package handler
 
 import (
-	"github.com/gin-gonic/gin"
+	"fmt"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/environment/service"
-	"github.com/koderover/zadig/pkg/setting"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
+	"github.com/gin-gonic/gin"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/types"
+
+	commonutil "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/util"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/environment/service"
+	"github.com/koderover/zadig/v2/pkg/setting"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
 )
 
 func CheckWorkloadsK8sServices(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = service.CheckWorkloadsK8sServices(c, c.Param("name"), c.Query("projectName"))
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	envName := c.Param("name")
+	projectKey := c.Query("projectName")
+	production := c.Query("production") == "true"
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+
+		if production {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].ProductionEnv.EditConfig {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.ProductionEnvActionEditConfig)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+
+			err = commonutil.CheckZadigProfessionalLicense()
+			if err != nil {
+				ctx.Err = err
+				return
+			}
+		} else {
+			if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+				!ctx.Resources.ProjectAuthInfo[projectKey].Env.EditConfig {
+				permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionEditConfig)
+				if err != nil || !permitted {
+					ctx.UnAuthorized = true
+					return
+				}
+			}
+		}
+	}
+
+	ctx.Resp, ctx.Err = service.CheckWorkloadsK8sServices(c, envName, projectKey, production)
 }
 
 func EnableBaseEnv(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	internalhandler.InsertDetailedOperationLog(c, ctx.UserName, c.Query("projectName"), setting.OperationSceneEnv, "开启自测模式", "环境", c.Param("name"), "", ctx.Logger, c.Param("name"))
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
-	ctx.Err = service.EnableBaseEnv(c, c.Param("name"), c.Query("projectName"))
+	envName := c.Param("name")
+	projectKey := c.Query("projectName")
+	production := c.Query("production") == "true"
+	if production {
+		ctx.Err = fmt.Errorf("production environment not support")
+	}
+
+	internalhandler.InsertDetailedOperationLog(c, ctx.UserName, projectKey, setting.OperationSceneEnv, "开启自测模式", "环境", envName, "", ctx.Logger, envName)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Env.EditConfig {
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionEditConfig)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	err = commonutil.CheckZadigProfessionalLicense()
+	if err != nil {
+		ctx.Err = err
+		return
+	}
+
+	ctx.Err = service.EnableBaseEnv(c, envName, projectKey)
 }
 
 func DisableBaseEnv(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	internalhandler.InsertDetailedOperationLog(c, ctx.UserName, c.Query("projectName"), setting.OperationSceneEnv,
-		"关闭自测模式", "环境", c.Param("name"),
-		"", ctx.Logger, c.Param("name"))
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
 
-	ctx.Err = service.DisableBaseEnv(c, c.Param("name"), c.Query("projectName"))
+	envName := c.Param("name")
+	projectKey := c.Query("projectName")
+	production := c.Query("production") == "true"
+	if production {
+		ctx.Err = fmt.Errorf("production environment not support")
+	}
+
+	internalhandler.InsertDetailedOperationLog(c, ctx.UserName, projectKey, setting.OperationSceneEnv,
+		"关闭自测模式", "环境", envName,
+		"", ctx.Logger, envName)
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Env.EditConfig {
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionEditConfig)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	err = commonutil.CheckZadigProfessionalLicense()
+	if err != nil {
+		ctx.Err = err
+		return
+	}
+
+	ctx.Err = service.DisableBaseEnv(c, envName, projectKey)
 }
 
 func CheckShareEnvReady(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
 	defer func() { internalhandler.JSONResponse(c, ctx) }()
 
-	ctx.Resp, ctx.Err = service.CheckShareEnvReady(c, c.Param("name"), c.Param("op"), c.Query("projectName"))
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	envName := c.Param("name")
+	projectKey := c.Query("projectName")
+	production := c.Query("production") == "true"
+	if production {
+		ctx.Err = fmt.Errorf("production environment not support")
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Env.EditConfig {
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionEditConfig)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	ctx.Resp, ctx.Err = service.CheckShareEnvReady(c, envName, c.Param("op"), projectKey)
+}
+
+// @Summary Get Portal Service for Share Env
+// @Description Get Portal Service for Share Env
+// @Tags 	environment
+// @Accept 	json
+// @Produce json
+// @Param 	projectName		query		string									true	"project name"
+// @Param 	name			path		string									true	"env name"
+// @Param 	serviceName		path		string									true	"service name"
+// @Success 200 			{object} 	service.GetPortalServiceResponse
+// @Router /api/aslan/environment/environments/{name}/share/portal/{serviceName} [get]
+func GetPortalService(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	envName := c.Param("name")
+	serviceName := c.Param("serviceName")
+	projectKey := c.Query("projectName")
+	production := c.Query("production") == "true"
+	if production {
+		ctx.Err = fmt.Errorf("production environment not support")
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Env.View {
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionView)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	ctx.Resp, ctx.Err = service.GetPortalService(c, projectKey, envName, serviceName)
+	return
+}
+
+// @Summary Setup Portal Service for Share Env
+// @Description Setup Portal Service for Share Env
+// @Tags 	environment
+// @Accept 	json
+// @Produce json
+// @Param 	projectName		query		string									true	"project name"
+// @Param 	name			path		string									true	"env name"
+// @Param 	serviceName		path		string									true	"service name"
+// @Param 	body 			body 		[]service.SetupPortalServiceRequest 	true 	"body"
+// @Success 200
+// @Router /api/aslan/environment/environments/{name}/share/portal/{serviceName} [post]
+func SetupPortalService(c *gin.Context) {
+	ctx, err := internalhandler.NewContextWithAuthorization(c)
+	defer func() { internalhandler.JSONResponse(c, ctx) }()
+
+	if err != nil {
+		ctx.Err = fmt.Errorf("authorization Info Generation failed: err %s", err)
+		ctx.UnAuthorized = true
+		return
+	}
+
+	envName := c.Param("name")
+	serviceName := c.Param("serviceName")
+	projectKey := c.Query("projectName")
+	production := c.Query("production") == "true"
+	if production {
+		ctx.Err = fmt.Errorf("production environment not support")
+	}
+
+	// authorization checks
+	if !ctx.Resources.IsSystemAdmin {
+		if _, ok := ctx.Resources.ProjectAuthInfo[projectKey]; !ok {
+			ctx.UnAuthorized = true
+			return
+		}
+		if !ctx.Resources.ProjectAuthInfo[projectKey].IsProjectAdmin &&
+			!ctx.Resources.ProjectAuthInfo[projectKey].Env.EditConfig {
+			permitted, err := internalhandler.GetCollaborationModePermission(ctx.UserID, projectKey, types.ResourceTypeEnvironment, envName, types.EnvActionEditConfig)
+			if err != nil || !permitted {
+				ctx.UnAuthorized = true
+				return
+			}
+		}
+	}
+
+	req := []service.SetupPortalServiceRequest{}
+	err = c.ShouldBindJSON(&req)
+	if err != nil {
+		ctx.Err = e.ErrInvalidParam.AddErr(err)
+		return
+	}
+
+	err = commonutil.CheckZadigProfessionalLicense()
+	if err != nil {
+		ctx.Err = err
+		return
+	}
+
+	ctx.Err = service.SetupPortalService(c, projectKey, envName, serviceName, req)
+	return
 }

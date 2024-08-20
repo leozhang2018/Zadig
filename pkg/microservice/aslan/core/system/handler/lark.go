@@ -18,10 +18,9 @@ package handler
 
 import (
 	"github.com/gin-gonic/gin"
-	"github.com/pkg/errors"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/common/service/lark"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service/lark"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
 )
 
 func GetLarkDepartment(c *gin.Context) {
@@ -42,7 +41,7 @@ func GetLarkUserID(c *gin.Context) {
 
 	id, err := lark.GetLarkUserID(c.Param("id"), c.Query("type"), c.Query("value"))
 	if err != nil {
-		ctx.Err = errors.Wrap(err, "get lark user by email")
+		ctx.Err = err
 		return
 	}
 	ctx.Resp = map[string]string{"id": id}

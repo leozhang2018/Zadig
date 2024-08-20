@@ -21,11 +21,11 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"github.com/koderover/zadig/pkg/microservice/aslan/core/code/service"
-	commonservice "github.com/koderover/zadig/pkg/microservice/aslan/core/common/service"
-	internalhandler "github.com/koderover/zadig/pkg/shared/handler"
-	e "github.com/koderover/zadig/pkg/tool/errors"
-	"github.com/koderover/zadig/pkg/tool/log"
+	"github.com/koderover/zadig/v2/pkg/microservice/aslan/core/code/service"
+	commonservice "github.com/koderover/zadig/v2/pkg/microservice/aslan/core/common/service"
+	internalhandler "github.com/koderover/zadig/v2/pkg/shared/handler"
+	e "github.com/koderover/zadig/v2/pkg/tool/errors"
+	"github.com/koderover/zadig/v2/pkg/tool/log"
 )
 
 func GetProductNameByWorkspacePipeline(c *gin.Context) {
@@ -151,39 +151,6 @@ func GetRepoTree(c *gin.Context) {
 	}
 
 	ctx.Resp, ctx.Err = service.GetRepoTree(info.CodeHostID, owner, info.Repo, info.Path, info.Branch, ctx.Logger)
-}
-
-func GetCodehubRepoInfo(c *gin.Context) {
-	ctx := internalhandler.NewContext(c)
-	defer func() { internalhandler.JSONResponse(c, ctx) }()
-
-	codehostIDStr := c.Param("codehostId")
-	if codehostIDStr == "" {
-		ctx.Err = e.ErrInvalidParam.AddDesc("empty codehost ID")
-		return
-	}
-
-	codehostID, err := strconv.Atoi(codehostIDStr)
-	if err != nil {
-		ctx.Err = e.ErrInvalidParam.AddDesc("cannot convert codehost id to int")
-		return
-	}
-
-	repoUUID := c.Query("repoUUID")
-	if repoUUID == "" {
-		ctx.Err = e.ErrInvalidParam.AddDesc("empty repo uuid")
-		return
-	}
-
-	branchName := c.Query("branchName")
-	if branchName == "" {
-		ctx.Err = e.ErrInvalidParam.AddDesc("empty branch name")
-		return
-	}
-
-	path := c.Query("path")
-
-	ctx.Resp, ctx.Err = service.GetCodehubRepoInfo(codehostID, repoUUID, branchName, path, ctx.Logger)
 }
 
 func GetContents(c *gin.Context) {
